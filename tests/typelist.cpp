@@ -24,6 +24,13 @@ using firstTwo = typelist<test1, test2>;
 using secondTwo = typelist<test3, test4>;
 using firstFour = typelist<test1, test2, test3, test4>;
 
+namespace TestIsTypelist {
+    static_assert(is_typelist_v<empty>);
+    static_assert(is_typelist_v<all>);
+    static_assert(!is_typelist_v<test1>);
+    static_assert(!is_typelist_v<int>);
+} // namespace TestIsTypelist
+
 namespace TestCount {
     static_assert(count_v<empty> == 0);
     static_assert(count_v<first> == 1);
@@ -36,7 +43,7 @@ namespace TestAppend {
     static_assert(std::is_same_v<append_t<test4, append_t<test3, firstTwo>>, firstFour>);
     static_assert(std::is_same_v<append_t<test1, first>, typelist<test1, test1>>);
     static_assert(std::is_same_v<append_t<firstTwo, secondTwo>, typelist<test3, test4, firstTwo>>);
-} // namespace TestCount
+} // namespace TestAppend
 
 namespace TestPrepend {
     static_assert(std::is_same_v<prepend_t<test1, empty>, first>);
@@ -90,7 +97,7 @@ namespace TestFrontBackAtIndex {
     static_assert(index_of_v<test1, all> == 0);
     static_assert(index_of_v<test3, all> == 2);
     static_assert(index_of_v<test4, all> == 3);
-} // namespace TestCount
+} // namespace TestFrontBackAtIndex
 
 
 namespace Reverse {
@@ -111,4 +118,8 @@ namespace Linearize
     using inner = typelist<test2, inner_inner>;
     using outer = typelist<test1, inner>;
     static_assert(std::is_same_v<linearize_t<outer>, all>);
-} // namespace linearize
+    static_assert(std::is_same_v<linearize_t<empty>, empty>);
+    static_assert(std::is_same_v<linearize_t<typelist<empty>>, empty>);
+    static_assert(std::is_same_v<linearize_t<typelist<test1, empty, second>>, firstTwo>);
+    static_assert(std::is_same_v<linearize_t<all>, all>);
+} // namespace Linearize
