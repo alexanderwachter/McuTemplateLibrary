@@ -6,6 +6,14 @@
 
 #include <print>
 
+int statemachine_tests();
+
 int main(int argc, const char* argv[]) {
-    std::print("nothing to execute\n");
+    int const failures = statemachine_tests();
+    if (failures != 0) {
+        std::print("{} check(s) FAILED\n", failures);
+        return 1;
+    }
+    std::print("all checks passed\n");
+    return 0;
 }

@@ -23,3 +23,8 @@ option(ENABLE_TESTING "Enable the tests" ${PROJECT_IS_TOP_LEVEL})
 if(ENABLE_TESTING)
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tests)
 endif()
+
+option(ENABLE_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
+if(ENABLE_EXAMPLES)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/examples)
+endif()
