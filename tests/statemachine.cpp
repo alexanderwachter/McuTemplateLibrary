@@ -126,6 +126,13 @@ namespace Table {
     static_assert(std::is_same_v<table::find_transition<locked, button_press>, mtl::nil_type>);
 } // namespace Table
 
+namespace Concepts {
+    static_assert(fsm::concepts::state<off> && fsm::concepts::state<running>);
+    static_assert(!fsm::concepts::state<int>);
+    static_assert(fsm::concepts::transition_table<table>);
+    static_assert(!fsm::concepts::transition_table<off>);
+} // namespace Concepts
+
 namespace MachineTypes {
     static_assert(std::is_same_v<machine::initial_state, off>);
     static_assert(std::is_same_v<machine::state_variant,
@@ -165,10 +172,69 @@ namespace Guards {
     static_assert(std::is_same_v<reordered::guard, always>);
 
     struct with_state { static bool check(off const&) { return true; } };
-    static_assert(fsm::concepts::guard<with_state, off>);
-    static_assert(!fsm::concepts::guard<with_state, running>); // wrong state
-    static_assert(fsm::concepts::guard<always, off>); // no-argument form
+    static_assert(fsm::concepts::guard<with_state> && fsm::concepts::guard<always>);
+    static_assert(!fsm::concepts::guard<off>); // no check member
+    static_assert(fsm::concepts::guard_for<with_state, off>);
+    static_assert(!fsm::concepts::guard_for<with_state, running>); // wrong state
+    static_assert(fsm::concepts::guard_for<always, off>); // no-argument form
 } // namespace Guards
+
+namespace Wildcard {
+    struct advance {};
+    struct shutdown {};
+    struct idle {};
+    struct stage1 {};
+    struct stage2 {};
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>,           fsm::on<advance>,  fsm::to<stage1>>,
+        fsm::transition<fsm::from<stage1>,         fsm::on<advance>,  fsm::to<stage2>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
+
+    // any_state is not a state of the machine
+    static_assert(std::is_same_v<tbl::states, mtl::typelist<idle, stage1, stage2>>);
+    // the wildcard matches states without an exact (state, event) pair
+    static_assert(std::is_same_v<tbl::find_transition<stage2, shutdown>::to, idle>);
+    static_assert(std::is_same_v<tbl::find_transition<stage1, advance>::to, stage2>);
+
+    // an exact pair takes precedence over the wildcard
+    using with_override = fsm::transition_table<
+        fsm::transition<fsm::from<idle>,           fsm::on<advance>,  fsm::to<stage1>>,
+        fsm::transition<fsm::from<stage1>,         fsm::on<shutdown>, fsm::to<stage2>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
+    static_assert(std::is_same_v<with_override::find_transition<stage1, shutdown>::to, stage2>);
+    static_assert(std::is_same_v<with_override::find_transition<stage2, shutdown>::to, idle>);
+} // namespace Wildcard
+
+namespace Payload {
+    struct message { int id; };
+    struct send { message msg; };
+    struct cancel {};
+
+    struct idle {};
+    struct sending {
+        sending() = default;
+        explicit sending(send const& event) : msg(event.msg) {}
+        message msg{};
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>,    fsm::on<send>,   fsm::to<sending>>,
+        fsm::transition<fsm::from<sending>, fsm::on<cancel>, fsm::to<idle>>>;
+
+    // Driver observer: reads the payload delivered into the sending state
+    struct tx_driver {
+        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        void on_enter_state(MACHINE& machine)
+        {
+            if constexpr (std::is_same_v<NEW_STATE, sending>) {
+                transmitted.push_back(machine.template get_if<sending>()->msg.id);
+            }
+        }
+
+        std::vector<int> transmitted;
+    };
+} // namespace Payload
 
 // --- runtime checks ---------------------------------------------------------
 
@@ -301,6 +367,48 @@ void explicit_initial_state()
     check(sm.is<off>());
 }
 
+void any_state_reaches_target_from_everywhere()
+{
+    using namespace Wildcard;
+    fsm::state_machine<tbl> sm;
+
+    check(sm.process(shutdown{})); // wildcard also matches the target state itself
+    check(sm.is<idle>());
+
+    sm.process(advance{});
+    sm.process(advance{});
+    check(sm.is<stage2>());
+    check(sm.process(shutdown{})); // stage2 -> idle via the wildcard
+    check(sm.is<idle>());
+}
+
+void event_payload_constructs_target_state()
+{
+    using namespace Payload;
+    fsm::state_machine<tbl> sm;
+
+    check(sm.process(send{.msg = {.id = 42}}));
+    check(sm.is<sending>());
+    check(sm.get_if<sending>()->msg.id == 42);
+
+    check(sm.process(cancel{})); // idle has no constructor from cancel
+    check(sm.is<idle>());
+}
+
+void payload_reaches_observer_through_state()
+{
+    using namespace Payload;
+    tx_driver driver;
+    fsm::state_machine<tbl, tx_driver> sm{driver};
+
+    sm.process(send{.msg = {.id = 7}});
+    sm.process(cancel{});
+    sm.process(send{.msg = {.id = 9}});
+
+    check(driver.transmitted.size() == 2);
+    check(driver.transmitted[0] == 7 && driver.transmitted[1] == 9);
+}
+
 void machine_with_only_a_timer_observer()
 {
     fsm::timed<manual_timer> tim;
@@ -428,6 +536,9 @@ int statemachine_tests()
     exit_values_are_notified();
     get_if_accesses_current_state();
     explicit_initial_state();
+    any_state_reaches_target_from_everywhere();
+    event_payload_constructs_target_state();
+    payload_reaches_observer_through_state();
     machine_with_only_a_timer_observer();
     entry_and_exit_hooks();
     guard_blocks_and_allows();

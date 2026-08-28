@@ -8,6 +8,12 @@
  * an initial<STATE> table role picks the initial state (default: the first
  * state of the first transition).
  *
+ * Events may carry payload: a target state constructible from the
+ * triggering event is emplaced with it, any other target state is
+ * default-constructed. Observer hooks run after the emplace and receive
+ * the machine, so e.g. a driver observer can read the delivered payload
+ * through machine.get_if<NEW_STATE>().
+ *
  * A guard gates the single transition it is attached to ((state, event)
  * pairs stay unique). check() returning false blocks it: process() returns
  * false, no exit/entry/hook runs, a running timeout timer keeps running,
@@ -44,19 +50,31 @@
 
 namespace fsm {
 
-template<typename STATE>
+// Matches every state in from<>; a specific (state, event) transition
+// takes precedence over the wildcard
+struct any_state {};
+
+namespace concepts {
+
+// States are classes, default-constructed into the variant on entry
+template<typename T>
+concept state = std::is_class_v<T> && std::default_initializable<T>;
+
+} // namespace concepts
+
+template<concepts::state STATE>
 struct from {};
 
 template<typename EVENT>
 struct on {};
 
-template<typename STATE>
+template<concepts::state STATE>
 struct to {};
 
 template<typename GUARD>
 struct guard {};
 
-template<typename STATE>
+template<concepts::state STATE>
 struct initial {};
 
 namespace internal {
@@ -88,10 +106,13 @@ template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type
 
 namespace concepts {
 
+template<typename T>
+concept guard = requires { &T::check; };
+
 // check(from_state) for conditions on state data, check() for
 // state-independent ones
 template<typename GUARD, typename STATE>
-concept guard = requires(STATE const& state) {
+concept guard_for = requires(STATE const& state) {
     { GUARD::check(state) } -> std::convertible_to<bool>;
 } || requires {
     { GUARD::check() } -> std::convertible_to<bool>;
@@ -109,32 +130,34 @@ concept transition = requires {
 template<typename T>
 concept transition_table_entry = transition<T> || internal::is_initial<T>::value;
 
+template<typename T>
+concept transition_role = internal::is_from<T>::value || internal::is_on<T>::value ||
+                          internal::is_to<T>::value || internal::is_guard<T>::value;
+
 } // namespace concepts
 
 // The named arguments may appear in any order
-template<typename... ARGs>
+template<concepts::transition_role... ROLEs>
 struct transition {
 private:
-    using args = mtl::typelist<ARGs...>;
-    static_assert(mtl::count_if_v<args, internal::is_from> == 1,
+    using roles = mtl::typelist<ROLEs...>;
+    static_assert(mtl::count_if_v<roles, internal::is_from> == 1,
                   "transition: exactly one from<STATE> required");
-    static_assert(mtl::count_if_v<args, internal::is_on> == 1,
+    static_assert(mtl::count_if_v<roles, internal::is_on> == 1,
                   "transition: exactly one on<EVENT> required");
-    static_assert(mtl::count_if_v<args, internal::is_to> == 1,
+    static_assert(mtl::count_if_v<roles, internal::is_to> == 1,
                   "transition: exactly one to<STATE> required");
-    static_assert(mtl::count_if_v<args, internal::is_guard> <= 1,
+    static_assert(mtl::count_if_v<roles, internal::is_guard> <= 1,
                   "transition: at most one guard<GUARD> allowed");
-    static_assert(sizeof...(ARGs) == 3U + mtl::count_if_v<args, internal::is_guard>,
-                  "transition: takes exactly from<>, on<>, to<> and optionally guard<>");
 
 public:
-    using from  = typename internal::unwrap<mtl::find_if_t<args, internal::is_from>>::type;
-    using event = typename internal::unwrap<mtl::find_if_t<args, internal::is_on>>::type;
-    using to    = typename internal::unwrap<mtl::find_if_t<args, internal::is_to>>::type;
-    using guard = typename internal::unwrap<mtl::find_if_t<args, internal::is_guard>>::type; // nil_type if absent
+    using from  = typename internal::unwrap<mtl::find_if_t<roles, internal::is_from>>::type;
+    using event = typename internal::unwrap<mtl::find_if_t<roles, internal::is_on>>::type;
+    using to    = typename internal::unwrap<mtl::find_if_t<roles, internal::is_to>>::type;
+    using guard = typename internal::unwrap<mtl::find_if_t<roles, internal::is_guard>>::type; // nil_type if absent
 
 private:
-    static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard<guard, from>,
+    static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard_for<guard, from>,
                   "transition: guard must provide static bool check(FROM const&) "
                   "or static bool check()");
 };
@@ -153,20 +176,13 @@ concept timer = requires(T t, std::chrono::milliseconds duration,
     t.stop();
 };
 
+template<typename T>
+concept transition_table = mtl::concepts::typelist<typename T::transitions> &&
+                           mtl::concepts::typelist<typename T::states>;
+
 } // namespace concepts
 
 namespace internal {
-
-template<mtl::concepts::typelist LIST>
-struct to_variant;
-
-template<typename... ELEMENTs>
-struct to_variant<mtl::typelist<ELEMENTs...>> {
-    using type = std::variant<ELEMENTs...>;
-};
-
-template<mtl::concepts::typelist LIST>
-using to_variant_t = typename to_variant<LIST>::type;
 
 // Optional drop-in for the std::visit call in process(), for toolchains
 // where std::visit emits a function-pointer table or bad_variant_access
@@ -195,6 +211,9 @@ struct matches {
                                      std::is_same_v<typename TRANSITION::event, EVENT>> {};
 };
 
+template<typename T>
+struct is_any_state : std::is_same<T, any_state> {};
+
 // All from/to states of a transition list, in order of appearance
 template<mtl::concepts::typelist LIST>
 struct endpoints;
@@ -204,7 +223,7 @@ struct endpoints<mtl::typelist<TRANSITIONs...>> {
     using type = mtl::typelist<typename TRANSITIONs::from..., typename TRANSITIONs::to...>;
 };
 
-template<typename LIST>
+template<mtl::concepts::typelist LIST>
 struct unambiguous_in {
     template<typename TRANSITION>
     struct pred : std::bool_constant<
@@ -218,7 +237,7 @@ inline constexpr bool has_timeout_v = requires { STATE::timeout; };
 template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
 
-template<typename GUARD, typename STATE>
+template<concepts::guard GUARD, concepts::state STATE>
 bool check_guard([[maybe_unused]] STATE const& state)
 {
     if constexpr (requires { GUARD::check(state); }) {
@@ -342,10 +361,14 @@ private:
     static_assert(mtl::all_of_v<transitions, internal::unambiguous_in<transitions>::template pred>,
                   "transition_table: duplicate (state, event) pair");
 
-    using endpoints = typename internal::endpoints<transitions>::type;
+    using endpoints = mtl::remove_if_t<typename internal::endpoints<transitions>::type,
+                                       internal::is_any_state>;
     static_assert(std::is_same_v<explicit_initial, mtl::nil_type> ||
                       mtl::has_a_v<endpoints, explicit_initial>,
                   "transition_table: initial<STATE> is not a state of the table");
+
+    template<typename FROM, typename EVENT>
+    using find_exact = mtl::find_if_t<transitions, internal::matches<FROM, EVENT>::template pred>;
 
 public:
     // Deduplicated in order of first appearance: front is the initial state
@@ -354,13 +377,16 @@ public:
         endpoints,
         mtl::prepend_t<explicit_initial, endpoints>>>;
 
-    // mtl::nil_type if the pair is not in the table
+    // Exact (FROM, EVENT) first, then the (any_state, EVENT) wildcard;
+    // mtl::nil_type if neither is in the table
     template<typename FROM, typename EVENT>
-    using find_transition =
-        mtl::find_if_t<transitions, internal::matches<FROM, EVENT>::template pred>;
+    using find_transition = std::conditional_t<
+        std::is_same_v<find_exact<FROM, EVENT>, mtl::nil_type>,
+        find_exact<any_state, EVENT>,
+        find_exact<FROM, EVENT>>;
 };
 
-template<typename TRANSITION_TABLE, typename... OBSERVERs>
+template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {
     using TRANSITIONS = TRANSITION_TABLE;
 
@@ -385,7 +411,7 @@ class state_machine {
                   "observer (inject fsm::timed<TIMER>)");
 
 public:
-    using state_variant = internal::to_variant_t<typename TRANSITIONS::states>;
+    using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
     explicit state_machine(OBSERVERs&... observers)
@@ -397,10 +423,10 @@ public:
     // Returns true if a transition fired (false: no matching transition, or
     // its guard said no)
     template<typename EVENT>
-    bool process(EVENT const&)
+    bool process(EVENT const& event)
     {
         return std::visit(
-            [this](auto& state) -> bool {
+            [this, &event](auto& state) -> bool {
                 using state_type = std::decay_t<decltype(state)>;
                 using matched = typename TRANSITIONS::template find_transition<state_type, EVENT>;
                 if constexpr (std::is_same_v<matched, mtl::nil_type>) {
@@ -411,19 +437,19 @@ public:
                             return false;
                         }
                     }
-                    return this->template do_transition<state_type, typename matched::to>();
+                    return this->template do_transition<state_type, typename matched::to>(event);
                 }
             },
             current_);
     }
 
-    template<typename STATE>
+    template<concepts::state STATE>
     [[nodiscard]] bool is() const
     {
         return std::holds_alternative<STATE>(current_);
     }
 
-    template<typename STATE>
+    template<concepts::state STATE>
     [[nodiscard]] STATE* get_if()
     {
         return std::get_if<STATE>(&current_);
@@ -446,10 +472,24 @@ private:
         }
     }
 
-    // Instantiated per edge, not per event: all events triggering the same
-    // edge share one instantiation
+    // Thin per-(edge, event) wrapper: only the emplace depends on the
+    // event; the shared bodies live in leave()/enter(), instantiated per
+    // edge and shared by all events triggering the same edge
+    template<typename OLD_STATE, typename NEW_STATE, typename EVENT>
+    bool do_transition(EVENT const& event)
+    {
+        this->template leave<OLD_STATE, NEW_STATE>();
+        if constexpr (std::constructible_from<NEW_STATE, EVENT const&>) {
+            current_.template emplace<NEW_STATE>(event); // payload delivery
+        } else {
+            current_.template emplace<NEW_STATE>();
+        }
+        this->template enter<OLD_STATE, NEW_STATE>();
+        return true;
+    }
+
     template<typename OLD_STATE, typename NEW_STATE>
-    bool do_transition()
+    void leave()
     {
         std::apply([this](auto&... observer) {
                        (exit_hook<OLD_STATE, NEW_STATE>(observer), ...);
@@ -458,9 +498,6 @@ private:
         if constexpr (requires(OLD_STATE& state) { state.on_exit(); }) {
             std::get_if<OLD_STATE>(&current_)->on_exit();
         }
-        current_.template emplace<NEW_STATE>();
-        this->template enter<OLD_STATE, NEW_STATE>();
-        return true;
     }
 
     template<typename OLD_STATE, typename NEW_STATE>
