@@ -137,6 +137,9 @@ namespace MachineTypes {
     static_assert(std::is_same_v<machine::initial_state, off>);
     static_assert(std::is_same_v<machine::state_variant,
                                  std::variant<off, running, cooldown, locked>>);
+    // observers may retain the machine address from a hook
+    static_assert(!std::is_copy_constructible_v<machine>);
+    static_assert(!std::is_move_constructible_v<machine>);
 } // namespace MachineTypes
 
 namespace ExplicitInitial {
@@ -356,6 +359,10 @@ void get_if_accesses_current_state()
 
     check(sm.get_if<off>() != nullptr);
     check(sm.get_if<running>() == nullptr);
+
+    machine const& read_only = sm;
+    check(read_only.get_if<off>() != nullptr);
+    check(read_only.get_if<running>() == nullptr);
 }
 
 void explicit_initial_state()

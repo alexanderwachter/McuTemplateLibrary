@@ -33,6 +33,13 @@
  *   void on_exit_state(MACHINE&);  - transition fires, old state still alive
  *   void on_enter_state(MACHINE&); - new state emplaced, before on_entry();
  *                                    on construction with OLD = mtl::nil_type
+ *   template<typename TABLE> static constexpr void validate();
+ *                                  - invoked at machine instantiation: the
+ *                                    place for an observer's compile-time
+ *                                    checks against the transition table
+ * The machine itself imposes nothing on the table beyond its shape: a state
+ * feature no injected observer consumes (a timeout without fsm::timed, an
+ * annotation nobody watches) is silently unobserved.
  * Value observation with change suppression: see fsm::observing below.
  */
 
@@ -54,9 +61,13 @@ namespace fsm {
 // takes precedence over the wildcard
 struct any_state {};
 
+// Event injected by the timer policy when a state's timeout expires
+struct timeout {};
+
 namespace concepts {
 
-// States are classes, default-constructed into the variant on entry
+// States are classes; on entry they are constructed from the triggering
+// event if such a constructor exists, default-constructed otherwise
 template<typename T>
 concept state = std::is_class_v<T> && std::default_initializable<T>;
 
@@ -101,6 +112,10 @@ template<typename S> struct unwrap<fsm::to<S>>      { using type = S; };
 template<typename G> struct unwrap<fsm::guard<G>>   { using type = G; };
 template<typename S> struct unwrap<fsm::initial<S>> { using type = S; };
 template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type; };
+
+// Payload of the first role matching PREDICATE; nil_type if there is none
+template<mtl::concepts::typelist LIST, template<typename> typename PREDICATE>
+using find_role_t = typename unwrap<mtl::find_if_t<LIST, PREDICATE>>::type;
 
 } // namespace internal
 
@@ -151,19 +166,16 @@ private:
                   "transition: at most one guard<GUARD> allowed");
 
 public:
-    using from  = typename internal::unwrap<mtl::find_if_t<roles, internal::is_from>>::type;
-    using event = typename internal::unwrap<mtl::find_if_t<roles, internal::is_on>>::type;
-    using to    = typename internal::unwrap<mtl::find_if_t<roles, internal::is_to>>::type;
-    using guard = typename internal::unwrap<mtl::find_if_t<roles, internal::is_guard>>::type; // nil_type if absent
+    using from  = internal::find_role_t<roles, internal::is_from>;
+    using event = internal::find_role_t<roles, internal::is_on>;
+    using to    = internal::find_role_t<roles, internal::is_to>;
+    using guard = internal::find_role_t<roles, internal::is_guard>; // nil_type if absent
 
 private:
     static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard_for<guard, from>,
                   "transition: guard must provide static bool check(FROM const&) "
                   "or static bool check()");
 };
-
-// Event injected by the timer policy when a state's timeout expires
-struct timeout {};
 
 using timer_callback = void (*)(void*);
 
@@ -184,24 +196,45 @@ concept transition_table = mtl::concepts::typelist<typename T::transitions> &&
 
 namespace internal {
 
-// Optional drop-in for the std::visit call in process(), for toolchains
-// where std::visit emits a function-pointer table or bad_variant_access
-// handling (e.g. clang/libc++, older GCC). The last alternative dispatches
-// unconditionally: the variant only holds nothrow-constructible states and
-// can never be valueless. On GCC 13 x86-64 -Os std::visit is 96 bytes
-// smaller than this chain - hence it is the default.
-template<std::size_t INDEX = 0, typename VISITOR, typename VARIANT>
-constexpr decltype(auto) visit(VISITOR&& visitor, VARIANT& variant)
+// Fold-based alternative to std::visit for process(): every visitor
+// instantiation is inlinable and no function-pointer table or
+// bad_variant_access path can be emitted. A valueless variant matches no
+// alternative and yields false (unreachable in process(): the states can
+// never make the variant valueless).
+// Measured on GCC 15.2 x86-64 -Os (traffic_light.cpp): 32 bytes .text
+// larger than std::visit.
+template<typename VISITOR, typename... ALTERNATIVEs>
+    requires (std::predicate<VISITOR, ALTERNATIVEs&> && ...)
+constexpr bool visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 {
-    constexpr std::size_t last = std::variant_size_v<VARIANT> - 1U;
-    if constexpr (INDEX == last) {
-        return std::forward<VISITOR>(visitor)(*std::get_if<INDEX>(&variant));
-    } else {
-        if (variant.index() == INDEX) {
-            return visitor(*std::get_if<INDEX>(&variant));
-        }
-        return visit<INDEX + 1U>(std::forward<VISITOR>(visitor), variant);
-    }
+    return [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
+        bool result = false;
+        ((variant.index() == INDEXs &&
+          (result = visitor(*std::get_if<INDEXs>(&variant)), true)) || ...);
+        return result;
+    }(std::index_sequence_for<ALTERNATIVEs...>{});
+}
+
+// std::visit is table-free and smaller on libstdc++ (measured above);
+// other standard libraries get the fold. Define MTL_FSM_FOLD_VISIT to 0
+// or 1 to override the choice.
+#ifndef MTL_FSM_FOLD_VISIT
+#  if defined(__GLIBCXX__)
+#    define MTL_FSM_FOLD_VISIT 0
+#  else
+#    define MTL_FSM_FOLD_VISIT 1
+#  endif
+#endif
+
+template<typename VISITOR, typename... ALTERNATIVEs>
+    requires (std::predicate<VISITOR, ALTERNATIVEs&> && ...)
+constexpr bool dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
+{
+#if MTL_FSM_FOLD_VISIT
+    return internal::visit(std::forward<VISITOR>(visitor), variant);
+#else
+    return std::visit(std::forward<VISITOR>(visitor), variant);
+#endif
 }
 
 template<typename FROM, typename EVENT>
@@ -233,6 +266,15 @@ struct unambiguous_in {
 
 template<typename STATE>
 inline constexpr bool has_timeout_v = requires { STATE::timeout; };
+
+template<typename TABLE>
+struct timeout_handled_in {
+    template<typename STATE>
+    struct pred : std::bool_constant<
+        !has_timeout_v<STATE> ||
+        !std::is_same_v<typename TABLE::template find_transition<STATE, timeout>,
+                        mtl::nil_type>> {};
+};
 
 template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
@@ -316,7 +358,15 @@ private:
 // Observer implementing the state-timeout semantics on top of a TIMER policy
 template<concepts::timer TIMER>
 struct timed {
-    static constexpr bool handles_timeout = true;
+    // A timed state whose fsm::timeout the table ignores is a bug: the
+    // timer would fire into nothing
+    template<concepts::transition_table TABLE>
+    static constexpr void validate()
+    {
+        static_assert(mtl::all_of_v<typename TABLE::states,
+                          internal::timeout_handled_in<TABLE>::template pred>,
+                      "fsm::timed: state has a timeout but no transition for fsm::timeout");
+    }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void on_exit_state(MACHINE&)
@@ -351,8 +401,7 @@ private:
     static_assert(mtl::count_if_v<entries, internal::is_initial> <= 1,
                   "transition_table: at most one initial<STATE> allowed");
 
-    using explicit_initial =
-        typename internal::unwrap<mtl::find_if_t<entries, internal::is_initial>>::type;
+    using explicit_initial = internal::find_role_t<entries, internal::is_initial>;
 
 public:
     using transitions = mtl::remove_if_t<entries, internal::is_initial>;
@@ -390,25 +439,16 @@ template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {
     using TRANSITIONS = TRANSITION_TABLE;
 
-    template<typename STATE>
-    struct timed_state_handled
-        : std::bool_constant<
-              !internal::has_timeout_v<STATE> ||
-              !std::is_same_v<typename TRANSITIONS::template find_transition<STATE, timeout>,
-                              mtl::nil_type>> {};
-    static_assert(mtl::all_of_v<typename TRANSITIONS::states, timed_state_handled>,
-                  "state_machine: state has a timeout but no transition for fsm::timeout");
-
-    template<typename STATE>
-    struct is_timed : std::bool_constant<internal::has_timeout_v<STATE>> {};
-
     template<typename OBSERVER>
-    static constexpr bool handles_timeout_v = requires { requires OBSERVER::handles_timeout; };
-
-    static_assert(mtl::count_if_v<typename TRANSITIONS::states, is_timed> == 0U ||
-                      (handles_timeout_v<OBSERVERs> || ...),
-                  "state_machine: table has timed states but no timeout-capable "
-                  "observer (inject fsm::timed<TIMER>)");
+    static constexpr bool validated()
+    {
+        if constexpr (requires { OBSERVER::template validate<TRANSITIONS>(); }) {
+            OBSERVER::template validate<TRANSITIONS>();
+        }
+        return true;
+    }
+    // Observers get a chance to reject the table at compile time
+    static_assert((validated<OBSERVERs>() && ...));
 
 public:
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
@@ -420,12 +460,17 @@ public:
         this->template enter<mtl::nil_type, initial_state>();
     }
 
+    // Observer hooks receive *this and may retain the address beyond the
+    // hook: the machine must stay at one address for its lifetime
+    state_machine(state_machine const&)            = delete;
+    state_machine& operator=(state_machine const&) = delete;
+
     // Returns true if a transition fired (false: no matching transition, or
     // its guard said no)
     template<typename EVENT>
     bool process(EVENT const& event)
     {
-        return std::visit(
+        return internal::dispatch(
             [this, &event](auto& state) -> bool {
                 using state_type = std::decay_t<decltype(state)>;
                 using matched = typename TRANSITIONS::template find_transition<state_type, EVENT>;
@@ -443,14 +488,23 @@ public:
             current_);
     }
 
+    // Is STATE the active state?
     template<concepts::state STATE>
     [[nodiscard]] bool is() const
     {
         return std::holds_alternative<STATE>(current_);
     }
 
+    // Pointer to the active state object, nullptr if STATE is not active.
+    // The next transition destroys the object: do not keep the pointer.
     template<concepts::state STATE>
     [[nodiscard]] STATE* get_if()
+    {
+        return std::get_if<STATE>(&current_);
+    }
+
+    template<concepts::state STATE>
+    [[nodiscard]] STATE const* get_if() const
     {
         return std::get_if<STATE>(&current_);
     }
