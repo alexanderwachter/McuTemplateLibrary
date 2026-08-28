@@ -132,6 +132,25 @@ namespace MachineTypes {
                                  std::variant<off, running, cooldown, locked>>);
 } // namespace MachineTypes
 
+namespace ExplicitInitial {
+    using lock_first = fsm::transition_table<
+        fsm::initial<locked>,
+        fsm::transition<fsm::from<off>,    fsm::on<lock_key>, fsm::to<locked>>,
+        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>>;
+
+    // the chosen state moves to the front and becomes the initial state
+    static_assert(std::is_same_v<lock_first::states, mtl::typelist<locked, off>>);
+    static_assert(std::is_same_v<fsm::state_machine<lock_first>::initial_state, locked>);
+
+    // initial<> may appear anywhere in the table
+    using reordered = fsm::transition_table<
+        fsm::transition<fsm::from<off>,    fsm::on<lock_key>, fsm::to<locked>>,
+        fsm::initial<locked>,
+        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>>;
+    static_assert(std::is_same_v<reordered::states, lock_first::states>);
+    static_assert(std::is_same_v<reordered::transitions, lock_first::transitions>);
+} // namespace ExplicitInitial
+
 namespace Guards {
     struct always { static bool check() { return true; } };
 
@@ -273,6 +292,15 @@ void get_if_accesses_current_state()
     check(sm.get_if<running>() == nullptr);
 }
 
+void explicit_initial_state()
+{
+    fsm::state_machine<ExplicitInitial::lock_first> sm;
+
+    check(sm.is<locked>());
+    check(sm.process(lock_key{})); // locked -> off
+    check(sm.is<off>());
+}
+
 void machine_with_only_a_timer_observer()
 {
     fsm::timed<manual_timer> tim;
@@ -399,6 +427,7 @@ int statemachine_tests()
     equal_annotations_do_not_notify();
     exit_values_are_notified();
     get_if_accesses_current_state();
+    explicit_initial_state();
     machine_with_only_a_timer_observer();
     entry_and_exit_hooks();
     guard_blocks_and_allows();

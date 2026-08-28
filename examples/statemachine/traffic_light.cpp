@@ -109,6 +109,7 @@ struct minimum_green_elapsed {
 };
 
 using table = fsm::transition_table<
+    fsm::initial<red>,
     fsm::transition<fsm::from<red>,        fsm::on<fsm::timeout>,      fsm::to<red_yellow>>,
     fsm::transition<fsm::from<red_yellow>, fsm::on<fsm::timeout>,      fsm::to<green>>,
     fsm::transition<fsm::from<green>,      fsm::on<fsm::timeout>,      fsm::to<yellow>>,

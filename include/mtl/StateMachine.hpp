@@ -5,7 +5,8 @@
  * States are classes with optional members detected by requires-expressions:
  * on_entry(), on_exit(), static constexpr timeout, and static constexpr
  * members watched by observers. The state set is derived from the table;
- * the first state of the first transition is the initial state.
+ * an initial<STATE> table role picks the initial state (default: the first
+ * state of the first transition).
  *
  * A guard gates the single transition it is attached to ((state, event)
  * pairs stay unique). check() returning false blocks it: process() returns
@@ -55,6 +56,9 @@ struct to {};
 template<typename GUARD>
 struct guard {};
 
+template<typename STATE>
+struct initial {};
+
 namespace internal {
 
 template<typename T> struct is_from : std::false_type {};
@@ -69,12 +73,16 @@ template<typename S> struct is_to<fsm::to<S>> : std::true_type {};
 template<typename T> struct is_guard : std::false_type {};
 template<typename G> struct is_guard<fsm::guard<G>> : std::true_type {};
 
+template<typename T> struct is_initial : std::false_type {};
+template<typename S> struct is_initial<fsm::initial<S>> : std::true_type {};
+
 template<typename T> struct unwrap;
-template<typename S> struct unwrap<fsm::from<S>>  { using type = S; };
-template<typename E> struct unwrap<fsm::on<E>>    { using type = E; };
-template<typename S> struct unwrap<fsm::to<S>>    { using type = S; };
-template<typename G> struct unwrap<fsm::guard<G>> { using type = G; };
-template<>           struct unwrap<mtl::nil_type> { using type = mtl::nil_type; };
+template<typename S> struct unwrap<fsm::from<S>>    { using type = S; };
+template<typename E> struct unwrap<fsm::on<E>>      { using type = E; };
+template<typename S> struct unwrap<fsm::to<S>>      { using type = S; };
+template<typename G> struct unwrap<fsm::guard<G>>   { using type = G; };
+template<typename S> struct unwrap<fsm::initial<S>> { using type = S; };
+template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type; };
 
 } // namespace internal
 
@@ -88,6 +96,18 @@ concept guard = requires(STATE const& state) {
 } || requires {
     { GUARD::check() } -> std::convertible_to<bool>;
 };
+
+// Anything exposing the four role aliases works as a transition
+template<typename T>
+concept transition = requires {
+    typename T::from;
+    typename T::event;
+    typename T::to;
+    typename T::guard;
+};
+
+template<typename T>
+concept transition_table_entry = transition<T> || internal::is_initial<T>::value;
 
 } // namespace concepts
 
@@ -173,6 +193,23 @@ struct matches {
     template<typename TRANSITION>
     struct pred : std::bool_constant<std::is_same_v<typename TRANSITION::from, FROM> &&
                                      std::is_same_v<typename TRANSITION::event, EVENT>> {};
+};
+
+// All from/to states of a transition list, in order of appearance
+template<mtl::concepts::typelist LIST>
+struct endpoints;
+
+template<typename... TRANSITIONs>
+struct endpoints<mtl::typelist<TRANSITIONs...>> {
+    using type = mtl::typelist<typename TRANSITIONs::from..., typename TRANSITIONs::to...>;
+};
+
+template<typename LIST>
+struct unambiguous_in {
+    template<typename TRANSITION>
+    struct pred : std::bool_constant<
+        mtl::count_if_v<LIST, matches<typename TRANSITION::from,
+                                      typename TRANSITION::event>::template pred> == 1> {};
 };
 
 template<typename STATE>
@@ -286,18 +323,36 @@ struct timed {
     TIMER timer{};
 };
 
-template<typename... TRANSITIONs>
+// Transitions plus an optional initial<STATE> role; without it the first
+// state of the first transition is the initial state
+template<concepts::transition_table_entry... ENTRYs>
 struct transition_table {
-    using transitions = mtl::typelist<TRANSITIONs...>;
+private:
+    using entries = mtl::typelist<ENTRYs...>;
+    static_assert(mtl::count_if_v<entries, internal::is_initial> <= 1,
+                  "transition_table: at most one initial<STATE> allowed");
 
-    static_assert(((mtl::count_if_v<transitions,
-                        internal::matches<typename TRANSITIONs::from,
-                                          typename TRANSITIONs::event>::template pred> == 1) && ...),
+    using explicit_initial =
+        typename internal::unwrap<mtl::find_if_t<entries, internal::is_initial>>::type;
+
+public:
+    using transitions = mtl::remove_if_t<entries, internal::is_initial>;
+
+private:
+    static_assert(mtl::all_of_v<transitions, internal::unambiguous_in<transitions>::template pred>,
                   "transition_table: duplicate (state, event) pair");
 
+    using endpoints = typename internal::endpoints<transitions>::type;
+    static_assert(std::is_same_v<explicit_initial, mtl::nil_type> ||
+                      mtl::has_a_v<endpoints, explicit_initial>,
+                  "transition_table: initial<STATE> is not a state of the table");
+
+public:
     // Deduplicated in order of first appearance: front is the initial state
-    using states = mtl::unique_t<
-        mtl::typelist<typename TRANSITIONs::from..., typename TRANSITIONs::to...>>;
+    using states = mtl::unique_t<std::conditional_t<
+        std::is_same_v<explicit_initial, mtl::nil_type>,
+        endpoints,
+        mtl::prepend_t<explicit_initial, endpoints>>>;
 
     // mtl::nil_type if the pair is not in the table
     template<typename FROM, typename EVENT>
