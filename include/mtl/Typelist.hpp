@@ -352,4 +352,17 @@ struct linearize<typelist<FIRST, RESTs...>>
     using type = concat_t<linearize_t<FIRST>, linearize_t<typelist<RESTs...>>>;
 };
 
+// Rebind the elements of the typelist into another template
+template<concepts::typelist LIST, template<typename...> typename TARGET>
+struct rebind;
+
+template<concepts::typelist LIST, template<typename...> typename TARGET>
+using rebind_t = typename rebind<LIST, TARGET>::type;
+
+template<typename... ELEMENTs, template<typename...> typename TARGET>
+struct rebind<typelist<ELEMENTs...>, TARGET>
+{
+    using type = TARGET<ELEMENTs...>;
+};
+
 } // namespace mtl

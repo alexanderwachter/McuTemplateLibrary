@@ -123,3 +123,12 @@ namespace Linearize
     static_assert(std::is_same_v<linearize_t<typelist<test1, empty, second>>, firstTwo>);
     static_assert(std::is_same_v<linearize_t<all>, all>);
 } // namespace Linearize
+
+namespace TestRebind {
+    template<typename... Ts>
+    struct target {};
+
+    static_assert(std::is_same_v<rebind_t<all, target>, target<test1, test2, test3, test4>>);
+    static_assert(std::is_same_v<rebind_t<empty, target>, target<>>);
+    static_assert(std::is_same_v<rebind_t<all, typelist>, all>);
+} // namespace TestRebind
