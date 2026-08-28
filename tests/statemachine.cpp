@@ -50,18 +50,20 @@ struct outputs_t {
     constexpr bool operator==(outputs_t const&) const = default;
 };
 
-// Observer policy: records every notification for the checks below. On a
-// real target notify() would write the GPIO levels.
-struct output_controller {
+// Records notifications for the checks below; uses the hand-written
+// annotation() form (instead of observe()) to keep it covered
+struct output_controller : fsm::observing<output_controller> {
     template<typename STATE>
     static constexpr auto annotation() requires requires { STATE::outputs; }
     {
         return STATE::outputs;
     }
 
-    void notify(outputs_t const& out) { log.push_back(out); }
+    void notify_entry(outputs_t const& out) { log.push_back(out); }
+    void notify_exit(outputs_t const& out) { exit_log.push_back(out); }
 
     std::vector<outputs_t> log;
+    std::vector<outputs_t> exit_log;
 };
 
 // --- events and states ------------------------------------------------------
@@ -94,7 +96,7 @@ using table = fsm::transition_table<
     fsm::transition<fsm::from<off>,      fsm::on<lock_key>,     fsm::to<locked>>,
     fsm::transition<fsm::from<locked>,   fsm::on<lock_key>,     fsm::to<off>>>;
 
-using machine = fsm::state_machine<table, manual_timer, output_controller>;
+using machine = fsm::state_machine<table, fsm::timed<manual_timer>, output_controller>;
 
 } // namespace
 
@@ -166,10 +168,11 @@ void check(bool condition, std::source_location location = std::source_location:
 void initial_state_and_notification()
 {
     output_controller ctrl; // owned by the application, injected by reference
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
 
     check(sm.is<off>());
-    check(!sm.timer().armed); // off has no timeout
+    check(!tim.timer.armed); // off has no timeout
     // observers get the initial state's value during construction
     check(ctrl.log.size() == 1 && ctrl.log.back() == off::outputs);
 }
@@ -177,7 +180,8 @@ void initial_state_and_notification()
 void transition_on_event()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
 
     check(sm.process(button_press{})); // off -> running
     check(sm.is<running>());
@@ -187,7 +191,8 @@ void transition_on_event()
 void ignored_event_reports_false()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
     sm.process(button_press{}); // running has no transition for lock_key
 
     check(!sm.process(lock_key{}));
@@ -198,38 +203,41 @@ void ignored_event_reports_false()
 void timer_armed_on_entry_stopped_on_exit()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
 
     sm.process(button_press{}); // off -> running: timed state
-    check(sm.timer().armed);
-    check(sm.timer().duration == 50ms);
+    check(tim.timer.armed);
+    check(tim.timer.duration == 50ms);
 
     sm.process(button_press{}); // running -> off: leaving must disarm
-    check(!sm.timer().armed);
+    check(!tim.timer.armed);
 }
 
 void timeout_chain()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
     sm.process(button_press{}); // off -> running
 
-    sm.timer().expire();        // running -> cooldown (led off, fan still on)
+    tim.timer.expire();        // running -> cooldown (led off, fan still on)
     check(sm.is<cooldown>());
-    check(sm.timer().armed);    // cooldown re-arms with its own timeout
-    check(sm.timer().duration == 100ms);
+    check(tim.timer.armed);    // cooldown re-arms with its own timeout
+    check(tim.timer.duration == 100ms);
     check(ctrl.log.size() == 3 && ctrl.log.back() == cooldown::outputs);
 
-    sm.timer().expire();        // cooldown -> off
+    tim.timer.expire();        // cooldown -> off
     check(sm.is<off>());
-    check(!sm.timer().armed);
+    check(!tim.timer.armed);
     check(ctrl.log.size() == 4 && ctrl.log.back() == off::outputs);
 }
 
 void equal_annotations_do_not_notify()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
 
     check(sm.process(lock_key{})); // off -> locked: equal outputs, no notification
     check(sm.is<locked>());
@@ -238,23 +246,41 @@ void equal_annotations_do_not_notify()
     check(sm.process(lock_key{})); // locked -> off: equal outputs, no notification
     check(sm.is<off>());
     check(ctrl.log.size() == 1);
+    check(ctrl.exit_log.empty()); // suppression also applies to exit values
+}
+
+void exit_values_are_notified()
+{
+    output_controller ctrl;
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
+    check(ctrl.exit_log.empty()); // construction only enters
+
+    sm.process(button_press{}); // off -> running: leaving off's outputs
+    check(ctrl.exit_log.size() == 1 && ctrl.exit_log.back() == off::outputs);
+
+    sm.process(button_press{}); // running -> off
+    check(ctrl.exit_log.size() == 2 && ctrl.exit_log.back() == running::outputs);
 }
 
 void get_if_accesses_current_state()
 {
     output_controller ctrl;
-    machine sm{manual_timer{}, ctrl};
+    fsm::timed<manual_timer> tim;
+    machine sm{tim, ctrl};
 
     check(sm.get_if<off>() != nullptr);
     check(sm.get_if<running>() == nullptr);
 }
 
-void machine_without_observers()
+void machine_with_only_a_timer_observer()
 {
-    fsm::state_machine<table, manual_timer> sm; // default-constructible timer
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<table, fsm::timed<manual_timer>> sm{tim};
 
     check(sm.process(button_press{}));
     check(sm.is<running>());
+    check(tim.timer.armed); // running is a timed state
 }
 
 // --- optional on_entry()/on_exit() hooks ------------------------------------
@@ -274,7 +300,7 @@ namespace hooks {
 void entry_and_exit_hooks()
 {
     using namespace hooks;
-    fsm::state_machine<tbl, manual_timer> sm;
+    fsm::state_machine<tbl> sm; // no timed states, no observers: nothing to inject
     check(entries == 0 && exits == 0); // initial entry runs no exit, plain has no on_entry
 
     sm.process(ping{}); // plain -> hooked: plain::on_exit, hooked::on_entry
@@ -312,7 +338,7 @@ namespace guards {
 void guard_blocks_and_allows()
 {
     using namespace guards;
-    fsm::state_machine<tbl, manual_timer> sm;
+    fsm::state_machine<tbl> sm;
 
     check(!sm.process(push{})); // gate closed: guard blocks, nothing happens
     check(sm.is<gate>());
@@ -331,6 +357,36 @@ void guard_blocks_and_allows()
     check(!sm.get_if<gate>()->open); // re-entry default-constructs the state
 }
 
+// --- raw lifecycle hooks (observer without the fsm::observing base) ---------
+namespace raw_hooks {
+    struct transition_counter {
+        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        void on_exit_state(MACHINE&) { ++exits; }
+
+        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        void on_enter_state(MACHINE&) { ++enters; }
+
+        int exits  = 0;
+        int enters = 0;
+    };
+} // namespace raw_hooks
+
+void raw_hook_observer_sees_every_transition()
+{
+    raw_hooks::transition_counter counter;
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<table, fsm::timed<manual_timer>, raw_hooks::transition_counter> sm{tim, counter};
+
+    check(counter.enters == 1); // initial entry, no exit
+    check(counter.exits == 0);
+
+    sm.process(button_press{}); // off -> running
+    check(counter.enters == 2 && counter.exits == 1);
+
+    check(!sm.process(lock_key{})); // ignored event: no hooks
+    check(counter.enters == 2 && counter.exits == 1);
+}
+
 } // namespace
 
 int statemachine_tests()
@@ -341,9 +397,11 @@ int statemachine_tests()
     timer_armed_on_entry_stopped_on_exit();
     timeout_chain();
     equal_annotations_do_not_notify();
+    exit_values_are_notified();
     get_if_accesses_current_state();
-    machine_without_observers();
+    machine_with_only_a_timer_observer();
     entry_and_exit_hooks();
     guard_blocks_and_allows();
+    raw_hook_observer_sees_every_transition();
     return failures;
 }

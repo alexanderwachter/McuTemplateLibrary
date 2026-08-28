@@ -4,18 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Traffic light example for the fsm state machine.
-//
-// The light cycles red -> red_yellow -> green -> yellow -> red, driven
-// entirely by state timeouts. A pedestrian button shortens the green phase,
-// but a guard keeps green up for a minimum time. A lamp_driver observer
-// prints the lamp levels whenever they change; on a real target it would
-// write the GPIO levels instead.
-//
-// The timer policy is a superloop-style polling timer: the machine arms it
-// on entry into a timed state, and the main loop calls poll(), which injects
-// fsm::timeout into the machine when the deadline has passed. On a real
-// target the policy would wrap a hardware timer or a work queue instead.
+// Traffic light example: red -> red_yellow -> green -> yellow -> red,
+// driven by state timeouts. A pedestrian button shortens the green phase,
+// guarded by a minimum green time. lamp_driver prints the lamp levels;
+// on a real target it would write GPIOs and the polling timer would be a
+// hardware timer or work queue.
 
 #include <mtl/StateMachine.hpp>
 
@@ -40,7 +33,6 @@ public:
 
     void stop() { armed_ = false; }
 
-    // Called from the main loop; fires the callback once the deadline passed
     void poll()
     {
         if (armed_ && std::chrono::steady_clock::now() >= deadline_) {
@@ -65,16 +57,13 @@ struct lamps_t {
     constexpr bool operator==(lamps_t const&) const = default;
 };
 
-// Observer policy: notified when the lamp levels change across a transition.
-// The fsm::observing CRTP base generates the annotation<STATE>() machinery;
-// the trailing return type makes states without a lamps member drop out.
 struct lamp_driver : fsm::observing<lamp_driver> {
     static constexpr auto observe(auto const& state) -> decltype(state.lamps)
     {
         return state.lamps;
     }
 
-    void notify(lamps_t const& lamps)
+    void notify_entry(lamps_t const& lamps)
     {
         auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -111,7 +100,6 @@ struct yellow {
     static constexpr auto timeout = 1000ms;
 };
 
-// Guard: the pedestrian button only shortens green after a minimum green time
 struct minimum_green_elapsed {
     static constexpr auto minimum = 2000ms;
     static bool check(green const& state)
@@ -128,7 +116,7 @@ using table = fsm::transition_table<
     fsm::transition<fsm::from<green>,      fsm::on<pedestrian_button>, fsm::to<yellow>,
                     fsm::guard<minimum_green_elapsed>>>;
 
-using machine = fsm::state_machine<table, polling_timer, lamp_driver>;
+using machine = fsm::state_machine<table, fsm::timed<polling_timer>, lamp_driver>;
 
 } // namespace
 
@@ -140,8 +128,9 @@ int main()
             std::chrono::steady_clock::now() - start);
     };
 
-    lamp_driver driver{.start = start}; // owned by the application, injected by reference
-    machine sm{polling_timer{}, driver};
+    fsm::timed<polling_timer> timeouts;
+    lamp_driver driver{.start = start};
+    machine sm{timeouts, driver};
 
     auto const press_button = [&] {
         std::print("[{:>6}] pedestrian button pressed\n", elapsed());
@@ -150,12 +139,11 @@ int main()
         }
     };
 
-    // Superloop: poll the timer and press the button twice during green -
-    // the first press is blocked by the guard, the second one is accepted.
+    // First press falls into the minimum green time, second one is accepted
     bool first_press  = false;
     bool second_press = false;
     while (elapsed() < 10s) {
-        sm.timer().poll();
+        timeouts.timer.poll();
         if (!first_press && elapsed() >= 3500ms) {
             first_press = true;
             press_button();

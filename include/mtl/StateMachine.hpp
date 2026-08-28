@@ -2,59 +2,31 @@
  * Template-based state machine on top of the mtl library.
  * SPDX-License-Identifier: Apache-2.0
  *
- * - Each state is a class. Optional members, detected via requires-expressions:
- *     void on_entry();
- *     void on_exit();
- *     static constexpr <duration> timeout;
- *     static constexpr <value> members observed by observer policies (below)
- * - The transition table is a pack of transition<from<A>, on<E>, to<B>>;
- *   the named arguments may appear in any order. A transition may carry an
- *   optional guard<G> (see fsm::concepts::guard): G::check(from_state) or
- *   G::check() is evaluated first when the event is processed; returning
- *   false blocks the transition - process() returns false, no
- *   on_exit/on_entry/notify runs, and a running timeout timer keeps
- *   running. A blocked fsm::timeout transition does NOT re-arm the
- *   one-shot timer. (state, event) pairs stay unique: a guard gates the
- *   single matching transition, it does not select among alternatives.
- * - The set of states is derived from the table (mtl::unique) and stored in
- *   a std::variant. The first state of the first transition is the initial
- *   state.
- * - Timeouts are delegated to a timer policy (see fsm::concepts::timer):
- *   the machine starts the timer on entry into a timed state and stops it
- *   when leaving; the timer callback injects fsm::timeout into process().
+ * States are classes with optional members detected by requires-expressions:
+ * on_entry(), on_exit(), static constexpr timeout, and static constexpr
+ * members watched by observers. The state set is derived from the table;
+ * the first state of the first transition is the initial state.
  *
- * Timer policy contract:
- *   void start(std::chrono::milliseconds, fsm::timer_callback callback, void* context);
- *     Arms a one-shot timer. Invokes callback(context) once after the
- *     duration. Restarting an armed timer re-arms it.
- *   void stop();
- *     Disarms the timer. Must be tolerated when the timer is not armed
- *     (e.g. after it already fired).
- *   The callback runs in the policy's execution context (superloop, work
- *   queue, ISR, ...). process() is not re-entrant and not thread-safe; the
- *   policy or its user must ensure callback and process() are serialized.
+ * A guard gates the single transition it is attached to ((state, event)
+ * pairs stay unique). check() returning false blocks it: process() returns
+ * false, no exit/entry/hook runs, a running timeout timer keeps running,
+ * but a blocked fsm::timeout transition does not re-arm the one-shot timer.
  *
- * Observer policy contract (any number can be injected):
- *   template<typename STATE>
- *   static constexpr auto annotation() requires requires { STATE::member; }
- *   { return STATE::member; }
- *     Extracts the observed static constexpr member from a state. The
- *     requires-clause makes the observer opt out of states that do not
- *     carry the member.
- *   void notify(<annotation value>);
- *     Called with the new state's annotation value
- *     - once on construction, with the initial state's value (if present)
- *     - on every transition where the value differs from the previous
- *       state's value (compared at compile time), or where the previous
- *       state had no annotation.
- *     Transitions between states with equal values, and transitions into
- *     states without the annotation, do not notify.
- *   Observers are notified after the timer is armed and before on_entry()
- *   of the new state runs. Observers are injected by reference into the
- *   constructor and are not owned by the machine: they must outlive it.
- *   Note that the first notification happens during machine construction.
- *   The fsm::observing CRTP base generates annotation() for the common
- *   observe-one-member case; deriving from it is optional.
+ * Timer policy contract (owned by fsm::timed<TIMER>):
+ *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
+ *   that invokes callback(context) once; restarting re-arms. stop()
+ *   disarms and must tolerate an unarmed timer. The callback runs in the
+ *   policy's execution context; process() is not re-entrant and not
+ *   thread-safe - callback and process() must be serialized externally.
+ *
+ * Observer contract: injected by reference, must outlive the machine.
+ * Optional per-edge hooks, each detected by a requires-expression, run in
+ * observer parameter order (place fsm::timed before value observers):
+ *   template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+ *   void on_exit_state(MACHINE&);  - transition fires, old state still alive
+ *   void on_enter_state(MACHINE&); - new state emplaced, before on_entry();
+ *                                    on construction with OLD = mtl::nil_type
+ * Value observation with change suppression: see fsm::observing below.
  */
 
 #pragma once
@@ -71,7 +43,6 @@
 
 namespace fsm {
 
-// Named parameters for a transition
 template<typename STATE>
 struct from {};
 
@@ -109,8 +80,8 @@ template<>           struct unwrap<mtl::nil_type> { using type = mtl::nil_type; 
 
 namespace concepts {
 
-// Guard contract: called with the transition's from-state for conditions on
-// state data, or with no arguments for state-independent conditions.
+// check(from_state) for conditions on state data, check() for
+// state-independent ones
 template<typename GUARD, typename STATE>
 concept guard = requires(STATE const& state) {
     { GUARD::check(state) } -> std::convertible_to<bool>;
@@ -120,8 +91,7 @@ concept guard = requires(STATE const& state) {
 
 } // namespace concepts
 
-// One entry of the transition table. The named arguments may appear in any
-// order: transition<from<a>, on<e>, to<b>> == transition<on<e>, to<b>, from<a>>
+// The named arguments may appear in any order
 template<typename... ARGs>
 struct transition {
 private:
@@ -141,8 +111,7 @@ public:
     using from  = typename internal::unwrap<mtl::find_if_t<args, internal::is_from>>::type;
     using event = typename internal::unwrap<mtl::find_if_t<args, internal::is_on>>::type;
     using to    = typename internal::unwrap<mtl::find_if_t<args, internal::is_to>>::type;
-    // mtl::nil_type when the transition has no guard
-    using guard = typename internal::unwrap<mtl::find_if_t<args, internal::is_guard>>::type;
+    using guard = typename internal::unwrap<mtl::find_if_t<args, internal::is_guard>>::type; // nil_type if absent
 
 private:
     static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard<guard, from>,
@@ -153,7 +122,6 @@ private:
 // Event injected by the timer policy when a state's timeout expires
 struct timeout {};
 
-// Signature of the expiry callback a timer policy has to store and invoke
 using timer_callback = void (*)(void*);
 
 namespace concepts {
@@ -167,37 +135,8 @@ concept timer = requires(T t, std::chrono::milliseconds duration,
 
 } // namespace concepts
 
-// CRTP convenience base for the common observer that watches one static
-// constexpr member. The derived observer names the member once, in a getter
-// with a trailing return type:
-//
-//   struct lamp_driver : fsm::observing<lamp_driver> {
-//       static constexpr auto observe(auto const& state) -> decltype(state.lamps)
-//       {
-//           return state.lamps;
-//       }
-//       void notify(lamps_t const& lamps);
-//   };
-//
-// The trailing return type is what makes states without the member drop out:
-// substitution fails in the immediate context, so annotation() below is
-// simply not provided for them - no requires-clause needed in the derived
-// class. The state is default-constructed to evaluate the getter at compile
-// time; states must therefore be constexpr default-constructible (the
-// machine already requires them to be default-constructible).
-template<typename DERIVED>
-struct observing {
-    template<typename STATE>
-    static constexpr auto annotation()
-        requires requires(STATE const& state) { DERIVED::observe(state); }
-    {
-        return DERIVED::observe(STATE{});
-    }
-};
-
 namespace internal {
 
-// Rebind a mtl::typelist into a std::variant
 template<mtl::concepts::typelist LIST>
 struct to_variant;
 
@@ -209,18 +148,12 @@ struct to_variant<mtl::typelist<ELEMENTs...>> {
 template<mtl::concepts::typelist LIST>
 using to_variant_t = typename to_variant<LIST>::type;
 
-// Optional drop-in replacement for std::visit (swap the std::visit call
-// site below to internal::visit). Expands to an index-compare chain the
-// optimizer folds into a switch: every visitor instantiation is inlinable,
-// no function-pointer table can be emitted, and there is no
-// valueless_by_exception path (the machine's variant only holds
-// nothrow-constructible states and can never become valueless; the last
-// alternative is therefore dispatched unconditionally).
-// Measured on GCC 13 / x86-64 at -Os: std::visit already compiles to a
-// switch with no table and no bad_variant_access code, and is 96 bytes
-// SMALLER than this chain - hence std::visit is the default. Use this
-// alternative if your toolchain (e.g. clang/libc++, older GCC) emits
-// function-pointer tables or pulls in the throw machinery for std::visit.
+// Optional drop-in for the std::visit call in process(), for toolchains
+// where std::visit emits a function-pointer table or bad_variant_access
+// handling (e.g. clang/libc++, older GCC). The last alternative dispatches
+// unconditionally: the variant only holds nothrow-constructible states and
+// can never be valueless. On GCC 13 x86-64 -Os std::visit is 96 bytes
+// smaller than this chain - hence it is the default.
 template<std::size_t INDEX = 0, typename VISITOR, typename VARIANT>
 constexpr decltype(auto) visit(VISITOR&& visitor, VARIANT& variant)
 {
@@ -235,9 +168,6 @@ constexpr decltype(auto) visit(VISITOR&& visitor, VARIANT& variant)
     }
 }
 
-// Predicate factory: matches<FROM, EVENT>::pred<TRANSITION> is true if
-// TRANSITION handles EVENT in state FROM. Usable with mtl::find_if /
-// mtl::count_if.
 template<typename FROM, typename EVENT>
 struct matches {
     template<typename TRANSITION>
@@ -251,7 +181,6 @@ inline constexpr bool has_timeout_v = requires { STATE::timeout; };
 template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
 
-// Evaluate a transition's guard role against the current (from) state.
 template<typename GUARD, typename STATE>
 bool check_guard([[maybe_unused]] STATE const& state)
 {
@@ -262,39 +191,124 @@ bool check_guard([[maybe_unused]] STATE const& state)
     }
 }
 
-// Does OBSERVER observe STATE, i.e. does annotation<STATE>() exist?
 template<typename OBSERVER, typename STATE>
 inline constexpr bool observes_v = requires { OBSERVER::template annotation<STATE>(); };
 
 } // namespace internal
 
+// Value observer base: the derived class names the watched member once and
+// provides notify_entry(value) (new state's value) and/or notify_exit(value)
+// (old state's value, old state still alive), each optional:
+//
+//   struct lamp_driver : fsm::observing<lamp_driver> {
+//       static constexpr auto observe(auto const& state) -> decltype(state.lamps)
+//       {
+//           return state.lamps;
+//       }
+//       void notify_entry(lamps_t const& lamps);
+//   };
+//
+// The trailing return type makes states without the member drop out via
+// SFINAE; a custom annotation<STATE>() may replace observe(). The change
+// check runs at compile time: edges between equal values emit no code.
+// Observed states must be constexpr default-constructible.
+template<typename DERIVED>
+struct observing {
+    template<typename STATE>
+    static constexpr auto annotation()
+        requires requires(STATE const& state) { DERIVED::observe(state); }
+    {
+        return DERIVED::observe(STATE{});
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void on_exit_state(MACHINE&)
+    {
+        if constexpr (annotation_changes<OLD_STATE, NEW_STATE>()) {
+            auto& self = static_cast<DERIVED&>(*this);
+            if constexpr (requires { self.notify_exit(DERIVED::template annotation<OLD_STATE>()); }) {
+                self.notify_exit(DERIVED::template annotation<OLD_STATE>());
+            }
+        }
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void on_enter_state(MACHINE&)
+    {
+        if constexpr (annotation_changes<NEW_STATE, OLD_STATE>()) {
+            auto& self = static_cast<DERIVED&>(*this);
+            if constexpr (requires { self.notify_entry(DERIVED::template annotation<NEW_STATE>()); }) {
+                self.notify_entry(DERIVED::template annotation<NEW_STATE>());
+            }
+        }
+    }
+
+private:
+    template<typename STATE, typename OTHER>
+    static constexpr bool annotation_changes()
+    {
+        if constexpr (!internal::observes_v<DERIVED, STATE>) {
+            return false;
+        } else if constexpr (!internal::observes_v<DERIVED, OTHER>) {
+            return true;
+        } else {
+            return DERIVED::template annotation<STATE>() != DERIVED::template annotation<OTHER>();
+        }
+    }
+};
+
+// Observer implementing the state-timeout semantics on top of a TIMER policy
+template<concepts::timer TIMER>
+struct timed {
+    static constexpr bool handles_timeout = true;
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void on_exit_state(MACHINE&)
+    {
+        if constexpr (internal::has_timeout_v<OLD_STATE>) {
+            timer.stop(); // no timer may fire mid-transition
+        }
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void on_enter_state(MACHINE& machine)
+    {
+        if constexpr (internal::has_timeout_v<NEW_STATE>) {
+            timer.start(
+                std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::timeout),
+                [](void* context) {
+                    static_cast<MACHINE*>(context)->process(timeout{});
+                },
+                &machine);
+        }
+    }
+
+    TIMER timer{};
+};
+
 template<typename... TRANSITIONs>
 struct transition_table {
     using transitions = mtl::typelist<TRANSITIONs...>;
 
-    // Every (from, event) pair must be unambiguous
     static_assert(((mtl::count_if_v<transitions,
                         internal::matches<typename TRANSITIONs::from,
                                           typename TRANSITIONs::event>::template pred> == 1) && ...),
                   "transition_table: duplicate (state, event) pair");
 
-    // All states of the table, deduplicated, in order of first appearance.
+    // Deduplicated in order of first appearance: front is the initial state
     using states = mtl::unique_t<
         mtl::typelist<typename TRANSITIONs::from..., typename TRANSITIONs::to...>>;
 
-    // First transition matching (FROM, EVENT), or mtl::nil_type if the pair
-    // is not in the table.
+    // mtl::nil_type if the pair is not in the table
     template<typename FROM, typename EVENT>
     using find_transition =
         mtl::find_if_t<transitions, internal::matches<FROM, EVENT>::template pred>;
 };
 
-template<typename TRANSITION_TABLE, concepts::timer TIMER, typename... OBSERVERs>
+template<typename TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {
     using TRANSITIONS = TRANSITION_TABLE;
 
-    // A state with a timeout but no transition for fsm::timeout is a bug:
-    // the timer would fire into a table that ignores it.
     template<typename STATE>
     struct timed_state_handled
         : std::bool_constant<
@@ -304,28 +318,29 @@ class state_machine {
     static_assert(mtl::all_of_v<typename TRANSITIONS::states, timed_state_handled>,
                   "state_machine: state has a timeout but no transition for fsm::timeout");
 
+    template<typename STATE>
+    struct is_timed : std::bool_constant<internal::has_timeout_v<STATE>> {};
+
+    template<typename OBSERVER>
+    static constexpr bool handles_timeout_v = requires { requires OBSERVER::handles_timeout; };
+
+    static_assert(mtl::count_if_v<typename TRANSITIONS::states, is_timed> == 0U ||
+                      (handles_timeout_v<OBSERVERs> || ...),
+                  "state_machine: table has timed states but no timeout-capable "
+                  "observer (inject fsm::timed<TIMER>)");
+
 public:
     using state_variant = internal::to_variant_t<typename TRANSITIONS::states>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
-    state_machine()
-        requires (sizeof...(OBSERVERs) == 0) && std::is_default_constructible_v<TIMER>
-        : state_machine(TIMER{})
+    explicit state_machine(OBSERVERs&... observers)
+        : observers_(observers...)
     {
+        this->template enter<mtl::nil_type, initial_state>();
     }
 
-    // Observers are injected by reference and must outlive the state machine.
-    explicit state_machine(TIMER timer, OBSERVERs&... observers)
-        : timer_(std::move(timer)), observers_(observers...)
-    {
-        this->template enter<mtl::nil_type, initial_state>(); // observers get the initial value
-    }
-
-    // Feed an event through the table. Returns true if a transition fired
-    // (false: no matching transition, or its guard said no). The visitor
-    // only selects and evaluates the guard; the transition body lives in
-    // the per-edge function do_transition<OLD, NEW>, shared by all events
-    // that trigger the same edge.
+    // Returns true if a transition fired (false: no matching transition, or
+    // its guard said no)
     template<typename EVENT>
     bool process(EVENT const&)
     {
@@ -334,11 +349,11 @@ public:
                 using state_type = std::decay_t<decltype(state)>;
                 using matched = typename TRANSITIONS::template find_transition<state_type, EVENT>;
                 if constexpr (std::is_same_v<matched, mtl::nil_type>) {
-                    return false; // this state ignores this event
+                    return false;
                 } else {
                     if constexpr (internal::has_guard_v<matched>) {
                         if (!internal::check_guard<typename matched::guard>(state)) {
-                            return false; // guard blocked the transition
+                            return false;
                         }
                     }
                     return this->template do_transition<state_type, typename matched::to>();
@@ -353,42 +368,38 @@ public:
         return std::holds_alternative<STATE>(current_);
     }
 
-    // Access the current state object for a given type (e.g. to read outputs)
     template<typename STATE>
     [[nodiscard]] STATE* get_if()
     {
         return std::get_if<STATE>(&current_);
     }
 
-    // Access the timer policy (e.g. for configuration or tests)
-    [[nodiscard]] TIMER& timer() { return timer_; }
-
 private:
-    // Notify one observer if NEW_STATE carries its annotation and the value
-    // changed relative to OLD_STATE (or OLD_STATE had none). The comparison
-    // happens at compile time: unchanged annotations generate no code.
     template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER>
-    void notify(OBSERVER& observer)
+    void exit_hook(OBSERVER& observer)
     {
-        if constexpr (internal::observes_v<OBSERVER, NEW_STATE>) {
-            if constexpr (!internal::observes_v<OBSERVER, OLD_STATE>) {
-                observer.notify(OBSERVER::template annotation<NEW_STATE>());
-            } else if constexpr (OBSERVER::template annotation<OLD_STATE>() !=
-                                 OBSERVER::template annotation<NEW_STATE>()) {
-                observer.notify(OBSERVER::template annotation<NEW_STATE>());
-            }
+        if constexpr (requires { observer.template on_exit_state<OLD_STATE, NEW_STATE>(*this); }) {
+            observer.template on_exit_state<OLD_STATE, NEW_STATE>(*this);
         }
     }
 
-    // Transition body, instantiated once per (OLD_STATE, NEW_STATE) edge of
-    // the table - independent of the triggering event: all events that
-    // trigger the same edge share this instantiation.
+    template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER>
+    void enter_hook(OBSERVER& observer)
+    {
+        if constexpr (requires { observer.template on_enter_state<OLD_STATE, NEW_STATE>(*this); }) {
+            observer.template on_enter_state<OLD_STATE, NEW_STATE>(*this);
+        }
+    }
+
+    // Instantiated per edge, not per event: all events triggering the same
+    // edge share one instantiation
     template<typename OLD_STATE, typename NEW_STATE>
     bool do_transition()
     {
-        if constexpr (internal::has_timeout_v<OLD_STATE>) {
-            timer_.stop(); // no timer may fire mid-transition
-        }
+        std::apply([this](auto&... observer) {
+                       (exit_hook<OLD_STATE, NEW_STATE>(observer), ...);
+                   },
+                   observers_);
         if constexpr (requires(OLD_STATE& state) { state.on_exit(); }) {
             std::get_if<OLD_STATE>(&current_)->on_exit();
         }
@@ -397,21 +408,11 @@ private:
         return true;
     }
 
-    // Entry into NEW_STATE: both endpoints are statically known, so no
-    // visit is needed here.
     template<typename OLD_STATE, typename NEW_STATE>
     void enter()
     {
-        if constexpr (internal::has_timeout_v<NEW_STATE>) {
-            timer_.start(
-                std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::timeout),
-                [](void* context) {
-                    static_cast<state_machine*>(context)->process(timeout{});
-                },
-                this);
-        }
         std::apply([this](auto&... observer) {
-                       (notify<OLD_STATE, NEW_STATE>(observer), ...);
+                       (enter_hook<OLD_STATE, NEW_STATE>(observer), ...);
                    },
                    observers_);
         if constexpr (requires(NEW_STATE& state) { state.on_entry(); }) {
@@ -420,7 +421,6 @@ private:
     }
 
     state_variant current_{}; // default-constructs the initial state
-    TIMER timer_;
     std::tuple<OBSERVERs&...> observers_;
 };
 
