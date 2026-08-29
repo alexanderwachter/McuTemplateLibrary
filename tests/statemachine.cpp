@@ -51,7 +51,7 @@ struct outputs_t {
 };
 
 // Records notifications for the checks below; uses the hand-written
-// annotation() form (instead of observe()) to keep it covered
+// annotation() form (instead of observe_static()) to keep it covered
 struct output_controller : fsm::observing<output_controller> {
     template<typename STATE>
     static constexpr auto annotation() requires requires { STATE::outputs; }
@@ -237,6 +237,20 @@ namespace Payload {
 
         std::vector<int> transmitted;
     };
+
+    // observing-based counterpart to tx_driver: names the watched member
+    // once, gets the live payload without get_if plumbing
+    struct live_driver : fsm::observing<live_driver> {
+        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.msg))
+        {
+            return state.msg;
+        }
+        void notify_entry(message const& msg) { entered.push_back(msg.id); }
+        void notify_exit(message const& msg) { exited.push_back(msg.id); }
+
+        std::vector<int> entered;
+        std::vector<int> exited;
+    };
 } // namespace Payload
 
 // --- runtime checks ---------------------------------------------------------
@@ -402,6 +416,25 @@ void event_payload_constructs_target_state()
     check(sm.is<idle>());
 }
 
+void live_observation_delivers_instance_values()
+{
+    using namespace Payload;
+
+    live_driver driver;
+    fsm::state_machine<tbl, live_driver> sm{driver};
+
+    check(sm.process(send{.msg = {.id = 7}}));
+    check(driver.entered.size() == 1 && driver.entered.back() == 7);
+    check(driver.exited.empty()); // idle has no msg: exit hook dropped out
+
+    check(sm.process(cancel{}));
+    check(driver.exited.size() == 1 && driver.exited.back() == 7);
+
+    // an equal value notifies again: live observation has no suppression
+    check(sm.process(send{.msg = {.id = 7}}));
+    check(driver.entered.size() == 2 && driver.entered.back() == 7);
+}
+
 void payload_reaches_observer_through_state()
 {
     using namespace Payload;
@@ -546,6 +579,7 @@ int statemachine_tests()
     any_state_reaches_target_from_everywhere();
     event_payload_constructs_target_state();
     payload_reaches_observer_through_state();
+    live_observation_delivers_instance_values();
     machine_with_only_a_timer_observer();
     entry_and_exit_hooks();
     guard_blocks_and_allows();

@@ -299,7 +299,7 @@ inline constexpr bool observes_v = requires { OBSERVER::template annotation<STAT
 // (old state's value, old state still alive), each optional:
 //
 //   struct lamp_driver : fsm::observing<lamp_driver> {
-//       static constexpr auto observe(auto const& state) -> decltype(state.lamps)
+//       static constexpr auto observe_static(auto const& state) -> decltype(state.lamps)
 //       {
 //           return state.lamps;
 //       }
@@ -307,37 +307,66 @@ inline constexpr bool observes_v = requires { OBSERVER::template annotation<STAT
 //   };
 //
 // The trailing return type makes states without the member drop out via
-// SFINAE; a custom annotation<STATE>() may replace observe(). The change
+// SFINAE; a custom annotation<STATE>() may replace observe_static(). The change
 // check runs at compile time: edges between equal values emit no code.
 // Observed states must be constexpr default-constructible.
+//
+// observe_static() is for static constexpr members: the value depends on
+// the state type only, so it is read off a default-constructed probe and
+// equal-value edges are elided at compile time. For a non-static member
+// (e.g. an event payload delivered into the state) provide
+// observe_nonstatic() instead: it reads the current state instance, and
+// the notify hooks run on every edge into/out of an observing state -
+// per-instance values cannot be change-suppressed:
+//
+//   struct phy_driver : fsm::observing<phy_driver> {
+//       static constexpr auto observe_nonstatic(auto const& state)
+//           -> decltype((state.tx_message))
+//       {
+//           return state.tx_message;
+//       }
+//       void notify_entry(message_t const& message); // hand to hardware
+//   };
 template<typename DERIVED>
 struct observing {
     template<typename STATE>
     static constexpr auto annotation()
-        requires requires(STATE const& state) { DERIVED::observe(state); }
+        requires requires(STATE const& state) { DERIVED::observe_static(state); }
     {
-        return DERIVED::observe(STATE{});
+        return DERIVED::observe_static(STATE{});
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_exit_state(MACHINE&)
+    void on_exit_state(MACHINE& machine)
     {
+        auto& self = static_cast<DERIVED&>(*this);
         if constexpr (annotation_changes<OLD_STATE, NEW_STATE>()) {
-            auto& self = static_cast<DERIVED&>(*this);
             if constexpr (requires { self.notify_exit(DERIVED::template annotation<OLD_STATE>()); }) {
                 self.notify_exit(DERIVED::template annotation<OLD_STATE>());
             }
         }
+        if constexpr (requires {
+                          self.notify_exit(
+                              DERIVED::observe_nonstatic(*machine.template get_if<OLD_STATE>()));
+                      }) {
+            self.notify_exit(DERIVED::observe_nonstatic(*machine.template get_if<OLD_STATE>()));
+        }
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_enter_state(MACHINE&)
+    void on_enter_state(MACHINE& machine)
     {
+        auto& self = static_cast<DERIVED&>(*this);
         if constexpr (annotation_changes<NEW_STATE, OLD_STATE>()) {
-            auto& self = static_cast<DERIVED&>(*this);
             if constexpr (requires { self.notify_entry(DERIVED::template annotation<NEW_STATE>()); }) {
                 self.notify_entry(DERIVED::template annotation<NEW_STATE>());
             }
+        }
+        if constexpr (requires {
+                          self.notify_entry(
+                              DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
+                      }) {
+            self.notify_entry(DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
         }
     }
 
