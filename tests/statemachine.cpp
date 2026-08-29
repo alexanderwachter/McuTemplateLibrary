@@ -253,6 +253,49 @@ namespace Payload {
     };
 } // namespace Payload
 
+namespace Context {
+    struct attempt_log {
+        int attempts = 0;
+        int payload  = 0;
+    };
+
+    struct start { int payload; };
+    struct fail {};
+    struct done {};
+    struct restart {};
+
+    struct idle {}; // no context
+
+    struct trying {
+        static constexpr auto timeout = 50ms;
+
+        trying(start const& event, attempt_log& log) : context(log)
+        {
+            context.attempts = 1;
+            context.payload  = event.payload;
+        }
+        explicit trying(attempt_log& log) : context(log) { ++context.attempts; }
+
+        attempt_log& context;
+    };
+
+    struct succeeded { // same context type as trying: shared instance
+        explicit succeeded(attempt_log& log) : context(log) {}
+        attempt_log& context;
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>,    fsm::on<start>,        fsm::to<trying>>,
+        fsm::transition<fsm::from<trying>,  fsm::on<fsm::timeout>, fsm::to<trying>>,
+        fsm::transition<fsm::from<trying>,  fsm::on<fail>,         fsm::to<trying>>,
+        fsm::transition<fsm::from<trying>,  fsm::on<done>,         fsm::to<succeeded>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<restart>, fsm::to<idle>>>;
+
+    // context states need no default constructor
+    static_assert(!std::default_initializable<trying>);
+    static_assert(fsm::concepts::state<trying>);
+} // namespace Context
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {
@@ -565,6 +608,56 @@ void raw_hook_observer_sees_every_transition()
 
 } // namespace
 
+void context_is_machine_owned_and_shared()
+{
+    using namespace Context;
+    fsm::state_machine<tbl> sm; // timeout in trying stays unobserved: no timer injected
+
+    check(sm.process(start{.payload = 7}));
+    auto const* log = &sm.get_if<trying>()->context;
+    check(log->attempts == 1 && log->payload == 7);
+
+    check(sm.process(fail{})); // re-entry: fresh state object, same context
+    check(&sm.get_if<trying>()->context == log);
+    check(log->attempts == 2 && log->payload == 7);
+
+    check(sm.process(done{})); // succeeded names the same context type
+    check(&sm.get_if<succeeded>()->context == log);
+    check(log->attempts == 2);
+
+    check(sm.process(restart{})); // context also outlives contextless states
+    check(sm.process(start{.payload = 9}));
+    check(log->attempts == 1 && log->payload == 9);
+}
+
+void context_survives_timeout_retry()
+{
+    using namespace Context;
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<tbl, fsm::timed<manual_timer>> sm{tim};
+
+    check(sm.process(start{.payload = 3}));
+    check(tim.timer.armed);
+
+    tim.timer.expire(); // the retry loses neither payload nor attempt count
+    check(sm.is<trying>());
+    check(sm.get_if<trying>()->context.attempts == 2);
+    check(sm.get_if<trying>()->context.payload == 3);
+    check(tim.timer.armed); // re-armed for the next attempt
+}
+
+void context_initial_state()
+{
+    using namespace Context;
+    using tbl2 = fsm::transition_table<
+        fsm::initial<trying>,
+        fsm::transition<fsm::from<trying>, fsm::on<done>, fsm::to<succeeded>>>;
+    fsm::state_machine<tbl2> sm; // initial state constructed from its context
+
+    check(sm.is<trying>());
+    check(sm.get_if<trying>()->context.attempts == 1);
+}
+
 int statemachine_tests()
 {
     initial_state_and_notification();
@@ -584,5 +677,8 @@ int statemachine_tests()
     entry_and_exit_hooks();
     guard_blocks_and_allows();
     raw_hook_observer_sees_every_transition();
+    context_is_machine_owned_and_shared();
+    context_survives_timeout_retry();
+    context_initial_state();
     return failures;
 }

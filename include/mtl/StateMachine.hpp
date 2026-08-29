@@ -14,6 +14,16 @@
  * the machine, so e.g. a driver observer can read the delivered payload
  * through machine.get_if<NEW_STATE>().
  *
+ * States may keep data in machine-owned context that survives
+ * transitions: a state declaring a reference member named context is
+ * constructed with a reference to the matching context instance -
+ * (event, context) when such a constructor exists, (context) alone
+ * otherwise, which every context state must provide. The machine
+ * value-initializes one instance per distinct context type; states
+ * naming the same type share the instance, and its data persists across
+ * arbitrary transitions for the machine's lifetime. Context types must
+ * be default constructible; context states need no default constructor.
+ *
  * A guard gates the single transition it is attached to ((state, event)
  * pairs stay unique). check() returning false blocks it: process() returns
  * false, no exit/entry/hook runs, a running timeout timer keeps running,
@@ -64,12 +74,47 @@ struct any_state {};
 // Event injected by the timer policy when a state's timeout expires
 struct timeout {};
 
+namespace internal {
+
+// A state opts into machine-owned context by holding a reference
+// member named context, initialized by its constructors
+template<typename T>
+concept context_holder = requires { T::context; } && std::is_reference_v<decltype(T::context)>;
+
+template<typename STATE>
+struct has_context : std::bool_constant<context_holder<STATE>> {};
+
+template<context_holder STATE>
+struct context_of : std::type_identity<std::remove_reference_t<decltype(STATE::context)>> {};
+
+template<context_holder STATE>
+using context_of_t = typename context_of<STATE>::type;
+
+// Arguments constructing STATE in place inside a variant. The tuple
+// round-trip through make_from_tuple is free: its prvalue is elided
+// into the variant (measured GCC 15 -Os: direct stores, no tuple, no
+// move)
+template<typename STATE, typename CONTEXT_TUPLE>
+constexpr auto initial_args(CONTEXT_TUPLE& contexts)
+{
+    if constexpr (context_holder<STATE>) {
+        return std::forward_as_tuple(std::in_place_type<STATE>,
+                                     std::get<context_of_t<STATE>>(contexts));
+    } else {
+        return std::make_tuple(std::in_place_type<STATE>);
+    }
+}
+
+} // namespace internal
+
 namespace concepts {
 
 // States are classes; on entry they are constructed from the triggering
-// event if such a constructor exists, default-constructed otherwise
+// event if such a constructor exists, default-constructed otherwise.
+// Context states are constructed with their context instead.
 template<typename T>
-concept state = std::is_class_v<T> && std::default_initializable<T>;
+concept state = std::is_class_v<T> &&
+                (std::default_initializable<T> || internal::context_holder<T>);
 
 } // namespace concepts
 
@@ -292,6 +337,18 @@ bool check_guard([[maybe_unused]] STATE const& state)
 template<typename OBSERVER, typename STATE>
 inline constexpr bool observes_v = requires { OBSERVER::template annotation<STATE>(); };
 
+template<typename OBSERVER, typename STATE, typename OTHER>
+constexpr bool annotation_changes()
+{
+    if constexpr (!observes_v<OBSERVER, STATE>) {
+        return false;
+    } else if constexpr (!observes_v<OBSERVER, OTHER>) {
+        return true;
+    } else {
+        return OBSERVER::template annotation<STATE>() != OBSERVER::template annotation<OTHER>();
+    }
+}
+
 } // namespace internal
 
 // Value observer base: the derived class names the watched member once and
@@ -340,7 +397,7 @@ struct observing {
     void on_exit_state(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (annotation_changes<OLD_STATE, NEW_STATE>()) {
+        if constexpr (internal::annotation_changes<DERIVED, OLD_STATE, NEW_STATE>()) {
             if constexpr (requires { self.notify_exit(DERIVED::template annotation<OLD_STATE>()); }) {
                 self.notify_exit(DERIVED::template annotation<OLD_STATE>());
             }
@@ -357,7 +414,7 @@ struct observing {
     void on_enter_state(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (annotation_changes<NEW_STATE, OLD_STATE>()) {
+        if constexpr (internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>()) {
             if constexpr (requires { self.notify_entry(DERIVED::template annotation<NEW_STATE>()); }) {
                 self.notify_entry(DERIVED::template annotation<NEW_STATE>());
             }
@@ -367,19 +424,6 @@ struct observing {
                               DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
                       }) {
             self.notify_entry(DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
-        }
-    }
-
-private:
-    template<typename STATE, typename OTHER>
-    static constexpr bool annotation_changes()
-    {
-        if constexpr (!internal::observes_v<DERIVED, STATE>) {
-            return false;
-        } else if constexpr (!internal::observes_v<DERIVED, OTHER>) {
-            return true;
-        } else {
-            return DERIVED::template annotation<STATE>() != DERIVED::template annotation<OTHER>();
         }
     }
 };
@@ -464,27 +508,66 @@ public:
         find_exact<FROM, EVENT>>;
 };
 
+namespace internal {
+
+template<typename OBSERVER, typename TABLE>
+constexpr bool validated()
+{
+    if constexpr (requires { OBSERVER::template validate<TABLE>(); }) {
+        OBSERVER::template validate<TABLE>();
+    }
+    return true;
+}
+
+template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER, typename MACHINE>
+void exit_hook(OBSERVER& observer, MACHINE& machine)
+{
+    if constexpr (requires { observer.template on_exit_state<OLD_STATE, NEW_STATE>(machine); }) {
+        observer.template on_exit_state<OLD_STATE, NEW_STATE>(machine);
+    }
+}
+
+template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER, typename MACHINE>
+void enter_hook(OBSERVER& observer, MACHINE& machine)
+{
+    if constexpr (requires { observer.template on_enter_state<OLD_STATE, NEW_STATE>(machine); }) {
+        observer.template on_enter_state<OLD_STATE, NEW_STATE>(machine);
+    }
+}
+
+} // namespace internal
+
 template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {
     using TRANSITIONS = TRANSITION_TABLE;
 
-    template<typename OBSERVER>
-    static constexpr bool validated()
-    {
-        if constexpr (requires { OBSERVER::template validate<TRANSITIONS>(); }) {
-            OBSERVER::template validate<TRANSITIONS>();
-        }
-        return true;
-    }
     // Observers get a chance to reject the table at compile time
-    static_assert((validated<OBSERVERs>() && ...));
+    static_assert((internal::validated<OBSERVERs, TRANSITIONS>() && ...));
 
 public:
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
+private:
+    using context_states = mtl::filter_t<typename TRANSITIONS::states, internal::has_context>;
+    // Deduplicated: states naming the same context type share one instance
+    using context_types = mtl::unique_t<mtl::transform_t<context_states, internal::context_of>>;
+    using context_tuple = mtl::rebind_t<context_types, std::tuple>;
+
+    static_assert(mtl::all_of_v<context_types, std::is_default_constructible>,
+                  "state_machine: context types must be default constructible");
+
+    template<typename STATE>
+    struct constructible_from_context
+        : std::bool_constant<std::constructible_from<STATE, internal::context_of_t<STATE>&>> {};
+    static_assert(mtl::all_of_v<context_states, constructible_from_context>,
+                  "state_machine: a context state must be constructible from its context alone");
+
+public:
     explicit state_machine(OBSERVERs&... observers)
-        : observers_(observers...)
+        : observers_(observers...),
+          current_(std::make_from_tuple<state_variant>(
+              internal::initial_args<initial_state>(contexts_)))
     {
         this->template enter<mtl::nil_type, initial_state>();
     }
@@ -539,22 +622,6 @@ public:
     }
 
 private:
-    template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER>
-    void exit_hook(OBSERVER& observer)
-    {
-        if constexpr (requires { observer.template on_exit_state<OLD_STATE, NEW_STATE>(*this); }) {
-            observer.template on_exit_state<OLD_STATE, NEW_STATE>(*this);
-        }
-    }
-
-    template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER>
-    void enter_hook(OBSERVER& observer)
-    {
-        if constexpr (requires { observer.template on_enter_state<OLD_STATE, NEW_STATE>(*this); }) {
-            observer.template on_enter_state<OLD_STATE, NEW_STATE>(*this);
-        }
-    }
-
     // Thin per-(edge, event) wrapper: only the emplace depends on the
     // event; the shared bodies live in leave()/enter(), instantiated per
     // edge and shared by all events triggering the same edge
@@ -562,7 +629,14 @@ private:
     bool do_transition(EVENT const& event)
     {
         this->template leave<OLD_STATE, NEW_STATE>();
-        if constexpr (std::constructible_from<NEW_STATE, EVENT const&>) {
+        if constexpr (internal::context_holder<NEW_STATE>) {
+            auto& context = std::get<internal::context_of_t<NEW_STATE>>(contexts_);
+            if constexpr (std::constructible_from<NEW_STATE, EVENT const&, decltype(context)>) {
+                current_.template emplace<NEW_STATE>(event, context); // payload delivery
+            } else {
+                current_.template emplace<NEW_STATE>(context);
+            }
+        } else if constexpr (std::constructible_from<NEW_STATE, EVENT const&>) {
             current_.template emplace<NEW_STATE>(event); // payload delivery
         } else {
             current_.template emplace<NEW_STATE>();
@@ -575,7 +649,7 @@ private:
     void leave()
     {
         std::apply([this](auto&... observer) {
-                       (exit_hook<OLD_STATE, NEW_STATE>(observer), ...);
+                       (internal::exit_hook<OLD_STATE, NEW_STATE>(observer, *this), ...);
                    },
                    observers_);
         if constexpr (requires(OLD_STATE& state) { state.on_exit(); }) {
@@ -587,7 +661,7 @@ private:
     void enter()
     {
         std::apply([this](auto&... observer) {
-                       (enter_hook<OLD_STATE, NEW_STATE>(observer), ...);
+                       (internal::enter_hook<OLD_STATE, NEW_STATE>(observer, *this), ...);
                    },
                    observers_);
         if constexpr (requires(NEW_STATE& state) { state.on_entry(); }) {
@@ -595,8 +669,9 @@ private:
         }
     }
 
-    state_variant current_{}; // default-constructs the initial state
+    context_tuple contexts_{}; // one shared instance per distinct context type
     std::tuple<OBSERVERs&...> observers_;
+    state_variant current_; // constructed by the constructor via initial_args()
 };
 
 } // namespace fsm
