@@ -60,13 +60,19 @@ void write_dot_node(std::ostream& out)
 template<typename TRANSITION>
 void write_dot_edge(std::ostream& out)
 {
-    out << "    \"" << label<typename TRANSITION::from>() << "\" -> \""
-        << label<typename TRANSITION::to>() << "\" [label=\""
-        << label<typename TRANSITION::event>();
+    // an internal transition renders as a dashed self-edge
+    using to = std::conditional_t<is_internal_v<TRANSITION>, typename TRANSITION::from,
+                                  typename TRANSITION::to>;
+    out << "    \"" << label<typename TRANSITION::from>() << "\" -> \"" << label<to>()
+        << "\" [label=\"" << label<typename TRANSITION::event>();
     if constexpr (has_guard_v<TRANSITION>) {
         out << "\\n[" << label<typename TRANSITION::guard>() << ']';
     }
-    out << "\"];\n";
+    if constexpr (is_internal_v<TRANSITION>) {
+        out << "\\n(internal)\" style=dashed];\n";
+    } else {
+        out << "\"];\n";
+    }
 }
 
 template<typename STATES, typename TRANSITIONS>

@@ -50,11 +50,10 @@ struct outputs_t {
     constexpr bool operator==(outputs_t const&) const = default;
 };
 
-// Records notifications for the checks below; uses the hand-written
-// annotation() form (instead of observe_static()) to keep it covered
+// Records notifications for the checks below
 struct output_controller : fsm::observing<output_controller> {
     template<typename STATE>
-    static constexpr auto annotation() requires requires { STATE::outputs; }
+    static constexpr auto observe_static() -> decltype(STATE::outputs)
     {
         return STATE::outputs;
     }
@@ -295,6 +294,59 @@ namespace Context {
     static_assert(!std::default_initializable<trying>);
     static_assert(fsm::concepts::state<trying>);
 } // namespace Context
+
+namespace Internal {
+    struct tick {};
+    struct note {
+        int value;
+    };
+
+    struct log {
+        int noted = 0;
+    };
+
+    struct waiting {
+        static constexpr auto timeout = 50ms;
+
+        explicit waiting(log& l) : context(l) {}
+        void handle(note const& event) { context.noted = event.value; }
+        void handle(tick const&) {} // consumed without effect while noted
+
+        log& context;
+    };
+    struct done {};
+
+    struct already_noted {
+        static bool check(waiting const& state) { return state.context.noted != 0; }
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<waiting>, fsm::on<fsm::timeout>, fsm::to<done>>,
+        fsm::internal_transition<fsm::from<waiting>, fsm::on<note>>,
+        // internal and regular transitions group as alternatives
+        fsm::transition<fsm::from<done>, fsm::on<tick>, fsm::to<waiting>>,
+        fsm::internal_transition<fsm::from<waiting>, fsm::on<tick>,
+                                 fsm::guard<already_noted>>,
+        fsm::transition<fsm::from<waiting>, fsm::on<tick>, fsm::to<done>>>;
+
+    // internal_target never becomes a state of the table
+    static_assert(std::is_same_v<tbl::states, mtl::typelist<waiting, done>>);
+
+    struct hook_counter {
+        int enters = 0;
+        int exits  = 0;
+        template<typename OLD_STATE, typename NEW_STATE, typename SM>
+        void on_enter_state(SM&)
+        {
+            ++enters;
+        }
+        template<typename OLD_STATE, typename NEW_STATE, typename SM>
+        void on_exit_state(SM&)
+        {
+            ++exits;
+        }
+    };
+} // namespace Internal
 
 namespace Alternatives {
     struct tick {};
@@ -686,6 +738,35 @@ void context_initial_state()
     check(sm.get_if<trying>()->context.attempts == 1);
 }
 
+void internal_transition_handles_in_place()
+{
+    using namespace Internal;
+
+    fsm::timed<manual_timer> tim;
+    hook_counter hooks;
+    fsm::state_machine<tbl, fsm::timed<manual_timer>, hook_counter> sm{tim, hooks};
+
+    check(sm.is<waiting>() && tim.timer.armed);
+    auto const enters_before   = hooks.enters;
+    auto const duration_before = tim.timer.duration;
+
+    check(sm.process(note{.value = 7})); // handled in place
+    check(sm.is<waiting>());
+    check(sm.get_if<waiting>()->context.noted == 7);
+    check(hooks.enters == enters_before && hooks.exits == 0); // no exit/entry ran
+    check(tim.timer.armed && tim.timer.duration == duration_before); // timer untouched
+
+    // the guarded internal alternative wins over the regular fallback
+    check(sm.process(tick{}));
+    check(sm.is<waiting>());
+
+    // with the guard failing, the fallback transition fires
+    sm.get_if<waiting>()->context.noted = 0;
+    check(sm.process(tick{}));
+    check(sm.is<done>());
+    check(!tim.timer.armed);
+}
+
 void guarded_alternatives_first_pass_wins()
 {
     using namespace Alternatives;
@@ -726,5 +807,6 @@ int statemachine_tests()
     context_survives_timeout_retry();
     context_initial_state();
     guarded_alternatives_first_pass_wins();
+    internal_transition_handles_in_place();
     return failures;
 }

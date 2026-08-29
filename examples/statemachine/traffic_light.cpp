@@ -58,9 +58,10 @@ struct lamps_t {
 };
 
 struct lamp_driver : fsm::observing<lamp_driver> {
-    static constexpr auto observe_static(auto const& state) -> decltype(state.lamps)
+    template<typename STATE>
+    static constexpr auto observe_static() -> decltype(STATE::lamps)
     {
-        return state.lamps;
+        return STATE::lamps;
     }
 
     void notify_entry(lamps_t const& lamps)

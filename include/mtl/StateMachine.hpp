@@ -14,6 +14,13 @@
  * the machine, so e.g. a driver observer can read the delivered payload
  * through machine.get_if<NEW_STATE>().
  *
+ * fsm::internal_transition<from<S>, on<E>> handles E in S without a
+ * state change: no exit/entry, no observer hooks, a running timeout
+ * timer is untouched. The current state instance handles the event via
+ * handle(E const&), typically updating its context. A guard applies as
+ * usual and internal transitions group with regular ones as
+ * alternatives; from<any_state> is not supported.
+ *
  * States may keep data in machine-owned context that survives
  * transitions: a state declaring a reference member named context is
  * constructed with a reference to the matching context instance -
@@ -225,6 +232,47 @@ private:
                   "or static bool check()");
 };
 
+// The to-alias of internal transitions: never a state of the table
+struct internal_target {};
+
+// Handles the event inside the from-state instead of transitioning
+template<concepts::transition_role... ROLEs>
+struct internal_transition {
+private:
+    using roles = mtl::typelist<ROLEs...>;
+    static_assert(mtl::count_if_v<roles, internal::is_from> == 1,
+                  "internal_transition: exactly one from<STATE> required");
+    static_assert(mtl::count_if_v<roles, internal::is_on> == 1,
+                  "internal_transition: exactly one on<EVENT> required");
+    static_assert(mtl::count_if_v<roles, internal::is_to> == 0,
+                  "internal_transition: to<STATE> is not allowed");
+    static_assert(mtl::count_if_v<roles, internal::is_guard> <= 1,
+                  "internal_transition: at most one guard<GUARD> allowed");
+
+public:
+    using from  = internal::find_role_t<roles, internal::is_from>;
+    using event = internal::find_role_t<roles, internal::is_on>;
+    using to    = internal_target;
+    using guard = internal::find_role_t<roles, internal::is_guard>; // nil_type if absent
+
+private:
+    static_assert(!std::is_same_v<from, any_state>,
+                  "internal_transition: from<any_state> is not supported");
+    static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard_for<guard, from>,
+                  "internal_transition: guard must provide static bool check(FROM const&) "
+                  "or static bool check()");
+};
+
+namespace internal {
+
+template<typename TRANSITION>
+inline constexpr bool is_internal_v = std::is_same_v<typename TRANSITION::to, internal_target>;
+
+template<typename T>
+struct is_internal_target : std::is_same<T, internal_target> {};
+
+} // namespace internal
+
 using timer_callback = void (*)(void*);
 
 namespace concepts {
@@ -379,21 +427,22 @@ constexpr bool annotation_changes()
 // (old state's value, old state still alive), each optional:
 //
 //   struct lamp_driver : fsm::observing<lamp_driver> {
-//       static constexpr auto observe_static(auto const& state) -> decltype(state.lamps)
+//       template<typename STATE>
+//       static constexpr auto observe_static() -> decltype(STATE::lamps)
 //       {
-//           return state.lamps;
+//           return STATE::lamps;
 //       }
 //       void notify_entry(lamps_t const& lamps);
 //   };
 //
 // The trailing return type makes states without the member drop out via
-// SFINAE; a custom annotation<STATE>() may replace observe_static(). The change
-// check runs at compile time: edges between equal values emit no code.
-// Observed states must be constexpr default-constructible.
+// SFINAE. The change check runs at compile time: edges between equal
+// values emit no code.
 //
-// observe_static() is for static constexpr members: the value depends on
-// the state type only, so it is read off a default-constructed probe and
-// equal-value edges are elided at compile time. For a non-static member
+// observe_static() is for static constexpr members: the value is read at
+// type level - states need not be constructible, and naming a non-static
+// member is a compile error rather than a silently wrong probe value.
+// Equal-value edges are elided at compile time. For a non-static member
 // (e.g. an event payload delivered into the state) provide
 // observe_nonstatic() instead: it reads the current state instance, and
 // the notify hooks run on every edge into/out of an observing state -
@@ -411,9 +460,9 @@ template<typename DERIVED>
 struct observing {
     template<typename STATE>
     static constexpr auto annotation()
-        requires requires(STATE const& state) { DERIVED::observe_static(state); }
+        requires requires { DERIVED::template observe_static<STATE>(); }
     {
-        return DERIVED::observe_static(STATE{});
+        return DERIVED::template observe_static<STATE>();
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
@@ -507,8 +556,10 @@ private:
                   "transition_table: an unguarded (state, event) transition must be "
                   "the last of its alternatives");
 
-    using endpoints = mtl::remove_if_t<typename internal::endpoints<transitions>::type,
-                                       internal::is_any_state>;
+    using endpoints =
+        mtl::remove_if_t<mtl::remove_if_t<typename internal::endpoints<transitions>::type,
+                                          internal::is_any_state>,
+                         internal::is_internal_target>;
     static_assert(std::is_same_v<explicit_initial, mtl::nil_type> ||
                       mtl::has_a_v<endpoints, explicit_initial>,
                   "transition_table: initial<STATE> is not a state of the table");
@@ -657,10 +708,22 @@ private:
     {
         bool fired = false;
         ((internal::allowed<ALTERNATIVEs>(state) &&
-          (fired = this->template do_transition<STATE, typename ALTERNATIVEs::to>(event),
-           true)) ||
+          (fired = this->template fire<ALTERNATIVEs>(state, event), true)) ||
          ...);
         return fired;
+    }
+
+    template<typename TRANSITION, typename STATE, typename EVENT>
+    bool fire(STATE& state, EVENT const& event)
+    {
+        if constexpr (internal::is_internal_v<TRANSITION>) {
+            static_assert(requires { state.handle(event); },
+                          "internal transition: the state must provide handle(EVENT const&)");
+            state.handle(event);
+            return true;
+        } else {
+            return this->template do_transition<STATE, typename TRANSITION::to>(event);
+        }
     }
 
     // Thin per-(edge, event) wrapper: only the emplace depends on the
