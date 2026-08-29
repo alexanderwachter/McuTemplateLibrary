@@ -7,9 +7,10 @@
 #include <print>
 
 int statemachine_tests();
+int dot_tests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = statemachine_tests();
+    int const failures = statemachine_tests() + dot_tests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

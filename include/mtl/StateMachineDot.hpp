@@ -1,0 +1,107 @@
+/*
+ * Graphviz DOT rendering of a transition table, for visualizing and
+ * documenting state machines. Development tooling for hosted builds -
+ * not meant for target code.
+ *
+ * States become nodes (timeouts annotated), every transition one
+ * labeled edge (guards in brackets), the initial state gets an entry
+ * marker, and an any_state wildcard source is shown as a dashed node.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Alexander Wachter
+ */
+
+#pragma once
+
+#include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
+
+#include <chrono>
+#include <ostream>
+#include <string_view>
+#include <type_traits>
+
+namespace fsm {
+
+namespace internal {
+
+template<typename T>
+constexpr std::string_view type_name()
+{
+#if defined(__GNUC__) || defined(__clang__)
+    std::string_view const function = __PRETTY_FUNCTION__;
+    auto const start = function.find("T = ") + 4;
+    return function.substr(start, function.find_first_of("];", start) - start);
+#else
+    return "unknown";
+#endif
+}
+
+// Namespace qualifiers dropped for readable labels
+template<typename T>
+constexpr std::string_view label()
+{
+    auto const name  = type_name<T>();
+    auto const colon = name.rfind("::");
+    return colon == std::string_view::npos ? name : name.substr(colon + 2);
+}
+
+template<typename STATE>
+void write_dot_node(std::ostream& out)
+{
+    out << "    \"" << label<STATE>() << '"';
+    if constexpr (has_timeout_v<STATE>) {
+        auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
+        out << " [label=\"" << label<STATE>() << "\\ntimeout " << ms << " ms\"]";
+    }
+    out << ";\n";
+}
+
+template<typename TRANSITION>
+void write_dot_edge(std::ostream& out)
+{
+    out << "    \"" << label<typename TRANSITION::from>() << "\" -> \""
+        << label<typename TRANSITION::to>() << "\" [label=\""
+        << label<typename TRANSITION::event>();
+    if constexpr (has_guard_v<TRANSITION>) {
+        out << "\\n[" << label<typename TRANSITION::guard>() << ']';
+    }
+    out << "\"];\n";
+}
+
+template<typename STATES, typename TRANSITIONS>
+struct dot_writer;
+
+template<typename... STATEs, typename... TRANSITIONs>
+struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
+    static void write(std::ostream& out)
+    {
+        (write_dot_node<STATEs>(out), ...);
+        (write_dot_edge<TRANSITIONs>(out), ...);
+    }
+
+    static constexpr bool uses_wildcard =
+        (std::is_same_v<typename TRANSITIONs::from, any_state> || ...);
+};
+
+} // namespace internal
+
+template<concepts::transition_table TABLE>
+void write_dot(std::ostream& out, std::string_view name = "fsm")
+{
+    using writer  = internal::dot_writer<typename TABLE::states, typename TABLE::transitions>;
+    using initial = mtl::front_t<typename TABLE::states>;
+
+    out << "digraph \"" << name << "\" {\n"
+        << "    rankdir=LR;\n"
+        << "    node [shape=box, style=rounded];\n"
+        << "    __initial [shape=point];\n";
+    if constexpr (writer::uses_wildcard) {
+        out << "    \"" << internal::label<any_state>() << "\" [style=dashed];\n";
+    }
+    writer::write(out);
+    out << "    __initial -> \"" << internal::label<initial>() << "\";\n"
+        << "}\n";
+}
+
+} // namespace fsm
