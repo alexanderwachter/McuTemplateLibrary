@@ -24,10 +24,13 @@
  * arbitrary transitions for the machine's lifetime. Context types must
  * be default constructible; context states need no default constructor.
  *
- * A guard gates the single transition it is attached to ((state, event)
- * pairs stay unique). check() returning false blocks it: process() returns
- * false, no exit/entry/hook runs, a running timeout timer keeps running,
- * but a blocked fsm::timeout transition does not re-arm the one-shot timer.
+ * A guard gates the transition it is attached to. Transitions may share
+ * a (state, event) pair when guards distinguish them: the alternatives
+ * are tried in table order and the first whose guard passes fires; an
+ * unguarded alternative is the catch-all and must be the last of its
+ * group. When no alternative fires, process() returns false, no
+ * exit/entry/hook runs, a running timeout timer keeps running, but a
+ * blocked fsm::timeout transition does not re-arm the one-shot timer.
  *
  * Timer policy contract (owned by fsm::timed<TIMER>):
  *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
@@ -301,14 +304,6 @@ struct endpoints<mtl::typelist<TRANSITIONs...>> {
     using type = mtl::typelist<typename TRANSITIONs::from..., typename TRANSITIONs::to...>;
 };
 
-template<mtl::concepts::typelist LIST>
-struct unambiguous_in {
-    template<typename TRANSITION>
-    struct pred : std::bool_constant<
-        mtl::count_if_v<LIST, matches<typename TRANSITION::from,
-                                      typename TRANSITION::event>::template pred> == 1> {};
-};
-
 template<typename STATE>
 inline constexpr bool has_timeout_v = requires { STATE::timeout; };
 
@@ -333,6 +328,34 @@ bool check_guard([[maybe_unused]] STATE const& state)
         return GUARD::check();
     }
 }
+
+// True when TRANSITION may fire from the given state instance
+template<typename TRANSITION, typename STATE>
+bool allowed(STATE const& state)
+{
+    if constexpr (has_guard_v<TRANSITION>) {
+        return check_guard<typename TRANSITION::guard>(state);
+    } else {
+        return true;
+    }
+}
+
+// Alternatives for one (state, event) pair are tried in table order; an
+// unguarded transition always fires, so anything after it is dead
+template<mtl::concepts::typelist LIST>
+struct no_shadowed_alternatives;
+
+template<>
+struct no_shadowed_alternatives<mtl::typelist<>> : std::true_type {};
+
+template<typename FIRST, typename... RESTs>
+struct no_shadowed_alternatives<mtl::typelist<FIRST, RESTs...>>
+    : std::bool_constant<
+          (has_guard_v<FIRST> ||
+           mtl::count_if_v<mtl::typelist<RESTs...>,
+                           matches<typename FIRST::from,
+                                   typename FIRST::event>::template pred> == 0) &&
+          no_shadowed_alternatives<mtl::typelist<RESTs...>>::value> {};
 
 template<typename OBSERVER, typename STATE>
 inline constexpr bool observes_v = requires { OBSERVER::template annotation<STATE>(); };
@@ -480,8 +503,9 @@ public:
     using transitions = mtl::remove_if_t<entries, internal::is_initial>;
 
 private:
-    static_assert(mtl::all_of_v<transitions, internal::unambiguous_in<transitions>::template pred>,
-                  "transition_table: duplicate (state, event) pair");
+    static_assert(internal::no_shadowed_alternatives<transitions>::value,
+                  "transition_table: an unguarded (state, event) transition must be "
+                  "the last of its alternatives");
 
     using endpoints = mtl::remove_if_t<typename internal::endpoints<transitions>::type,
                                        internal::is_any_state>;
@@ -491,6 +515,9 @@ private:
 
     template<typename FROM, typename EVENT>
     using find_exact = mtl::find_if_t<transitions, internal::matches<FROM, EVENT>::template pred>;
+
+    template<typename FROM, typename EVENT>
+    using find_all_exact = mtl::filter_t<transitions, internal::matches<FROM, EVENT>::template pred>;
 
 public:
     // Deduplicated in order of first appearance: front is the initial state
@@ -506,6 +533,14 @@ public:
         std::is_same_v<find_exact<FROM, EVENT>, mtl::nil_type>,
         find_exact<any_state, EVENT>,
         find_exact<FROM, EVENT>>;
+
+    // All alternatives for (FROM, EVENT) in table order; the wildcard
+    // group applies only when no exact pair exists
+    template<typename FROM, typename EVENT>
+    using find_transitions = std::conditional_t<
+        std::is_same_v<find_all_exact<FROM, EVENT>, mtl::typelist<>>,
+        find_all_exact<any_state, EVENT>,
+        find_all_exact<FROM, EVENT>>;
 };
 
 namespace internal {
@@ -578,24 +613,16 @@ public:
     state_machine& operator=(state_machine const&) = delete;
 
     // Returns true if a transition fired (false: no matching transition, or
-    // its guard said no)
+    // every alternative's guard said no)
     template<typename EVENT>
     bool process(EVENT const& event)
     {
         return internal::dispatch(
             [this, &event](auto& state) -> bool {
                 using state_type = std::decay_t<decltype(state)>;
-                using matched = typename TRANSITIONS::template find_transition<state_type, EVENT>;
-                if constexpr (std::is_same_v<matched, mtl::nil_type>) {
-                    return false;
-                } else {
-                    if constexpr (internal::has_guard_v<matched>) {
-                        if (!internal::check_guard<typename matched::guard>(state)) {
-                            return false;
-                        }
-                    }
-                    return this->template do_transition<state_type, typename matched::to>(event);
-                }
+                using alternatives =
+                    typename TRANSITIONS::template find_transitions<state_type, EVENT>;
+                return this->template try_alternatives<state_type>(alternatives{}, state, event);
             },
             current_);
     }
@@ -622,6 +649,20 @@ public:
     }
 
 private:
+    // First alternative whose guard passes fires; false when none does.
+    // The fold short-circuits after a firing: the state reference is
+    // dangling from that point on
+    template<typename STATE, typename... ALTERNATIVEs, typename EVENT>
+    bool try_alternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
+    {
+        bool fired = false;
+        ((internal::allowed<ALTERNATIVEs>(state) &&
+          (fired = this->template do_transition<STATE, typename ALTERNATIVEs::to>(event),
+           true)) ||
+         ...);
+        return fired;
+    }
+
     // Thin per-(edge, event) wrapper: only the emplace depends on the
     // event; the shared bodies live in leave()/enter(), instantiated per
     // edge and shared by all events triggering the same edge

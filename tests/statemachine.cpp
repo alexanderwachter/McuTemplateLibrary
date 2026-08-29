@@ -296,6 +296,34 @@ namespace Context {
     static_assert(fsm::concepts::state<trying>);
 } // namespace Context
 
+namespace Alternatives {
+    struct tick {};
+    struct budget {
+        int used  = 0;
+        int limit = 2;
+    };
+
+    struct idle {};
+    struct pending {
+        explicit pending(budget& b) : context(b) { ++context.used; }
+        budget& context;
+    };
+    struct exhausted {};
+
+    struct within_budget {
+        static bool check(pending const& state) { return state.context.used < state.context.limit; }
+    };
+
+    // Two transitions share (pending, tick): the guarded one first, the
+    // unguarded catch-all last
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>,      fsm::on<tick>, fsm::to<pending>>,
+        fsm::transition<fsm::from<pending>,   fsm::on<tick>, fsm::to<pending>,
+                        fsm::guard<within_budget>>,
+        fsm::transition<fsm::from<pending>,   fsm::on<tick>, fsm::to<exhausted>>,
+        fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>>;
+} // namespace Alternatives
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {
@@ -658,6 +686,23 @@ void context_initial_state()
     check(sm.get_if<trying>()->context.attempts == 1);
 }
 
+void guarded_alternatives_first_pass_wins()
+{
+    using namespace Alternatives;
+    fsm::state_machine<tbl> sm;
+
+    check(sm.process(tick{})); // idle -> pending, used = 1
+    check(sm.is<pending>());
+    check(sm.process(tick{})); // guard passes (1 < 2): retry, used = 2
+    check(sm.is<pending>() && sm.get_if<pending>()->context.used == 2);
+    check(sm.process(tick{})); // guard fails (2 < 2): catch-all fires
+    check(sm.is<exhausted>());
+
+    check(sm.process(tick{})); // exhausted -> idle
+    check(sm.process(tick{})); // budget is shared context: used keeps counting
+    check(sm.get_if<pending>()->context.used == 3);
+}
+
 int statemachine_tests()
 {
     initial_state_and_notification();
@@ -680,5 +725,6 @@ int statemachine_tests()
     context_is_machine_owned_and_shared();
     context_survives_timeout_retry();
     context_initial_state();
+    guarded_alternatives_first_pass_wins();
     return failures;
 }
