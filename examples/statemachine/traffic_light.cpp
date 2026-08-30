@@ -64,7 +64,7 @@ struct lamp_driver : fsm::observing<lamp_driver> {
         return STATE::lamps;
     }
 
-    void notify_entry(lamps_t const& lamps)
+    void notifyEntry(lamps_t const& lamps)
     {
         auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
@@ -93,7 +93,7 @@ struct green {
     static constexpr auto timeout = 6000ms; // full phase without a button press
 
     std::chrono::steady_clock::time_point entered;
-    void on_entry() { entered = std::chrono::steady_clock::now(); }
+    void onEntry() { entered = std::chrono::steady_clock::now(); }
 };
 
 struct yellow {

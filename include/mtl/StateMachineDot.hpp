@@ -47,7 +47,7 @@ constexpr std::string_view label()
 }
 
 template<typename STATE>
-void write_dot_node(std::ostream& out)
+void writeDotNode(std::ostream& out)
 {
     out << "    \"" << label<STATE>() << '"';
     if constexpr (has_timeout_v<STATE>) {
@@ -58,7 +58,7 @@ void write_dot_node(std::ostream& out)
 }
 
 template<typename TRANSITION>
-void write_dot_edge(std::ostream& out)
+void writeDotEdge(std::ostream& out)
 {
     // an internal transition renders as a dashed self-edge
     using to = std::conditional_t<is_internal_v<TRANSITION>, typename TRANSITION::from,
@@ -82,8 +82,8 @@ template<typename... STATEs, typename... TRANSITIONs>
 struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
     static void write(std::ostream& out)
     {
-        (write_dot_node<STATEs>(out), ...);
-        (write_dot_edge<TRANSITIONs>(out), ...);
+        (writeDotNode<STATEs>(out), ...);
+        (writeDotEdge<TRANSITIONs>(out), ...);
     }
 
     static constexpr bool uses_wildcard =
@@ -93,7 +93,7 @@ struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
 } // namespace internal
 
 template<concepts::transition_table TABLE>
-void write_dot(std::ostream& out, std::string_view name = "fsm")
+void writeDot(std::ostream& out, std::string_view name = "fsm")
 {
     using writer  = internal::dot_writer<typename TABLE::states, typename TABLE::transitions>;
     using initial = mtl::front_t<typename TABLE::states>;

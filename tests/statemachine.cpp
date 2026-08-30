@@ -58,8 +58,8 @@ struct output_controller : fsm::observing<output_controller> {
         return STATE::outputs;
     }
 
-    void notify_entry(outputs_t const& out) { log.push_back(out); }
-    void notify_exit(outputs_t const& out) { exit_log.push_back(out); }
+    void notifyEntry(outputs_t const& out) { log.push_back(out); }
+    void notifyExit(outputs_t const& out) { exit_log.push_back(out); }
 
     std::vector<outputs_t> log;
     std::vector<outputs_t> exit_log;
@@ -227,10 +227,10 @@ namespace Payload {
     // Driver observer: reads the payload delivered into the sending state
     struct tx_driver {
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void on_enter_state(MACHINE& machine)
+        void onEnterState(MACHINE& machine)
         {
             if constexpr (std::is_same_v<NEW_STATE, sending>) {
-                transmitted.push_back(machine.template get_if<sending>()->msg.id);
+                transmitted.push_back(machine.template getIf<sending>()->msg.id);
             }
         }
 
@@ -238,14 +238,14 @@ namespace Payload {
     };
 
     // observing-based counterpart to tx_driver: names the watched member
-    // once, gets the live payload without get_if plumbing
+    // once, gets the live payload without getIf plumbing
     struct live_driver : fsm::observing<live_driver> {
         static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.msg))
         {
             return state.msg;
         }
-        void notify_entry(message const& msg) { entered.push_back(msg.id); }
-        void notify_exit(message const& msg) { exited.push_back(msg.id); }
+        void notifyEntry(message const& msg) { entered.push_back(msg.id); }
+        void notifyExit(message const& msg) { exited.push_back(msg.id); }
 
         std::vector<int> entered;
         std::vector<int> exited;
@@ -336,12 +336,12 @@ namespace Internal {
         int enters = 0;
         int exits  = 0;
         template<typename OLD_STATE, typename NEW_STATE, typename SM>
-        void on_enter_state(SM&)
+        void onEnterState(SM&)
         {
             ++enters;
         }
         template<typename OLD_STATE, typename NEW_STATE, typename SM>
-        void on_exit_state(SM&)
+        void onExitState(SM&)
         {
             ++exits;
         }
@@ -390,7 +390,7 @@ void check(bool condition, std::source_location location = std::source_location:
     }
 }
 
-void initial_state_and_notification()
+void initialStateAndNotification()
 {
     output_controller ctrl; // owned by the application, injected by reference
     fsm::timed<manual_timer> tim;
@@ -402,7 +402,7 @@ void initial_state_and_notification()
     check(ctrl.log.size() == 1 && ctrl.log.back() == off::outputs);
 }
 
-void transition_on_event()
+void transitionOnEvent()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -413,7 +413,7 @@ void transition_on_event()
     check(ctrl.log.size() == 2 && ctrl.log.back() == running::outputs);
 }
 
-void ignored_event_reports_false()
+void ignoredEventReportsFalse()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -425,7 +425,7 @@ void ignored_event_reports_false()
     check(ctrl.log.size() == 2); // an ignored event must not notify
 }
 
-void timer_armed_on_entry_stopped_on_exit()
+void timerArmedOnEntryStoppedOnExit()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -439,7 +439,7 @@ void timer_armed_on_entry_stopped_on_exit()
     check(!tim.timer.armed);
 }
 
-void timeout_chain()
+void timeoutChain()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -458,7 +458,7 @@ void timeout_chain()
     check(ctrl.log.size() == 4 && ctrl.log.back() == off::outputs);
 }
 
-void equal_annotations_do_not_notify()
+void equalAnnotationsDoNotNotify()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -474,7 +474,7 @@ void equal_annotations_do_not_notify()
     check(ctrl.exit_log.empty()); // suppression also applies to exit values
 }
 
-void exit_values_are_notified()
+void exitValuesAreNotified()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
@@ -488,21 +488,21 @@ void exit_values_are_notified()
     check(ctrl.exit_log.size() == 2 && ctrl.exit_log.back() == running::outputs);
 }
 
-void get_if_accesses_current_state()
+void getIfAccessesCurrentState()
 {
     output_controller ctrl;
     fsm::timed<manual_timer> tim;
     machine sm{tim, ctrl};
 
-    check(sm.get_if<off>() != nullptr);
-    check(sm.get_if<running>() == nullptr);
+    check(sm.getIf<off>() != nullptr);
+    check(sm.getIf<running>() == nullptr);
 
     machine const& read_only = sm;
-    check(read_only.get_if<off>() != nullptr);
-    check(read_only.get_if<running>() == nullptr);
+    check(read_only.getIf<off>() != nullptr);
+    check(read_only.getIf<running>() == nullptr);
 }
 
-void explicit_initial_state()
+void explicitInitialState()
 {
     fsm::state_machine<ExplicitInitial::lock_first> sm;
 
@@ -511,7 +511,7 @@ void explicit_initial_state()
     check(sm.is<off>());
 }
 
-void any_state_reaches_target_from_everywhere()
+void anyStateReachesTargetFromEverywhere()
 {
     using namespace Wildcard;
     fsm::state_machine<tbl> sm;
@@ -526,20 +526,20 @@ void any_state_reaches_target_from_everywhere()
     check(sm.is<idle>());
 }
 
-void event_payload_constructs_target_state()
+void eventPayloadConstructsTargetState()
 {
     using namespace Payload;
     fsm::state_machine<tbl> sm;
 
     check(sm.process(send{.msg = {.id = 42}}));
     check(sm.is<sending>());
-    check(sm.get_if<sending>()->msg.id == 42);
+    check(sm.getIf<sending>()->msg.id == 42);
 
     check(sm.process(cancel{})); // idle has no constructor from cancel
     check(sm.is<idle>());
 }
 
-void live_observation_delivers_instance_values()
+void liveObservationDeliversInstanceValues()
 {
     using namespace Payload;
 
@@ -558,7 +558,7 @@ void live_observation_delivers_instance_values()
     check(driver.entered.size() == 2 && driver.entered.back() == 7);
 }
 
-void payload_reaches_observer_through_state()
+void payloadReachesObserverThroughState()
 {
     using namespace Payload;
     tx_driver driver;
@@ -572,7 +572,7 @@ void payload_reaches_observer_through_state()
     check(driver.transmitted[0] == 7 && driver.transmitted[1] == 9);
 }
 
-void machine_with_only_a_timer_observer()
+void machineWithOnlyATimerObserver()
 {
     fsm::timed<manual_timer> tim;
     fsm::state_machine<table, fsm::timed<manual_timer>> sm{tim};
@@ -582,27 +582,27 @@ void machine_with_only_a_timer_observer()
     check(tim.timer.armed); // running is a timed state
 }
 
-// --- optional on_entry()/on_exit() hooks ------------------------------------
+// --- optional onEntry()/onExit() hooks ------------------------------------
 namespace hooks {
     int entries = 0;
     int exits   = 0;
 
     struct ping {};
-    struct plain { void on_exit() { ++exits; } };    // no on_entry
-    struct hooked { void on_entry() { ++entries; } }; // no on_exit
+    struct plain { void onExit() { ++exits; } };    // no onEntry
+    struct hooked { void onEntry() { ++entries; } }; // no onExit
 
     using tbl = fsm::transition_table<
         fsm::transition<fsm::from<plain>,  fsm::on<ping>, fsm::to<hooked>>,
         fsm::transition<fsm::from<hooked>, fsm::on<ping>, fsm::to<plain>>>;
 } // namespace hooks
 
-void entry_and_exit_hooks()
+void entryAndExitHooks()
 {
     using namespace hooks;
     fsm::state_machine<tbl> sm; // no timed states, no observers: nothing to inject
-    check(entries == 0 && exits == 0); // initial entry runs no exit, plain has no on_entry
+    check(entries == 0 && exits == 0); // initial entry runs no exit, plain has no onEntry
 
-    sm.process(ping{}); // plain -> hooked: plain::on_exit, hooked::on_entry
+    sm.process(ping{}); // plain -> hooked: plain::onExit, hooked::onEntry
     check(exits == 1);
     check(entries == 1);
 
@@ -634,7 +634,7 @@ namespace guards {
                         fsm::guard<return_allowed>>>;
 } // namespace guards
 
-void guard_blocks_and_allows()
+void guardBlocksAndAllows()
 {
     using namespace guards;
     fsm::state_machine<tbl> sm;
@@ -642,7 +642,7 @@ void guard_blocks_and_allows()
     check(!sm.process(push{})); // gate closed: guard blocks, nothing happens
     check(sm.is<gate>());
 
-    sm.get_if<gate>()->open = true;
+    sm.getIf<gate>()->open = true;
     check(sm.process(push{}));  // guard passes now
     check(sm.is<passed>());
 
@@ -653,24 +653,24 @@ void guard_blocks_and_allows()
     return_allowed::allow = true;
     check(sm.process(push{}));
     check(sm.is<gate>());
-    check(!sm.get_if<gate>()->open); // re-entry default-constructs the state
+    check(!sm.getIf<gate>()->open); // re-entry default-constructs the state
 }
 
 // --- raw lifecycle hooks (observer without the fsm::observing base) ---------
 namespace raw_hooks {
     struct transition_counter {
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void on_exit_state(MACHINE&) { ++exits; }
+        void onExitState(MACHINE&) { ++exits; }
 
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void on_enter_state(MACHINE&) { ++enters; }
+        void onEnterState(MACHINE&) { ++enters; }
 
         int exits  = 0;
         int enters = 0;
     };
 } // namespace raw_hooks
 
-void raw_hook_observer_sees_every_transition()
+void rawHookObserverSeesEveryTransition()
 {
     raw_hooks::transition_counter counter;
     fsm::timed<manual_timer> tim;
@@ -688,21 +688,21 @@ void raw_hook_observer_sees_every_transition()
 
 } // namespace
 
-void context_is_machine_owned_and_shared()
+void contextIsMachineOwnedAndShared()
 {
     using namespace Context;
     fsm::state_machine<tbl> sm; // timeout in trying stays unobserved: no timer injected
 
     check(sm.process(start{.payload = 7}));
-    auto const* log = &sm.get_if<trying>()->context;
+    auto const* log = &sm.getIf<trying>()->context;
     check(log->attempts == 1 && log->payload == 7);
 
     check(sm.process(fail{})); // re-entry: fresh state object, same context
-    check(&sm.get_if<trying>()->context == log);
+    check(&sm.getIf<trying>()->context == log);
     check(log->attempts == 2 && log->payload == 7);
 
     check(sm.process(done{})); // succeeded names the same context type
-    check(&sm.get_if<succeeded>()->context == log);
+    check(&sm.getIf<succeeded>()->context == log);
     check(log->attempts == 2);
 
     check(sm.process(restart{})); // context also outlives contextless states
@@ -710,7 +710,7 @@ void context_is_machine_owned_and_shared()
     check(log->attempts == 1 && log->payload == 9);
 }
 
-void context_survives_timeout_retry()
+void contextSurvivesTimeoutRetry()
 {
     using namespace Context;
     fsm::timed<manual_timer> tim;
@@ -721,12 +721,12 @@ void context_survives_timeout_retry()
 
     tim.timer.expire(); // the retry loses neither payload nor attempt count
     check(sm.is<trying>());
-    check(sm.get_if<trying>()->context.attempts == 2);
-    check(sm.get_if<trying>()->context.payload == 3);
+    check(sm.getIf<trying>()->context.attempts == 2);
+    check(sm.getIf<trying>()->context.payload == 3);
     check(tim.timer.armed); // re-armed for the next attempt
 }
 
-void context_initial_state()
+void contextInitialState()
 {
     using namespace Context;
     using tbl2 = fsm::transition_table<
@@ -735,10 +735,10 @@ void context_initial_state()
     fsm::state_machine<tbl2> sm; // initial state constructed from its context
 
     check(sm.is<trying>());
-    check(sm.get_if<trying>()->context.attempts == 1);
+    check(sm.getIf<trying>()->context.attempts == 1);
 }
 
-void internal_transition_handles_in_place()
+void internalTransitionHandlesInPlace()
 {
     using namespace Internal;
 
@@ -752,7 +752,7 @@ void internal_transition_handles_in_place()
 
     check(sm.process(note{.value = 7})); // handled in place
     check(sm.is<waiting>());
-    check(sm.get_if<waiting>()->context.noted == 7);
+    check(sm.getIf<waiting>()->context.noted == 7);
     check(hooks.enters == enters_before && hooks.exits == 0); // no exit/entry ran
     check(tim.timer.armed && tim.timer.duration == duration_before); // timer untouched
 
@@ -761,13 +761,13 @@ void internal_transition_handles_in_place()
     check(sm.is<waiting>());
 
     // with the guard failing, the fallback transition fires
-    sm.get_if<waiting>()->context.noted = 0;
+    sm.getIf<waiting>()->context.noted = 0;
     check(sm.process(tick{}));
     check(sm.is<done>());
     check(!tim.timer.armed);
 }
 
-void guarded_alternatives_first_pass_wins()
+void guardedAlternativesFirstPassWins()
 {
     using namespace Alternatives;
     fsm::state_machine<tbl> sm;
@@ -775,38 +775,38 @@ void guarded_alternatives_first_pass_wins()
     check(sm.process(tick{})); // idle -> pending, used = 1
     check(sm.is<pending>());
     check(sm.process(tick{})); // guard passes (1 < 2): retry, used = 2
-    check(sm.is<pending>() && sm.get_if<pending>()->context.used == 2);
+    check(sm.is<pending>() && sm.getIf<pending>()->context.used == 2);
     check(sm.process(tick{})); // guard fails (2 < 2): catch-all fires
     check(sm.is<exhausted>());
 
     check(sm.process(tick{})); // exhausted -> idle
     check(sm.process(tick{})); // budget is shared context: used keeps counting
-    check(sm.get_if<pending>()->context.used == 3);
+    check(sm.getIf<pending>()->context.used == 3);
 }
 
-int statemachine_tests()
+int statemachineTests()
 {
-    initial_state_and_notification();
-    transition_on_event();
-    ignored_event_reports_false();
-    timer_armed_on_entry_stopped_on_exit();
-    timeout_chain();
-    equal_annotations_do_not_notify();
-    exit_values_are_notified();
-    get_if_accesses_current_state();
-    explicit_initial_state();
-    any_state_reaches_target_from_everywhere();
-    event_payload_constructs_target_state();
-    payload_reaches_observer_through_state();
-    live_observation_delivers_instance_values();
-    machine_with_only_a_timer_observer();
-    entry_and_exit_hooks();
-    guard_blocks_and_allows();
-    raw_hook_observer_sees_every_transition();
-    context_is_machine_owned_and_shared();
-    context_survives_timeout_retry();
-    context_initial_state();
-    guarded_alternatives_first_pass_wins();
-    internal_transition_handles_in_place();
+    initialStateAndNotification();
+    transitionOnEvent();
+    ignoredEventReportsFalse();
+    timerArmedOnEntryStoppedOnExit();
+    timeoutChain();
+    equalAnnotationsDoNotNotify();
+    exitValuesAreNotified();
+    getIfAccessesCurrentState();
+    explicitInitialState();
+    anyStateReachesTargetFromEverywhere();
+    eventPayloadConstructsTargetState();
+    payloadReachesObserverThroughState();
+    liveObservationDeliversInstanceValues();
+    machineWithOnlyATimerObserver();
+    entryAndExitHooks();
+    guardBlocksAndAllows();
+    rawHookObserverSeesEveryTransition();
+    contextIsMachineOwnedAndShared();
+    contextSurvivesTimeoutRetry();
+    contextInitialState();
+    guardedAlternativesFirstPassWins();
+    internalTransitionHandlesInPlace();
     return failures;
 }

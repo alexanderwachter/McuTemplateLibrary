@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * States are classes with optional members detected by requires-expressions:
- * on_entry(), on_exit(), static constexpr timeout, and static constexpr
+ * onEntry(), onExit(), static constexpr timeout, and static constexpr
  * members watched by observers. The state set is derived from the table;
  * an initial<STATE> table role picks the initial state (default: the first
  * state of the first transition).
@@ -12,7 +12,7 @@
  * triggering event is emplaced with it, any other target state is
  * default-constructed. Observer hooks run after the emplace and receive
  * the machine, so e.g. a driver observer can read the delivered payload
- * through machine.get_if<NEW_STATE>().
+ * through machine.getIf<NEW_STATE>().
  *
  * fsm::internal_transition<from<S>, on<E>> handles E in S without a
  * state change: no exit/entry, no observer hooks, a running timeout
@@ -50,8 +50,8 @@
  * Optional per-edge hooks, each detected by a requires-expression, run in
  * observer parameter order (place fsm::timed before value observers):
  *   template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
- *   void on_exit_state(MACHINE&);  - transition fires, old state still alive
- *   void on_enter_state(MACHINE&); - new state emplaced, before on_entry();
+ *   void onExitState(MACHINE&);  - transition fires, old state still alive
+ *   void onEnterState(MACHINE&); - new state emplaced, before onEntry();
  *                                    on construction with OLD = mtl::nil_type
  *   template<typename TABLE> static constexpr void validate();
  *                                  - invoked at machine instantiation: the
@@ -105,7 +105,7 @@ using context_of_t = typename context_of<STATE>::type;
 // into the variant (measured GCC 15 -Os: direct stores, no tuple, no
 // move)
 template<typename STATE, typename CONTEXT_TUPLE>
-constexpr auto initial_args(CONTEXT_TUPLE& contexts)
+constexpr auto initialArgs(CONTEXT_TUPLE& contexts)
 {
     if constexpr (context_holder<STATE>) {
         return std::forward_as_tuple(std::in_place_type<STATE>,
@@ -368,7 +368,7 @@ template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
 
 template<concepts::guard GUARD, concepts::state STATE>
-bool check_guard([[maybe_unused]] STATE const& state)
+bool checkGuard([[maybe_unused]] STATE const& state)
 {
     if constexpr (requires { GUARD::check(state); }) {
         return GUARD::check(state);
@@ -382,7 +382,7 @@ template<typename TRANSITION, typename STATE>
 bool allowed(STATE const& state)
 {
     if constexpr (has_guard_v<TRANSITION>) {
-        return check_guard<typename TRANSITION::guard>(state);
+        return checkGuard<typename TRANSITION::guard>(state);
     } else {
         return true;
     }
@@ -423,7 +423,7 @@ constexpr bool annotation_changes()
 } // namespace internal
 
 // Value observer base: the derived class names the watched member once and
-// provides notify_entry(value) (new state's value) and/or notify_exit(value)
+// provides notifyEntry(value) (new state's value) and/or notifyExit(value)
 // (old state's value, old state still alive), each optional:
 //
 //   struct lamp_driver : fsm::observing<lamp_driver> {
@@ -432,7 +432,7 @@ constexpr bool annotation_changes()
 //       {
 //           return STATE::lamps;
 //       }
-//       void notify_entry(lamps_t const& lamps);
+//       void notifyEntry(lamps_t const& lamps);
 //   };
 //
 // The trailing return type makes states without the member drop out via
@@ -454,7 +454,7 @@ constexpr bool annotation_changes()
 //       {
 //           return state.tx_message;
 //       }
-//       void notify_entry(message_t const& message); // hand to hardware
+//       void notifyEntry(message_t const& message); // hand to hardware
 //   };
 template<typename DERIVED>
 struct observing {
@@ -466,36 +466,36 @@ struct observing {
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_exit_state(MACHINE& machine)
+    void onExitState(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
         if constexpr (internal::annotation_changes<DERIVED, OLD_STATE, NEW_STATE>()) {
-            if constexpr (requires { self.notify_exit(DERIVED::template annotation<OLD_STATE>()); }) {
-                self.notify_exit(DERIVED::template annotation<OLD_STATE>());
+            if constexpr (requires { self.notifyExit(DERIVED::template annotation<OLD_STATE>()); }) {
+                self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
         }
         if constexpr (requires {
-                          self.notify_exit(
-                              DERIVED::observe_nonstatic(*machine.template get_if<OLD_STATE>()));
+                          self.notifyExit(
+                              DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
                       }) {
-            self.notify_exit(DERIVED::observe_nonstatic(*machine.template get_if<OLD_STATE>()));
+            self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
         }
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_enter_state(MACHINE& machine)
+    void onEnterState(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
         if constexpr (internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>()) {
-            if constexpr (requires { self.notify_entry(DERIVED::template annotation<NEW_STATE>()); }) {
-                self.notify_entry(DERIVED::template annotation<NEW_STATE>());
+            if constexpr (requires { self.notifyEntry(DERIVED::template annotation<NEW_STATE>()); }) {
+                self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
         }
         if constexpr (requires {
-                          self.notify_entry(
-                              DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
+                          self.notifyEntry(
+                              DERIVED::observe_nonstatic(*machine.template getIf<NEW_STATE>()));
                       }) {
-            self.notify_entry(DERIVED::observe_nonstatic(*machine.template get_if<NEW_STATE>()));
+            self.notifyEntry(DERIVED::observe_nonstatic(*machine.template getIf<NEW_STATE>()));
         }
     }
 };
@@ -514,7 +514,7 @@ struct timed {
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_exit_state(MACHINE&)
+    void onExitState(MACHINE&)
     {
         if constexpr (internal::has_timeout_v<OLD_STATE>) {
             timer.stop(); // no timer may fire mid-transition
@@ -522,7 +522,7 @@ struct timed {
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void on_enter_state(MACHINE& machine)
+    void onEnterState(MACHINE& machine)
     {
         if constexpr (internal::has_timeout_v<NEW_STATE>) {
             timer.start(
@@ -606,18 +606,18 @@ constexpr bool validated()
 }
 
 template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER, typename MACHINE>
-void exit_hook(OBSERVER& observer, MACHINE& machine)
+void exitHook(OBSERVER& observer, MACHINE& machine)
 {
-    if constexpr (requires { observer.template on_exit_state<OLD_STATE, NEW_STATE>(machine); }) {
-        observer.template on_exit_state<OLD_STATE, NEW_STATE>(machine);
+    if constexpr (requires { observer.template onExitState<OLD_STATE, NEW_STATE>(machine); }) {
+        observer.template onExitState<OLD_STATE, NEW_STATE>(machine);
     }
 }
 
 template<typename OLD_STATE, typename NEW_STATE, typename OBSERVER, typename MACHINE>
-void enter_hook(OBSERVER& observer, MACHINE& machine)
+void enterHook(OBSERVER& observer, MACHINE& machine)
 {
-    if constexpr (requires { observer.template on_enter_state<OLD_STATE, NEW_STATE>(machine); }) {
-        observer.template on_enter_state<OLD_STATE, NEW_STATE>(machine);
+    if constexpr (requires { observer.template onEnterState<OLD_STATE, NEW_STATE>(machine); }) {
+        observer.template onEnterState<OLD_STATE, NEW_STATE>(machine);
     }
 }
 
@@ -653,7 +653,7 @@ public:
     explicit state_machine(OBSERVERs&... observers)
         : observers_(observers...),
           current_(std::make_from_tuple<state_variant>(
-              internal::initial_args<initial_state>(contexts_)))
+              internal::initialArgs<initial_state>(contexts_)))
     {
         this->template enter<mtl::nil_type, initial_state>();
     }
@@ -673,7 +673,7 @@ public:
                 using state_type = std::decay_t<decltype(state)>;
                 using alternatives =
                     typename TRANSITIONS::template find_transitions<state_type, EVENT>;
-                return this->template try_alternatives<state_type>(alternatives{}, state, event);
+                return this->template tryAlternatives<state_type>(alternatives{}, state, event);
             },
             current_);
     }
@@ -688,13 +688,13 @@ public:
     // Pointer to the active state object, nullptr if STATE is not active.
     // The next transition destroys the object: do not keep the pointer.
     template<concepts::state STATE>
-    [[nodiscard]] STATE* get_if()
+    [[nodiscard]] STATE* getIf()
     {
         return std::get_if<STATE>(&current_);
     }
 
     template<concepts::state STATE>
-    [[nodiscard]] STATE const* get_if() const
+    [[nodiscard]] STATE const* getIf() const
     {
         return std::get_if<STATE>(&current_);
     }
@@ -704,7 +704,7 @@ private:
     // The fold short-circuits after a firing: the state reference is
     // dangling from that point on
     template<typename STATE, typename... ALTERNATIVEs, typename EVENT>
-    bool try_alternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
+    bool tryAlternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
     {
         bool fired = false;
         ((internal::allowed<ALTERNATIVEs>(state) &&
@@ -722,7 +722,7 @@ private:
             state.handle(event);
             return true;
         } else {
-            return this->template do_transition<STATE, typename TRANSITION::to>(event);
+            return this->template doTransition<STATE, typename TRANSITION::to>(event);
         }
     }
 
@@ -730,7 +730,7 @@ private:
     // event; the shared bodies live in leave()/enter(), instantiated per
     // edge and shared by all events triggering the same edge
     template<typename OLD_STATE, typename NEW_STATE, typename EVENT>
-    bool do_transition(EVENT const& event)
+    bool doTransition(EVENT const& event)
     {
         this->template leave<OLD_STATE, NEW_STATE>();
         if constexpr (internal::context_holder<NEW_STATE>) {
@@ -753,11 +753,11 @@ private:
     void leave()
     {
         std::apply([this](auto&... observer) {
-                       (internal::exit_hook<OLD_STATE, NEW_STATE>(observer, *this), ...);
+                       (internal::exitHook<OLD_STATE, NEW_STATE>(observer, *this), ...);
                    },
                    observers_);
-        if constexpr (requires(OLD_STATE& state) { state.on_exit(); }) {
-            std::get_if<OLD_STATE>(&current_)->on_exit();
+        if constexpr (requires(OLD_STATE& state) { state.onExit(); }) {
+            std::get_if<OLD_STATE>(&current_)->onExit();
         }
     }
 
@@ -765,17 +765,17 @@ private:
     void enter()
     {
         std::apply([this](auto&... observer) {
-                       (internal::enter_hook<OLD_STATE, NEW_STATE>(observer, *this), ...);
+                       (internal::enterHook<OLD_STATE, NEW_STATE>(observer, *this), ...);
                    },
                    observers_);
-        if constexpr (requires(NEW_STATE& state) { state.on_entry(); }) {
-            std::get_if<NEW_STATE>(&current_)->on_entry();
+        if constexpr (requires(NEW_STATE& state) { state.onEntry(); }) {
+            std::get_if<NEW_STATE>(&current_)->onEntry();
         }
     }
 
     context_tuple contexts_{}; // one shared instance per distinct context type
     std::tuple<OBSERVERs&...> observers_;
-    state_variant current_; // constructed by the constructor via initial_args()
+    state_variant current_; // constructed by the constructor via initialArgs()
 };
 
 } // namespace fsm

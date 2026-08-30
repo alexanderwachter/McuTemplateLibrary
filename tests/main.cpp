@@ -6,11 +6,11 @@
 
 #include <print>
 
-int statemachine_tests();
-int dot_tests();
+int statemachineTests();
+int dotTests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = statemachine_tests() + dot_tests();
+    int const failures = statemachineTests() + dotTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

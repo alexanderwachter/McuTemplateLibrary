@@ -50,10 +50,10 @@ void check(bool condition, std::source_location location = std::source_location:
 
 } // namespace
 
-int dot_tests()
+int dotTests()
 {
     std::ostringstream out;
-    fsm::write_dot<table>(out, "example");
+    fsm::writeDot<table>(out, "example");
     auto const dot = out.str();
 
     check(dot.starts_with("digraph \"example\" {"));
