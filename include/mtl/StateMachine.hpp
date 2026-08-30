@@ -500,9 +500,21 @@ struct observing {
     }
 };
 
-// Observer implementing the state-timeout semantics on top of a TIMER policy
+// Observer implementing the state-timeout semantics on top of a TIMER
+// policy. timed<POLICY> owns a default-constructed policy instance;
+// timed<POLICY&> holds a caller-owned one, for policies that need
+// configuration (constructor arguments) or are not default-constructible
 template<concepts::timer TIMER>
 struct timed {
+    timed()
+        requires(!std::is_reference_v<TIMER>)
+    = default;
+
+    explicit timed(TIMER timer_ref)
+        requires std::is_reference_v<TIMER>
+        : timer(timer_ref)
+    {
+    }
     // A timed state whose fsm::timeout the table ignores is a bug: the
     // timer would fire into nothing
     template<concepts::transition_table TABLE>
@@ -534,7 +546,7 @@ struct timed {
         }
     }
 
-    TIMER timer{};
+    TIMER timer;
 };
 
 // Transitions plus an optional initial<STATE> role; without it the first
@@ -707,9 +719,9 @@ private:
     bool tryAlternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
     {
         bool fired = false;
-        ((internal::allowed<ALTERNATIVEs>(state) &&
-          (fired = this->template fire<ALTERNATIVEs>(state, event), true)) ||
-         ...);
+        static_cast<void>(((internal::allowed<ALTERNATIVEs>(state) &&
+                            (fired = this->template fire<ALTERNATIVEs>(state, event), true)) ||
+                           ...));
         return fired;
     }
 

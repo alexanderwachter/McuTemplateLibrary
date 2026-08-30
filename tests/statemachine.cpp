@@ -784,6 +784,19 @@ void guardedAlternativesFirstPassWins()
     check(sm.getIf<pending>()->context.used == 3);
 }
 
+void timerInjectedByReference()
+{
+    manual_timer timer; // caller-owned policy instance
+    fsm::timed<manual_timer&> tim{timer};
+    output_controller ctrl;
+    fsm::state_machine<table, fsm::timed<manual_timer&>, output_controller> sm{tim, ctrl};
+
+    check(sm.process(button_press{})); // off -> running, timeout armed
+    check(timer.armed && timer.duration == 50ms);
+    timer.expire();
+    check(sm.is<cooldown>());
+}
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -808,5 +821,6 @@ int statemachineTests()
     contextInitialState();
     guardedAlternativesFirstPassWins();
     internalTransitionHandlesInPlace();
+    timerInjectedByReference();
     return failures;
 }
