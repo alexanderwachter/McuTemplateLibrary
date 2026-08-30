@@ -415,6 +415,9 @@ constexpr bool annotation_changes()
         return false;
     } else if constexpr (!observes_v<OBSERVER, OTHER>) {
         return true;
+    } else if constexpr (!std::is_same_v<decltype(OBSERVER::template annotation<STATE>()),
+                                         decltype(OBSERVER::template annotation<OTHER>())>) {
+        return true; // different annotation types always differ
     } else {
         return OBSERVER::template annotation<STATE>() != OBSERVER::template annotation<OTHER>();
     }
