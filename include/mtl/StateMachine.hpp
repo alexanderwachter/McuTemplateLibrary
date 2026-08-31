@@ -100,6 +100,21 @@ struct context_of : std::type_identity<std::remove_reference_t<decltype(STATE::c
 template<context_holder STATE>
 using context_of_t = typename context_of<STATE>::type;
 
+// Whether STATE is constructed from this event (with its context when
+// it has one)
+template<typename STATE, typename EVENT>
+consteval bool payloadConstructible()
+{
+    if constexpr (context_holder<STATE>) {
+        return std::constructible_from<STATE, EVENT const&, context_of_t<STATE>&>;
+    } else {
+        return std::constructible_from<STATE, EVENT const&>;
+    }
+}
+
+template<typename STATE, typename EVENT>
+inline constexpr bool payload_constructible_v = payloadConstructible<STATE, EVENT>();
+
 // Arguments constructing STATE in place inside a variant. The tuple
 // round-trip through make_from_tuple is free: its prvalue is elided
 // into the variant (measured GCC 15 -Os: direct stores, no tuple, no
@@ -297,8 +312,11 @@ namespace internal {
 // bad_variant_access path can be emitted. A valueless variant matches no
 // alternative and yields false (unreachable in process(): the states can
 // never make the variant valueless).
-// Measured on GCC 15.2 x86-64 -Os (traffic_light.cpp): 32 bytes .text
-// larger than std::visit.
+// Measured GCC 15.2 x86-64 -Os (traffic_light.cpp): 32 bytes .text
+// larger than std::visit. Measured arm-zephyr-eabi GCC 14.3 -Os
+// (Cortex-M0+, 14-state/20-event machine): 3.7 kB smaller - std::visit
+// emits per-(event, state) invoke thunks and tables that dominate at
+// scale.
 template<typename VISITOR, typename... ALTERNATIVEs>
     requires (std::predicate<VISITOR, ALTERNATIVEs&> && ...)
 constexpr bool visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
@@ -311,15 +329,12 @@ constexpr bool visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
     }(std::index_sequence_for<ALTERNATIVEs...>{});
 }
 
-// std::visit is table-free and smaller on libstdc++ (measured above);
-// other standard libraries get the fold. Define MTL_FSM_FOLD_VISIT to 0
-// or 1 to override the choice.
+// The fold is the default: it wins clearly on embedded targets with
+// large machines (measurements above), losing only a few bytes on
+// hosted libstdc++ with small ones. Define MTL_FSM_FOLD_VISIT to 0 to
+// use std::visit instead.
 #ifndef MTL_FSM_FOLD_VISIT
-#  if defined(__GLIBCXX__)
-#    define MTL_FSM_FOLD_VISIT 0
-#  else
-#    define MTL_FSM_FOLD_VISIT 1
-#  endif
+#  define MTL_FSM_FOLD_VISIT 1
 #endif
 
 template<typename VISITOR, typename... ALTERNATIVEs>
@@ -468,6 +483,9 @@ struct observing {
         return DERIVED::template observe_static<STATE>();
     }
 
+    // The static path stays per edge (compile-time change suppression
+    // needs both states); the nonstatic path delegates to one body per
+    // observed state
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onExitState(MACHINE& machine)
     {
@@ -477,12 +495,7 @@ struct observing {
                 self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
         }
-        if constexpr (requires {
-                          self.notifyExit(
-                              DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
-                      }) {
-            self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
-        }
+        this->template nonstaticExit<OLD_STATE>(machine);
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
@@ -494,13 +507,35 @@ struct observing {
                 self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
         }
+        this->template nonstaticEnter<NEW_STATE>(machine);
+    }
+
+private:
+    template<typename STATE, typename MACHINE>
+    void nonstaticExit(MACHINE& machine)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
         if constexpr (requires {
-                          self.notifyEntry(
-                              DERIVED::observe_nonstatic(*machine.template getIf<NEW_STATE>()));
+                          self.notifyExit(
+                              DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
                       }) {
-            self.notifyEntry(DERIVED::observe_nonstatic(*machine.template getIf<NEW_STATE>()));
+            self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
         }
     }
+
+    template<typename STATE, typename MACHINE>
+    void nonstaticEnter(MACHINE& machine)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
+        if constexpr (requires {
+                          self.notifyEntry(
+                              DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
+                      }) {
+            self.notifyEntry(DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
+        }
+    }
+
+public:
 };
 
 // Observer implementing the state-timeout semantics on top of a TIMER
@@ -528,26 +563,43 @@ struct timed {
                       "fsm::timed: state has a timeout but no transition for fsm::timeout");
     }
 
+    // The edge hooks delegate to per-state bodies: one instantiation
+    // per timed state instead of one per edge
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onExitState(MACHINE&)
     {
-        if constexpr (internal::has_timeout_v<OLD_STATE>) {
-            timer.stop(); // no timer may fire mid-transition
-        }
+        this->template stopFor<OLD_STATE>();
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onEnterState(MACHINE& machine)
     {
-        if constexpr (internal::has_timeout_v<NEW_STATE>) {
+        this->template startFor<NEW_STATE>(machine);
+    }
+
+private:
+    template<typename STATE>
+    void stopFor()
+    {
+        if constexpr (internal::has_timeout_v<STATE>) {
+            timer.stop(); // no timer may fire mid-transition
+        }
+    }
+
+    template<typename STATE, typename MACHINE>
+    void startFor(MACHINE& machine)
+    {
+        if constexpr (internal::has_timeout_v<STATE>) {
             timer.start(
-                std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::timeout),
+                std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout),
                 [](void* context) {
                     static_cast<MACHINE*>(context)->process(timeout{});
                 },
                 &machine);
         }
     }
+
+public:
 
     TIMER timer;
 };
@@ -736,27 +788,39 @@ private:
                           "internal transition: the state must provide handle(EVENT const&)");
             state.handle(event);
             return true;
-        } else {
+        } else if constexpr (internal::payload_constructible_v<typename TRANSITION::to, EVENT>) {
             return this->template doTransition<STATE, typename TRANSITION::to>(event);
+        } else {
+            // the emplace does not depend on the event: one body per edge
+            return this->template doDefaultTransition<STATE, typename TRANSITION::to>();
         }
     }
 
-    // Thin per-(edge, event) wrapper: only the emplace depends on the
-    // event; the shared bodies live in leave()/enter(), instantiated per
-    // edge and shared by all events triggering the same edge
+    // Payload delivery: instantiated per (edge, event) - only for
+    // targets constructible from the event
     template<typename OLD_STATE, typename NEW_STATE, typename EVENT>
     bool doTransition(EVENT const& event)
     {
         this->template leave<OLD_STATE, NEW_STATE>();
         if constexpr (internal::context_holder<NEW_STATE>) {
-            auto& context = std::get<internal::context_of_t<NEW_STATE>>(contexts_);
-            if constexpr (std::constructible_from<NEW_STATE, EVENT const&, decltype(context)>) {
-                current_.template emplace<NEW_STATE>(event, context); // payload delivery
-            } else {
-                current_.template emplace<NEW_STATE>(context);
-            }
-        } else if constexpr (std::constructible_from<NEW_STATE, EVENT const&>) {
-            current_.template emplace<NEW_STATE>(event); // payload delivery
+            current_.template emplace<NEW_STATE>(
+                event, std::get<internal::context_of_t<NEW_STATE>>(contexts_));
+        } else {
+            current_.template emplace<NEW_STATE>(event);
+        }
+        this->template enter<OLD_STATE, NEW_STATE>();
+        return true;
+    }
+
+    // Event-independent construction: instantiated once per edge and
+    // shared by all events triggering it
+    template<typename OLD_STATE, typename NEW_STATE>
+    bool doDefaultTransition()
+    {
+        this->template leave<OLD_STATE, NEW_STATE>();
+        if constexpr (internal::context_holder<NEW_STATE>) {
+            current_.template emplace<NEW_STATE>(
+                std::get<internal::context_of_t<NEW_STATE>>(contexts_));
         } else {
             current_.template emplace<NEW_STATE>();
         }
