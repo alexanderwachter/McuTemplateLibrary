@@ -179,6 +179,10 @@ namespace Guards {
     static_assert(fsm::concepts::guard_for<with_state, off>);
     static_assert(!fsm::concepts::guard_for<with_state, running>); // wrong state
     static_assert(fsm::concepts::guard_for<always, off>); // no-argument form
+
+    struct with_event { static bool check(off const&, button_press const&) { return true; } };
+    static_assert(fsm::concepts::guard_for<with_event, off>); // (state, event) form
+    static_assert(!fsm::concepts::guard_for<with_event, running>); // wrong state
 } // namespace Guards
 
 namespace Wildcard {
@@ -670,6 +674,36 @@ namespace raw_hooks {
     };
 } // namespace raw_hooks
 
+// --- guards deciding on the event payload ------------------------------------
+namespace event_guard {
+    struct reading {
+        int value = 0;
+    };
+    struct closed {};
+    struct open {};
+
+    // fires only for readings above the threshold the state holds -
+    // the event form sees the payload before any handler applies it
+    struct above_threshold {
+        static bool check(closed const&, reading const& event) { return event.value > 10; }
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<closed>, fsm::on<reading>, fsm::to<open>,
+                        fsm::guard<above_threshold>>>;
+} // namespace event_guard
+
+void guardSeesTheEventPayload()
+{
+    using namespace event_guard;
+    fsm::state_machine<tbl> sm;
+
+    check(!sm.process(reading{.value = 5})); // below: guard blocks
+    check(sm.is<closed>());
+    check(sm.process(reading{.value = 11}));
+    check(sm.is<open>());
+}
+
 // --- static-before-nonstatic ordering within one observer -------------------
 namespace ordering {
     struct go {
@@ -893,6 +927,7 @@ int statemachineTests()
     entryAndExitHooks();
     guardBlocksAndAllows();
     rawHookObserverSeesEveryTransition();
+    guardSeesTheEventPayload();
     staticHookRunsBeforeNonstaticHook();
     observerGroupForwardsHooksInMemberOrder();
     contextIsMachineOwnedAndShared();

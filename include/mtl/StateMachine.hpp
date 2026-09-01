@@ -31,7 +31,9 @@
  * arbitrary transitions for the machine's lifetime. Context types must
  * be default constructible; context states need no default constructor.
  *
- * A guard gates the transition it is attached to. Transitions may share
+ * A guard gates the transition it is attached to; it provides
+ * check(state, event), check(state), or check() - most specific form
+ * wins. Transitions may share
  * a (state, event) pair when guards distinguish them: the alternatives
  * are tried in table order and the first whose guard passes fires; an
  * unguarded alternative is the catch-all and must be the last of its
@@ -187,6 +189,13 @@ template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type
 template<mtl::concepts::typelist LIST, template<typename> typename PREDICATE>
 using find_role_t = typename unwrap<mtl::find_if_t<LIST, PREDICATE>>::type;
 
+// Stand-in for any event in unevaluated contexts: validates a guard's
+// two-argument (state, event) form when the event type is unknown
+struct any_payload {
+    template<typename T>
+    operator T const&() const;
+};
+
 } // namespace internal
 
 namespace concepts {
@@ -194,11 +203,16 @@ namespace concepts {
 template<typename T>
 concept guard = requires { &T::check; };
 
-// check(from_state) for conditions on state data, check() for
-// state-independent ones
+// check(from_state, event) for conditions on the event payload before
+// any handler applied it, check(from_state) for conditions on state
+// data, check() for state-independent ones. The event form is
+// validated with a payload stand-in - the concrete event type is only
+// known at the process() call
 template<typename GUARD, typename STATE>
 concept guard_for = requires(STATE const& state) {
     { GUARD::check(state) } -> std::convertible_to<bool>;
+} || requires(STATE const& state) {
+    { GUARD::check(state, internal::any_payload{}) } -> std::convertible_to<bool>;
 } || requires {
     { GUARD::check() } -> std::convertible_to<bool>;
 };
@@ -382,10 +396,15 @@ struct timeout_handled_in {
 template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
 
-template<concepts::guard GUARD, concepts::state STATE>
-bool checkGuard([[maybe_unused]] STATE const& state)
+// A guard provides check(state, event), check(state), or check() -
+// the most specific overload wins. The event form decides on the
+// payload before any handler has applied it to the state
+template<concepts::guard GUARD, concepts::state STATE, typename EVENT>
+bool checkGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
 {
-    if constexpr (requires { GUARD::check(state); }) {
+    if constexpr (requires { GUARD::check(state, event); }) {
+        return GUARD::check(state, event);
+    } else if constexpr (requires { GUARD::check(state); }) {
         return GUARD::check(state);
     } else {
         return GUARD::check();
@@ -393,11 +412,11 @@ bool checkGuard([[maybe_unused]] STATE const& state)
 }
 
 // True when TRANSITION may fire from the given state instance
-template<typename TRANSITION, typename STATE>
-bool allowed(STATE const& state)
+template<typename TRANSITION, typename STATE, typename EVENT>
+bool allowed(STATE const& state, EVENT const& event)
 {
     if constexpr (has_guard_v<TRANSITION>) {
-        return checkGuard<typename TRANSITION::guard>(state);
+        return checkGuard<typename TRANSITION::guard>(state, event);
     } else {
         return true;
     }
@@ -819,7 +838,7 @@ private:
     bool tryAlternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
     {
         bool fired = false;
-        static_cast<void>(((internal::allowed<ALTERNATIVEs>(state) &&
+        static_cast<void>(((internal::allowed<ALTERNATIVEs>(state, event) &&
                             (fired = this->template fire<ALTERNATIVEs>(state, event), true)) ||
                            ...));
         return fired;
