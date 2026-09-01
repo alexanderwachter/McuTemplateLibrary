@@ -474,6 +474,11 @@ constexpr bool annotation_changes()
 //       }
 //       void notifyEntry(message_t const& message); // hand to hardware
 //   };
+//
+// An observer may declare both; on the same edge the static hook is
+// guaranteed to run before the nonstatic one. This ordering is part of
+// the contract: a static annotation can prepare (e.g. reset) what the
+// nonstatic observation then consumes.
 template<typename DERIVED>
 struct observing {
     template<typename STATE>
@@ -689,6 +694,46 @@ void enterHook(OBSERVER& observer, MACHINE& machine)
 }
 
 } // namespace internal
+
+// Composite observer: forwards every hook to caller-owned member
+// observers in member order. fsm::observing allows one static and one
+// nonstatic observation per observer; a group bundles several such
+// observers so they can be injected into the machine as one, letting a
+// library predefine a cohesive set behind a single reference
+template<typename... OBSERVERs>
+class observer_group {
+public:
+    explicit observer_group(OBSERVERs&... members) : members_(members...) {}
+
+    template<typename TABLE>
+    static constexpr void validate()
+    {
+        static_assert((internal::validated<OBSERVERs, TABLE>() && ...));
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void onExitState(MACHINE& machine)
+    {
+        std::apply(
+            [&machine](auto&... member) {
+                (internal::exitHook<OLD_STATE, NEW_STATE>(member, machine), ...);
+            },
+            members_);
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void onEnterState(MACHINE& machine)
+    {
+        std::apply(
+            [&machine](auto&... member) {
+                (internal::enterHook<OLD_STATE, NEW_STATE>(member, machine), ...);
+            },
+            members_);
+    }
+
+private:
+    std::tuple<OBSERVERs&...> members_;
+};
 
 template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {

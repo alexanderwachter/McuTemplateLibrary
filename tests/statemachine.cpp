@@ -670,6 +670,83 @@ namespace raw_hooks {
     };
 } // namespace raw_hooks
 
+// --- static-before-nonstatic ordering within one observer -------------------
+namespace ordering {
+    struct go {
+        int value = 0;
+    };
+    struct mode_t {
+        int mode;
+        constexpr bool operator==(mode_t const&) const = default;
+    };
+
+    struct idle {
+        static constexpr mode_t mode{0};
+    };
+    struct active {
+        static constexpr mode_t mode{1};
+        active() = default;
+        explicit active(go const& event) : value(event.value) {}
+        int value = 0;
+    };
+
+    // observes the static mode and the nonstatic value; the contract
+    // guarantees the static hook runs first on the same entry
+    struct dual_observer : fsm::observing<dual_observer> {
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::mode)
+        {
+            return STATE::mode;
+        }
+        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.value))
+        {
+            return state.value;
+        }
+        void notifyEntry(mode_t const&) { sequence.push_back('s'); }
+        void notifyEntry(int value) { sequence.push_back('n'); last_value = value; }
+
+        std::vector<char> sequence;
+        int last_value = -1;
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>>;
+} // namespace ordering
+
+void staticHookRunsBeforeNonstaticHook()
+{
+    ordering::dual_observer observer;
+    fsm::state_machine<ordering::tbl, ordering::dual_observer> sm{observer};
+
+    check(observer.sequence == std::vector{'s'}); // initial entry: static only
+
+    check(sm.process(ordering::go{.value = 7}));
+    check(observer.sequence == std::vector{'s', 's', 'n'});
+    check(observer.last_value == 7);
+}
+
+void observerGroupForwardsHooksInMemberOrder()
+{
+    fsm::timed<manual_timer> tim;
+    output_controller ctrl;
+    raw_hooks::transition_counter counter;
+    fsm::observer_group<fsm::timed<manual_timer>, output_controller,
+                        raw_hooks::transition_counter>
+        group{tim, ctrl, counter};
+    fsm::state_machine<table, decltype(group)> sm{group}; // one reference, three observers
+
+    check(counter.enters == 1 && counter.exits == 0);
+    check(ctrl.log.size() == 1); // initial off outputs
+
+    sm.process(button_press{}); // off -> running
+    check(tim.timer.armed && tim.timer.duration == 50ms); // timed's validate/hooks forwarded
+    check(counter.enters == 2 && counter.exits == 1);
+    check(ctrl.log.back() == outputs_t{.led = true, .fan = true});
+
+    check(!sm.process(lock_key{})); // ignored event: nothing forwarded
+    check(counter.enters == 2 && counter.exits == 1);
+}
+
 void rawHookObserverSeesEveryTransition()
 {
     raw_hooks::transition_counter counter;
@@ -816,6 +893,8 @@ int statemachineTests()
     entryAndExitHooks();
     guardBlocksAndAllows();
     rawHookObserverSeesEveryTransition();
+    staticHookRunsBeforeNonstaticHook();
+    observerGroupForwardsHooksInMemberOrder();
     contextIsMachineOwnedAndShared();
     contextSurvivesTimeoutRetry();
     contextInitialState();
