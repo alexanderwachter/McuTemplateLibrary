@@ -3,9 +3,11 @@
  * documenting state machines. Development tooling for hosted builds -
  * not meant for target code.
  *
- * States become nodes (timeouts annotated), every transition one
- * labeled edge (guards in brackets), the initial state gets an entry
- * marker, and an any_state wildcard source is shown as a dashed node.
+ * States become nodes (timeouts annotated, and a state's optional
+ * static dot_note and dot_action strings appended to its label), every
+ * transition one labeled edge (guards in brackets), the initial state
+ * gets an entry marker, and an any_state wildcard source is shown as a
+ * dashed node.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -49,10 +51,24 @@ constexpr std::string_view label()
 template<typename STATE>
 void writeDotNode(std::ostream& out)
 {
+    constexpr bool timed  = has_timeout_v<STATE>;
+    constexpr bool noted  = requires { std::string_view{STATE::dot_note}; };
+    constexpr bool acting = requires { std::string_view{STATE::dot_action}; };
+
     out << "    \"" << label<STATE>() << '"';
-    if constexpr (has_timeout_v<STATE>) {
-        auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
-        out << " [label=\"" << label<STATE>() << "\\ntimeout " << ms << " ms\"]";
+    if constexpr (timed || noted || acting) {
+        out << " [label=\"" << label<STATE>();
+        if constexpr (timed) {
+            auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
+            out << "\\ntimeout " << ms << " ms";
+        }
+        if constexpr (noted) {
+            out << "\\n" << std::string_view{STATE::dot_note};
+        }
+        if constexpr (acting) {
+            out << "\\n" << std::string_view{STATE::dot_action};
+        }
+        out << "\"]";
     }
     out << ";\n";
 }

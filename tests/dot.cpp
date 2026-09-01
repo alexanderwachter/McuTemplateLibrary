@@ -11,6 +11,7 @@
 #include <source_location>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 using namespace std::chrono_literals;
 
@@ -19,9 +20,12 @@ namespace {
 struct go {};
 struct kill {};
 
-struct off {};
+struct off {
+    static constexpr std::string_view dot_note = "Power: Default";
+};
 struct running {
     static constexpr auto timeout = 50ms;
+    static constexpr std::string_view dot_note = "Power: On";
 };
 
 struct ready {
@@ -58,7 +62,8 @@ int dotTests()
 
     check(dot.starts_with("digraph \"example\" {"));
     check(dot.contains("\"off\" -> \"running\" [label=\"go\\n[ready]\"];"));
-    check(dot.contains("\"running\" [label=\"running\\ntimeout 50 ms\"];"));
+    check(dot.contains("\"off\" [label=\"off\\nPower: Default\"];"));
+    check(dot.contains("\"running\" [label=\"running\\ntimeout 50 ms\\nPower: On\"];"));
     check(dot.contains("\"running\" -> \"off\" [label=\"timeout\"];"));
     check(dot.contains("\"any_state\" [style=dashed];"));
     check(dot.contains("\"any_state\" -> \"off\" [label=\"kill\"];"));
