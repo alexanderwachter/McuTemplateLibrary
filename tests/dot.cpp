@@ -38,9 +38,10 @@ using table = fsm::transition_table<
     fsm::transition<fsm::from<running>,        fsm::on<fsm::timeout>, fsm::to<off>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>,         fsm::to<off>>>;
 
-// the label strips namespaces, the type name keeps them
+// the label strips namespaces, the type name keeps them (both from
+// mtl/TypeName.hpp)
 static_assert(fsm::internal::label<fsm::timeout>() == "timeout");
-static_assert(fsm::internal::type_name<fsm::timeout>() == "fsm::timeout");
+static_assert(mtl::type_name<fsm::timeout>() == "fsm::timeout");
 
 int failures = 0;
 

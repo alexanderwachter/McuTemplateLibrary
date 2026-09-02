@@ -16,6 +16,7 @@
 #pragma once
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/TypeName.hpp>
 #include <mtl/Typelist.hpp>
 
 #include <chrono>
@@ -27,25 +28,11 @@ namespace fsm {
 
 namespace internal {
 
-template<typename T>
-constexpr std::string_view type_name()
-{
-#if defined(__GNUC__) || defined(__clang__)
-    std::string_view const function = __PRETTY_FUNCTION__;
-    auto const start = function.find("T = ") + 4;
-    return function.substr(start, function.find_first_of("];", start) - start);
-#else
-    return "unknown";
-#endif
-}
-
-// Namespace qualifiers dropped for readable labels
+// Namespace qualifiers and template arguments dropped for readable labels
 template<typename T>
 constexpr std::string_view label()
 {
-    auto const name  = type_name<T>();
-    auto const colon = name.rfind("::");
-    return colon == std::string_view::npos ? name : name.substr(colon + 2);
+    return mtl::short_name<T>();
 }
 
 template<typename STATE>
