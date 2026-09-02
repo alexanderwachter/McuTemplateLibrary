@@ -200,8 +200,10 @@ struct any_payload {
 
 namespace concepts {
 
-template<typename T>
-concept guard = requires { &T::check; };
+// The guard contract is guard_for below, validated against the
+// transition's from-state; there is no state-independent guard concept
+// because a templated check (a guard shared by several states via
+// check(auto const&)) cannot be probed by name alone
 
 // check(from_state, event) for conditions on the event payload before
 // any handler applied it, check(from_state) for conditions on state
@@ -398,8 +400,9 @@ inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, 
 
 // A guard provides check(state, event), check(state), or check() -
 // the most specific overload wins. The event form decides on the
-// payload before any handler has applied it to the state
-template<concepts::guard GUARD, concepts::state STATE, typename EVENT>
+// payload before any handler has applied it to the state. Callability
+// was validated by the transition's guard_for static_assert
+template<typename GUARD, concepts::state STATE, typename EVENT>
 bool checkGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
 {
     if constexpr (requires { GUARD::check(state, event); }) {

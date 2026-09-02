@@ -174,11 +174,15 @@ namespace Guards {
     static_assert(std::is_same_v<reordered::guard, always>);
 
     struct with_state { static bool check(off const&) { return true; } };
-    static_assert(fsm::concepts::guard<with_state> && fsm::concepts::guard<always>);
-    static_assert(!fsm::concepts::guard<off>); // no check member
     static_assert(fsm::concepts::guard_for<with_state, off>);
     static_assert(!fsm::concepts::guard_for<with_state, running>); // wrong state
     static_assert(fsm::concepts::guard_for<always, off>); // no-argument form
+    static_assert(!fsm::concepts::guard_for<off, off>); // no check member
+
+    // a templated check(auto const&) is a guard shared by several states
+    struct generic { static bool check(auto const&) { return true; } };
+    static_assert(fsm::concepts::guard_for<generic, off>);
+    static_assert(fsm::concepts::guard_for<generic, running>);
 
     struct with_event { static bool check(off const&, button_press const&) { return true; } };
     static_assert(fsm::concepts::guard_for<with_event, off>); // (state, event) form
