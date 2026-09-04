@@ -262,6 +262,40 @@ namespace Reachability {
     static_assert(fsm::all_states_reachable_v<through_wildcard>);
 } // namespace Reachability
 
+namespace AnnotationCoverage {
+    struct tick {};
+    struct annotated { static constexpr int level = 3; };
+    struct wrongly_annotated { static constexpr char const* level = "high"; };
+    struct bare {};
+
+    struct level_watcher : fsm::observing<level_watcher> {
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::level)
+        {
+            return STATE::level;
+        }
+        void notifyEntry(int);
+    };
+
+    static_assert(fsm::is_observed_v<level_watcher, annotated>);
+    static_assert(!fsm::is_observed_v<level_watcher, bare>);
+    static_assert(fsm::concepts::notified_of<level_watcher, annotated>);
+    static_assert(fsm::is_notified_of_v<level_watcher, annotated>);
+    static_assert(!fsm::is_notified_of_v<level_watcher, bare>);
+
+    // observed, but no hook accepts the annotation's type: the dispatch
+    // would silently skip the state
+    static_assert(fsm::is_observed_v<level_watcher, wrongly_annotated>);
+    static_assert(!fsm::is_notified_of_v<level_watcher, wrongly_annotated>);
+
+    using mixed_table = fsm::transition_table<
+        fsm::transition<fsm::from<annotated>, fsm::on<tick>, fsm::to<bare>>,
+        fsm::transition<fsm::from<bare>,      fsm::on<tick>, fsm::to<annotated>>>;
+
+    static_assert(!fsm::all_states_notified_v<level_watcher, mixed_table>);
+    static_assert(fsm::all_states_notified_v<level_watcher, mixed_table, mtl::typelist<bare>>);
+} // namespace AnnotationCoverage
+
 namespace Wildcard {
     struct advance {};
     struct shutdown {};

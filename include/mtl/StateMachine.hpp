@@ -868,6 +868,64 @@ struct all_states_reachable
 template<typename TABLE>
 inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::value;
 
+namespace concepts {
+
+// OBSERVER's static observation of STATE reaches a notify hook: the
+// annotation exists and a notifyEntry/notifyExit overload accepts it.
+// This is the observing dispatch's own requires-expression, so the
+// concept cannot drift from what actually runs on an edge
+template<typename OBSERVER, typename STATE>
+concept notified_of =
+    requires(OBSERVER observer) {
+        observer.notifyEntry(OBSERVER::template annotation<STATE>());
+    } ||
+    requires(OBSERVER observer) {
+        observer.notifyExit(OBSERVER::template annotation<STATE>());
+    };
+
+} // namespace concepts
+
+// Whether OBSERVER's static observation covers STATE at all - even
+// without a hook accepting the annotation
+template<typename OBSERVER, typename STATE>
+struct is_observed : std::bool_constant<internal::observes_v<OBSERVER, STATE>> {};
+
+template<typename OBSERVER, typename STATE>
+inline constexpr bool is_observed_v = is_observed<OBSERVER, STATE>::value;
+
+template<typename OBSERVER, typename STATE>
+struct is_notified_of : std::bool_constant<concepts::notified_of<OBSERVER, STATE>> {};
+
+template<typename OBSERVER, typename STATE>
+inline constexpr bool is_notified_of_v = is_notified_of<OBSERVER, STATE>::value;
+
+namespace internal {
+
+template<typename OBSERVER, typename EXCEPTIONS>
+struct notified_in {
+    template<typename STATE>
+    struct pred : std::bool_constant<is_notified_of_v<OBSERVER, STATE> ||
+                                     mtl::has_a_v<EXCEPTIONS, STATE>> {};
+};
+
+} // namespace internal
+
+// Proves the observer notified of every state of the table: an
+// unannotated state (or one whose annotation no hook accepts) is
+// silently skipped by the observing dispatch, which for a driver
+// observer means stale hardware on entry. States in EXCEPTIONS may go
+// unobserved. Typically asserted from the observer's validate() hook so
+// every machine built with the observer is covered
+template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<>>
+struct all_states_notified
+    : std::bool_constant<mtl::all_of_v<
+          typename TABLE::states,
+          internal::notified_in<OBSERVER, EXCEPTIONS>::template pred>> {};
+
+template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<>>
+inline constexpr bool all_states_notified_v =
+    all_states_notified<OBSERVER, TABLE, EXCEPTIONS>::value;
+
 namespace internal {
 
 template<typename OBSERVER, typename TABLE>
