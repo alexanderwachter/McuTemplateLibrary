@@ -296,6 +296,22 @@ namespace AnnotationCoverage {
     static_assert(fsm::all_states_notified_v<level_watcher, mixed_table, mtl::typelist<bare>>);
 } // namespace AnnotationCoverage
 
+namespace EventHandling {
+    struct go {};
+    struct halt {};
+    struct ignored {};
+
+    using table = fsm::transition_table<
+        fsm::transition<fsm::from<off>, fsm::on<go>, fsm::to<running>>,
+        fsm::internal_transition<fsm::from<running>, fsm::on<go>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<halt>, fsm::to<off>>>;
+
+    static_assert(fsm::handles_event_v<table, off, go>);
+    static_assert(fsm::handles_event_v<table, running, go>); // internal counts
+    static_assert(fsm::handles_event_v<table, running, halt>); // via the wildcard
+    static_assert(!fsm::handles_event_v<table, off, ignored>);
+} // namespace EventHandling
+
 namespace Wildcard {
     struct advance {};
     struct shutdown {};

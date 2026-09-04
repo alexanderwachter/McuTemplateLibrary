@@ -868,6 +868,18 @@ struct all_states_reachable
 template<typename TABLE>
 inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::value;
 
+// Whether the table has a transition - regular, internal, or through
+// the any_state wildcard - for EVENT in STATE. The static
+// approximation of "the event is not dropped": alternatives whose
+// guards all decline at runtime still count as handled
+template<typename TABLE, typename STATE, typename EVENT>
+struct handles_event
+    : std::bool_constant<!std::is_same_v<
+          typename TABLE::template find_transition<STATE, EVENT>, mtl::nil_type>> {};
+
+template<typename TABLE, typename STATE, typename EVENT>
+inline constexpr bool handles_event_v = handles_event<TABLE, STATE, EVENT>::value;
+
 namespace concepts {
 
 // OBSERVER's static observation of STATE reaches a notify hook: the
