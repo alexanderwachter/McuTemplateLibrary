@@ -788,6 +788,74 @@ consteval bool timeoutsWithinBounds()
 
 namespace internal {
 
+// Transitions leaving the SET: internal transitions stay in place, a
+// wildcard source leaves from every state (the set is never empty)
+template<typename SET>
+struct leaves_from {
+    template<typename TRANSITION>
+    struct pred : std::bool_constant<
+        !is_internal_v<TRANSITION> &&
+        (std::is_same_v<typename TRANSITION::from, any_state> ||
+         mtl::has_a_v<SET, typename TRANSITION::from>)> {};
+};
+
+template<typename TRANSITION>
+struct to_of : std::type_identity<typename TRANSITION::to> {};
+
+// Fixed point of one-transition expansion; the lazy conditional keeps
+// the recursion from instantiating past the fixed point
+template<typename SET, typename TRANSITIONS>
+struct reachable_closure {
+    using targets =
+        mtl::transform_t<mtl::filter_t<TRANSITIONS, leaves_from<SET>::template pred>, to_of>;
+    using expanded = mtl::unique_t<mtl::concat_t<SET, targets>>;
+    using type     = typename std::conditional_t<std::is_same_v<expanded, SET>,
+                                                 std::type_identity<SET>,
+                                                 reachable_closure<expanded, TRANSITIONS>>::type;
+};
+
+template<typename TABLE>
+using reachable_states_t =
+    typename reachable_closure<mtl::typelist<mtl::front_t<typename TABLE::states>>,
+                               typename TABLE::transitions>::type;
+
+} // namespace internal
+
+// Whether the table's transitions can take the machine from its
+// initial state to STATE
+template<typename TABLE, typename STATE>
+struct is_reachable
+    : std::bool_constant<mtl::has_a_v<internal::reachable_states_t<TABLE>, STATE>> {};
+
+template<typename TABLE, typename STATE>
+inline constexpr bool is_reachable_v = is_reachable<TABLE, STATE>::value;
+
+namespace internal {
+
+template<typename TABLE>
+struct reachable_in {
+    template<typename STATE>
+    struct pred : is_reachable<TABLE, STATE> {};
+};
+
+} // namespace internal
+
+// Proves every state of the table reachable from the initial state. A
+// state that only appears as a transition source is dead code the
+// machine can never enter - typically a leftover of a table edit.
+// Assert next to the table (and probe individual states with
+// is_reachable when it fails):
+//   static_assert(fsm::all_states_reachable_v<my_table>);
+template<typename TABLE>
+struct all_states_reachable
+    : std::bool_constant<
+          mtl::all_of_v<typename TABLE::states, internal::reachable_in<TABLE>::template pred>> {};
+
+template<typename TABLE>
+inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::value;
+
+namespace internal {
+
 template<typename OBSERVER, typename TABLE>
 constexpr bool validated()
 {

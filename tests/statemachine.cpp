@@ -216,6 +216,37 @@ namespace TimeoutBounds {
                   timed_table, mtl::concat_t<mtl::typelist<>, ranged_map>>());
 } // namespace TimeoutBounds
 
+namespace Reachability {
+    struct start {};
+    struct step {};
+    struct orphan {};
+    struct end {};
+    struct advance {};
+    struct abort {};
+
+    using linear = fsm::transition_table<
+        fsm::transition<fsm::from<start>, fsm::on<advance>, fsm::to<step>>,
+        fsm::transition<fsm::from<step>,  fsm::on<advance>, fsm::to<end>>>;
+    static_assert(fsm::is_reachable_v<linear, end>);
+    static_assert(fsm::all_states_reachable_v<linear>);
+
+    // a state appearing only as a transition source is dead code
+    using orphaned = fsm::transition_table<
+        fsm::transition<fsm::from<start>,  fsm::on<advance>, fsm::to<end>>,
+        fsm::transition<fsm::from<orphan>, fsm::on<advance>, fsm::to<end>>>;
+    static_assert(!fsm::is_reachable_v<orphaned, orphan>);
+    static_assert(!fsm::all_states_reachable_v<orphaned>);
+
+    // a wildcard source leaves from every state; internal transitions
+    // stay in place and reach nothing
+    using through_wildcard = fsm::transition_table<
+        fsm::transition<fsm::from<start>, fsm::on<advance>, fsm::to<step>>,
+        fsm::internal_transition<fsm::from<step>, fsm::on<advance>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<abort>, fsm::to<end>>>;
+    static_assert(fsm::is_reachable_v<through_wildcard, end>);
+    static_assert(fsm::all_states_reachable_v<through_wildcard>);
+} // namespace Reachability
+
 namespace Wildcard {
     struct advance {};
     struct shutdown {};
