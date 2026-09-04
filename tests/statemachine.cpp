@@ -208,12 +208,27 @@ namespace TimeoutBounds {
     using ranged_map = mtl::typelist<fsm::timed_by<waiting, wait_range>>;
     using exact_map  = mtl::typelist<fsm::timed_by<waiting, exact_wait>>;
 
-    static_assert(fsm::timeoutsWithinBounds<timed_table, ranged_map>());
-    static_assert(fsm::timeoutsWithinBounds<timed_table, exact_map>());
+    static_assert(fsm::timeout_within_bounds_v<ranged_map, waiting>);
+    static_assert(fsm::timeouts_within_bounds_v<timed_table, ranged_map>);
+    static_assert(fsm::timeouts_within_bounds_v<timed_table, exact_map>);
 
     // maps compose by concatenation, like the tables they describe
-    static_assert(fsm::timeoutsWithinBounds<
-                  timed_table, mtl::concat_t<mtl::typelist<>, ranged_map>>());
+    static_assert(fsm::timeouts_within_bounds_v<
+                  timed_table, mtl::concat_t<mtl::typelist<>, ranged_map>>);
+
+    // rejected: a timeout outside the range, a duration that differs, a
+    // timed state without an entry, and an entry for an untimed state
+    inline constexpr fsm::timeout_range low_range{std::chrono::milliseconds{10},
+                                                  std::chrono::milliseconds{20}};
+    inline constexpr auto other_wait = std::chrono::milliseconds{100};
+    static_assert(!fsm::timeout_within_bounds_v<mtl::typelist<fsm::timed_by<waiting, low_range>>,
+                                                waiting>);
+    static_assert(!fsm::timeout_within_bounds_v<mtl::typelist<fsm::timed_by<waiting, other_wait>>,
+                                                waiting>);
+    static_assert(!fsm::timeouts_within_bounds_v<timed_table, mtl::typelist<>>);
+    static_assert(!fsm::timeouts_within_bounds_v<
+                  timed_table, mtl::concat_t<ranged_map,
+                                             mtl::typelist<fsm::timed_by<off, wait_range>>>>);
 } // namespace TimeoutBounds
 
 namespace Reachability {

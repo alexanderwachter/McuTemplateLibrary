@@ -733,36 +733,25 @@ struct entries_for {
     struct pred : std::is_same<typename ENTRY::state, STATE> {};
 };
 
-// One instantiation per state so a violation names the state in the
-// instantiation trace
-template<typename STATE, mtl::concepts::typelist MAP>
-consteval bool timeoutWithinBounds()
-{
-    constexpr auto entries = mtl::count_if_v<MAP, entries_for<STATE>::template pred>;
-    if constexpr (has_timeout_v<STATE>) {
-        static_assert(entries == 1, "timed state needs exactly one timer-range map entry");
-        if constexpr (entries == 1) {
-            using entry = mtl::find_if_t<MAP, entries_for<STATE>::template pred>;
-            if constexpr (concepts::timeout_range<
-                              std::remove_cvref_t<decltype(entry::bound)>>) {
-                static_assert(entry::bound.contains(STATE::timeout),
-                              "state timeout outside the mapped range");
-            } else {
-                static_assert(STATE::timeout == entry::bound,
-                              "state timeout differs from the mapped value");
-            }
-        }
-    } else {
-        static_assert(entries == 0, "state is in the timer-range map but has no timeout");
-    }
-    return true;
-}
+// A range entry must contain the timeout, an exact duration must equal it
+template<typename STATE, typename ENTRY,
+         bool RANGE = concepts::timeout_range<std::remove_cvref_t<decltype(ENTRY::bound)>>>
+struct entry_bounds_timeout : std::bool_constant<ENTRY::bound.contains(STATE::timeout)> {};
 
-template<mtl::concepts::typelist MAP, typename... STATEs>
-consteval bool timeoutsWithinBounds(mtl::typelist<STATEs...>)
-{
-    return (timeoutWithinBounds<STATEs, MAP>() && ...);
-}
+template<typename STATE, typename ENTRY>
+struct entry_bounds_timeout<STATE, ENTRY, false>
+    : std::bool_constant<STATE::timeout == ENTRY::bound> {};
+
+// A timed state needs exactly one entry; the specialization keeps the
+// entry's bound uninstantiated for any other count
+template<typename STATE, typename MAP,
+         std::size_t ENTRIES = mtl::count_if_v<MAP, entries_for<STATE>::template pred>>
+struct timed_state_bounded : std::false_type {};
+
+template<typename STATE, typename MAP>
+struct timed_state_bounded<STATE, MAP, 1>
+    : entry_bounds_timeout<STATE,
+                           mtl::find_if_t<MAP, entries_for<STATE>::template pred>> {};
 
 template<typename TABLE>
 struct maps_a_state_of {
@@ -772,19 +761,44 @@ struct maps_a_state_of {
 
 } // namespace internal
 
-// Checks the table's states against a timer-range map (a typelist of
-// timed_by entries), both ways: every state with a timeout must have
-// exactly one entry, every entry must name a timed state of the table.
-// An entry's timeout_range must contain the state's timeout, an exact
-// duration must equal it. Assert next to the table:
-//   static_assert(fsm::timeoutsWithinBounds<my_table, my_timer_ranges>());
-template<concepts::transition_table TABLE, mtl::concepts::typelist MAP>
-consteval bool timeoutsWithinBounds()
-{
-    static_assert(mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred>,
-                  "timer-range map entry for a type that is no state of the table");
-    return internal::timeoutsWithinBounds<MAP>(typename TABLE::states{});
-}
+// Whether STATE is consistent with a timer-range map (a typelist of
+// timed_by entries): a timed state has exactly one entry whose
+// timeout_range contains its timeout (an exact duration must equal
+// it), an untimed state has none
+template<typename MAP, typename STATE, bool TIMED = internal::has_timeout_v<STATE>>
+struct timeout_within_bounds : internal::timed_state_bounded<STATE, MAP> {};
+
+template<typename MAP, typename STATE>
+struct timeout_within_bounds<MAP, STATE, false>
+    : std::bool_constant<
+          mtl::count_if_v<MAP, internal::entries_for<STATE>::template pred> == 0> {};
+
+template<typename MAP, typename STATE>
+inline constexpr bool timeout_within_bounds_v = timeout_within_bounds<MAP, STATE>::value;
+
+namespace internal {
+
+template<typename MAP>
+struct bounded_in {
+    template<typename STATE>
+    struct pred : timeout_within_bounds<MAP, STATE> {};
+};
+
+} // namespace internal
+
+// Proves the table's states consistent with a timer-range map, both
+// ways: every timed state bounded by exactly one entry, every entry
+// naming a timed state of the table. Assert next to the table (and
+// probe individual states with timeout_within_bounds when it fails):
+//   static_assert(fsm::timeouts_within_bounds_v<my_table, my_timer_ranges>);
+template<typename TABLE, typename MAP>
+struct timeouts_within_bounds
+    : std::bool_constant<
+          mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred> &&
+          mtl::all_of_v<typename TABLE::states, internal::bounded_in<MAP>::template pred>> {};
+
+template<typename TABLE, typename MAP>
+inline constexpr bool timeouts_within_bounds_v = timeouts_within_bounds<TABLE, MAP>::value;
 
 namespace internal {
 
