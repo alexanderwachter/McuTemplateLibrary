@@ -1083,6 +1083,16 @@ public:
         return std::get_if<STATE>(&current_);
     }
 
+    // Read-only view of the machine-owned context instance of type T
+    // (one some state declares as its context member). Observation
+    // only, like getIf(): every mutation goes through process() - a
+    // state writes its context, seeded by event payload if needed
+    template<typename T>
+    [[nodiscard]] T const& context() const
+    {
+        return std::get<T>(contexts_);
+    }
+
 private:
     // First alternative whose guard passes fires; false when none does.
     // The fold short-circuits after a firing: the state reference is
