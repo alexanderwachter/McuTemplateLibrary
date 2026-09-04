@@ -688,6 +688,104 @@ public:
         find_all_exact<FROM, EVENT>>;
 };
 
+// A range of acceptable timeouts, e.g. a specification's min/max pair.
+// Microsecond resolution: spec bounds may be fractions of a millisecond
+struct timeout_range {
+    std::chrono::microseconds min;
+    std::chrono::microseconds max;
+
+    constexpr bool contains(auto duration) const { return min <= duration && duration <= max; }
+};
+
+// Trait behind concepts::timeout_range; specialize it for a custom
+// range type providing contains(duration)
+template<typename T>
+struct is_timeout_range : std::false_type {};
+
+template<>
+struct is_timeout_range<timeout_range> : std::true_type {};
+
+namespace concepts {
+
+template<typename T>
+concept timeout_range = is_timeout_range<T>::value;
+
+} // namespace concepts
+
+// Timer-range map entry: binds a state to its acceptable timing - a
+// timeout_range or an exact duration. A map is a typelist of entries;
+// maps compose by typelist concatenation, like the transition tables
+// they describe. BOUND is a reference, not a value: chrono durations
+// are not structural types, so the constexpr bound object cannot itself
+// be a template argument - the reference to it can, and keeps every use
+// a constant expression
+template<concepts::state STATE, auto const& BOUND>
+struct timed_by {
+    using state = STATE;
+    static constexpr auto& bound = BOUND;
+};
+
+namespace internal {
+
+template<typename STATE>
+struct entries_for {
+    template<typename ENTRY>
+    struct pred : std::is_same<typename ENTRY::state, STATE> {};
+};
+
+// One instantiation per state so a violation names the state in the
+// instantiation trace
+template<typename STATE, mtl::concepts::typelist MAP>
+consteval bool timeoutWithinBounds()
+{
+    constexpr auto entries = mtl::count_if_v<MAP, entries_for<STATE>::template pred>;
+    if constexpr (has_timeout_v<STATE>) {
+        static_assert(entries == 1, "timed state needs exactly one timer-range map entry");
+        if constexpr (entries == 1) {
+            using entry = mtl::find_if_t<MAP, entries_for<STATE>::template pred>;
+            if constexpr (concepts::timeout_range<
+                              std::remove_cvref_t<decltype(entry::bound)>>) {
+                static_assert(entry::bound.contains(STATE::timeout),
+                              "state timeout outside the mapped range");
+            } else {
+                static_assert(STATE::timeout == entry::bound,
+                              "state timeout differs from the mapped value");
+            }
+        }
+    } else {
+        static_assert(entries == 0, "state is in the timer-range map but has no timeout");
+    }
+    return true;
+}
+
+template<mtl::concepts::typelist MAP, typename... STATEs>
+consteval bool timeoutsWithinBounds(mtl::typelist<STATEs...>)
+{
+    return (timeoutWithinBounds<STATEs, MAP>() && ...);
+}
+
+template<typename TABLE>
+struct maps_a_state_of {
+    template<typename ENTRY>
+    struct pred : mtl::has_a<typename TABLE::states, typename ENTRY::state> {};
+};
+
+} // namespace internal
+
+// Checks the table's states against a timer-range map (a typelist of
+// timed_by entries), both ways: every state with a timeout must have
+// exactly one entry, every entry must name a timed state of the table.
+// An entry's timeout_range must contain the state's timeout, an exact
+// duration must equal it. Assert next to the table:
+//   static_assert(fsm::timeoutsWithinBounds<my_table, my_timer_ranges>());
+template<concepts::transition_table TABLE, mtl::concepts::typelist MAP>
+consteval bool timeoutsWithinBounds()
+{
+    static_assert(mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred>,
+                  "timer-range map entry for a type that is no state of the table");
+    return internal::timeoutsWithinBounds<MAP>(typename TABLE::states{});
+}
+
 namespace internal {
 
 template<typename OBSERVER, typename TABLE>

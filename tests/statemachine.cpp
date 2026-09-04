@@ -189,6 +189,33 @@ namespace Guards {
     static_assert(!fsm::concepts::guard_for<with_event, running>); // wrong state
 } // namespace Guards
 
+namespace TimeoutBounds {
+    static_assert(fsm::is_timeout_range<fsm::timeout_range>::value);
+    static_assert(fsm::concepts::timeout_range<fsm::timeout_range>);
+    static_assert(!fsm::concepts::timeout_range<std::chrono::milliseconds>);
+
+    struct waiting { static constexpr auto timeout = std::chrono::milliseconds{150}; };
+
+    using timed_table = fsm::transition_table<
+        fsm::transition<fsm::from<off>,     fsm::on<button_press>, fsm::to<waiting>>,
+        fsm::transition<fsm::from<waiting>, fsm::on<fsm::timeout>, fsm::to<off>>>;
+
+    // an entry's range must contain the timeout, an exact duration must equal it
+    inline constexpr fsm::timeout_range wait_range{std::chrono::milliseconds{100},
+                                                   std::chrono::milliseconds{200}};
+    inline constexpr auto exact_wait = std::chrono::milliseconds{150};
+
+    using ranged_map = mtl::typelist<fsm::timed_by<waiting, wait_range>>;
+    using exact_map  = mtl::typelist<fsm::timed_by<waiting, exact_wait>>;
+
+    static_assert(fsm::timeoutsWithinBounds<timed_table, ranged_map>());
+    static_assert(fsm::timeoutsWithinBounds<timed_table, exact_map>());
+
+    // maps compose by concatenation, like the tables they describe
+    static_assert(fsm::timeoutsWithinBounds<
+                  timed_table, mtl::concat_t<mtl::typelist<>, ranged_map>>());
+} // namespace TimeoutBounds
+
 namespace Wildcard {
     struct advance {};
     struct shutdown {};
