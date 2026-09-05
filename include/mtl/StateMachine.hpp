@@ -72,6 +72,8 @@
 
 #include <chrono>
 #include <concepts>
+#include <cstdint>
+#include <limits>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -433,6 +435,18 @@ bool allowed(STATE const& state, EVENT const& event)
     }
 }
 
+// The shared wildcard path cannot name the source state, so only the
+// stateless guard form applies there (shareability requires it)
+template<typename TRANSITION>
+bool wildcardAllowed()
+{
+    if constexpr (has_guard_v<TRANSITION>) {
+        return TRANSITION::guard::check();
+    } else {
+        return true;
+    }
+}
+
 // Alternatives for one (state, event) pair are tried in table order; an
 // unguarded transition always fires, so anything after it is dead
 template<mtl::concepts::typelist LIST>
@@ -467,6 +481,15 @@ constexpr bool annotation_changes()
         return OBSERVER::template annotation<STATE>() != OBSERVER::template annotation<OTHER>();
     }
 }
+
+// An annotation type declaring `static constexpr bool idempotent =
+// true` promises that notifying its value again with no change in
+// between is harmless - the shared wildcard path may then re-notify
+// where the per-edge path would have change-suppressed
+template<typename OBSERVER, typename STATE>
+inline constexpr bool idempotent_annotation_v = requires {
+    requires std::remove_cvref_t<decltype(OBSERVER::template annotation<STATE>())>::idempotent;
+};
 
 } // namespace internal
 
@@ -571,6 +594,34 @@ private:
     }
 
 public:
+    // Compile-time facts for the machine's shared wildcard path (one
+    // transition body per (event, target) instead of one per source
+    // state). exit_silent: leaving OLD_STATE notifies nothing at all.
+    // entry_shared_from: entering NEW_STATE without knowing the source
+    // behaves exactly like entering it from OLD_STATE - the annotation
+    // fires either way, there is nothing to notify, or the annotation
+    // type declares re-notification idempotent
+    template<typename OLD_STATE, typename MACHINE>
+    static constexpr bool exit_silent =
+        !requires(DERIVED self) {
+            self.notifyExit(DERIVED::template annotation<OLD_STATE>());
+        } &&
+        !requires(DERIVED self, MACHINE machine) {
+            self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
+        };
+
+    // An observer declaring `static constexpr bool renotify_safe =
+    // true` promises its entry hooks tolerate re-notification with an
+    // unchanged value (e.g. it suppresses at runtime itself) - the
+    // per-annotation `idempotent` declaration, generalized
+    template<typename NEW_STATE, typename OLD_STATE>
+    static constexpr bool entry_shared_from =
+        internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>() ||
+        !requires(DERIVED self) {
+            self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
+        } ||
+        internal::idempotent_annotation_v<DERIVED, NEW_STATE> ||
+        requires { requires DERIVED::renotify_safe; };
 };
 
 // Observer implementing the state-timeout semantics on top of a TIMER
@@ -625,19 +676,58 @@ private:
     void startFor(MACHINE& machine)
     {
         if constexpr (internal::has_timeout_v<STATE>) {
-            timer.start(
-                std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout),
-                [](void* context) {
-                    static_cast<MACHINE*>(context)->process(timeout{});
-                },
-                &machine);
+            constexpr auto duration =
+                std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout);
+            static_assert(duration.count() >= 0 &&
+                              duration.count() <= std::numeric_limits<std::uint32_t>::max(),
+                          "fsm::timed: timeout out of the 32-bit millisecond range");
+            this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
         }
+    }
+
+    // One body per machine, the duration passed as a 32-bit value:
+    // materializing the 64-bit chrono constant in every per-state
+    // start measured ~40 bytes each on Thumb-1 (-Os, GCC 14)
+    template<typename MACHINE>
+    [[gnu::noinline]] void startTimer(std::uint32_t duration_ms, MACHINE& machine)
+    {
+        timer.start(
+            std::chrono::milliseconds{duration_ms},
+            [](void* context) {
+                static_cast<MACHINE*>(context)->process(timeout{});
+            },
+            &machine);
     }
 
 public:
 
     TIMER timer;
 };
+
+namespace internal {
+
+// The machine's shared wildcard path special-cases the timed
+// observer: it cannot name the state being left, so it stops the
+// timer unconditionally - the contract tolerates stopping an unarmed
+// timer, and a running one always belongs to the state being left
+template<typename OBSERVER>
+struct is_timed : std::false_type {};
+
+template<typename TIMER>
+struct is_timed<timed<TIMER>> : std::true_type {};
+
+template<typename OBSERVER>
+inline constexpr bool is_timed_v = is_timed<OBSERVER>::value;
+
+template<typename OBSERVER>
+void stopIfTimed(OBSERVER& observer)
+{
+    if constexpr (is_timed_v<OBSERVER>) {
+        observer.timer.stop();
+    }
+}
+
+} // namespace internal
 
 // Transitions plus an optional initial<STATE> role; without it the first
 // state of the first transition is the initial state
@@ -709,6 +799,15 @@ public:
         std::is_same_v<find_all_exact<FROM, EVENT>, mtl::typelist<>>,
         find_all_exact<any_state, EVENT>,
         find_all_exact<FROM, EVENT>>;
+
+    // The two halves of find_transitions, split: the machine's shared
+    // wildcard path dispatches exact pairs per state and the wildcard
+    // group through one body per (event, target)
+    template<typename FROM, typename EVENT>
+    using exact_transitions = find_all_exact<FROM, EVENT>;
+
+    template<typename EVENT>
+    using wildcard_transitions = find_all_exact<any_state, EVENT>;
 };
 
 // A range of acceptable timeouts, e.g. a specification's min/max pair.
@@ -1030,6 +1129,21 @@ private:
     std::tuple<OBSERVERs&...> members_;
 };
 
+namespace internal {
+
+// Group detection by derived-to-base conversion: the shared wildcard
+// path judges a group by its members, not by the forwarding hooks
+template<typename... MEMBERs>
+constexpr mtl::typelist<MEMBERs...> groupMembersOf(observer_group<MEMBERs...> const&);
+
+template<typename OBSERVER>
+concept grouped_observer = requires(OBSERVER const& observer) { groupMembersOf(observer); };
+
+template<grouped_observer OBSERVER>
+using group_members_t = decltype(groupMembersOf(std::declval<OBSERVER const&>()));
+
+} // namespace internal
+
 template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class state_machine {
     using TRANSITIONS = TRANSITION_TABLE;
@@ -1071,18 +1185,46 @@ public:
     state_machine& operator=(state_machine const&) = delete;
 
     // Returns true if a transition fired (false: no matching transition, or
-    // every alternative's guard said no)
+    // every alternative's guard said no).
+    // A from<any_state> transition is fired through one shared body per
+    // (event, target) when that provably cannot be observed - the
+    // per-source expansion otherwise emits one near-identical
+    // transition body per state (measured kilobytes in a machine with a
+    // handful of wildcard events). Shareability is proved per event at
+    // compile time (wildcardShareable below); anything unprovable falls
+    // back to the exact per-source expansion
     template<typename EVENT>
     bool process(EVENT const& event)
     {
-        return internal::dispatch(
-            [this, &event](auto& state) -> bool {
-                using state_type = std::decay_t<decltype(state)>;
-                using alternatives =
-                    typename TRANSITIONS::template find_transitions<state_type, EVENT>;
-                return this->template tryAlternatives<state_type>(alternatives{}, state, event);
-            },
-            current_);
+        if constexpr (wildcardShareable<EVENT>()) {
+            bool const fired = internal::dispatch(
+                [this, &event](auto& state) -> bool {
+                    using state_type = std::decay_t<decltype(state)>;
+                    using alternatives =
+                        typename TRANSITIONS::template exact_transitions<state_type, EVENT>;
+                    return this->template tryAlternatives<state_type>(alternatives{}, state,
+                                                                      event);
+                },
+                current_);
+            if (fired) {
+                return true;
+            }
+            if (this->template exactAlternativesExist<EVENT>()) {
+                return false; // a refused exact group shadows the wildcard
+            }
+            return this->fireWildcards(
+                typename TRANSITIONS::template wildcard_transitions<EVENT>{}, event);
+        } else {
+            return internal::dispatch(
+                [this, &event](auto& state) -> bool {
+                    using state_type = std::decay_t<decltype(state)>;
+                    using alternatives =
+                        typename TRANSITIONS::template find_transitions<state_type, EVENT>;
+                    return this->template tryAlternatives<state_type>(alternatives{}, state,
+                                                                      event);
+                },
+                current_);
+        }
     }
 
     // Is STATE the active state?
@@ -1117,6 +1259,138 @@ public:
     }
 
 private:
+    // --- shared wildcard path -----------------------------------------------
+
+    // One observer's view of the shared edge into NEW_STATE from the
+    // unknowable OLD_STATE: the timed observer is handled by the
+    // unconditional stop, an observing one must prove its exit silent
+    // and its entry source-independent, and a raw per-edge hook (which
+    // would receive the real source state) blocks sharing entirely
+    template<typename OBSERVER, typename NEW_STATE, typename OLD_STATE>
+    static constexpr bool observerSharesEdge()
+    {
+        if constexpr (internal::is_timed_v<OBSERVER>) {
+            return true;
+        } else if constexpr (std::derived_from<OBSERVER, observing<OBSERVER>>) {
+            return OBSERVER::template exit_silent<OLD_STATE, state_machine> &&
+                   OBSERVER::template entry_shared_from<NEW_STATE, OLD_STATE>;
+        } else if constexpr (internal::grouped_observer<OBSERVER>) {
+            return membersShareEdge<NEW_STATE, OLD_STATE>(
+                internal::group_members_t<OBSERVER>{});
+        } else {
+            return !requires(OBSERVER observer, state_machine& machine) {
+                observer.template onExitState<OLD_STATE, NEW_STATE>(machine);
+            } && !requires(OBSERVER observer, state_machine& machine) {
+                observer.template onEnterState<OLD_STATE, NEW_STATE>(machine);
+            };
+        }
+    }
+
+    template<typename NEW_STATE, typename OLD_STATE, typename... MEMBERs>
+    static constexpr bool membersShareEdge(mtl::typelist<MEMBERs...>)
+    {
+        return (observerSharesEdge<MEMBERs, NEW_STATE, OLD_STATE>() && ...);
+    }
+
+    // States without an exact group for EVENT: exactly those the
+    // wildcard can fire from
+    template<typename EVENT>
+    struct exactless_for {
+        template<typename STATE>
+        struct pred
+            : std::is_same<typename TRANSITIONS::template exact_transitions<STATE, EVENT>,
+                           mtl::typelist<>> {};
+    };
+
+    template<typename TO, typename EVENT>
+    struct wildcard_source_ok {
+        template<typename STATE>
+        struct pred : std::bool_constant<!requires(STATE state) { state.onExit(); } &&
+                                         (observerSharesEdge<OBSERVERs, TO, STATE>() && ...)> {
+        };
+    };
+
+    template<typename EVENT, typename... WILDCARDs>
+    static constexpr bool wildcardsShareable(mtl::typelist<WILDCARDs...>)
+    {
+        using exactless =
+            mtl::filter_t<typename TRANSITIONS::states, exactless_for<EVENT>::template pred>;
+        return ((!internal::is_internal_v<WILDCARDs> &&
+                 (!internal::has_guard_v<WILDCARDs> ||
+                  requires {
+                      { WILDCARDs::guard::check() } -> std::convertible_to<bool>;
+                  }) &&
+                 mtl::all_of_v<exactless, wildcard_source_ok<typename WILDCARDs::to,
+                                                             EVENT>::template pred>) &&
+                ...);
+    }
+
+    template<typename EVENT>
+    static constexpr bool wildcardShareable()
+    {
+        using wildcards = typename TRANSITIONS::template wildcard_transitions<EVENT>;
+        if constexpr (std::is_same_v<wildcards, mtl::typelist<>>) {
+            return false;
+        } else {
+            return wildcardsShareable<EVENT>(wildcards{});
+        }
+    }
+
+    // Whether the active state has an exact group for EVENT - a refused
+    // exact group shadows the wildcard, exactly like find_transitions.
+    // States without one contribute no code to the fold
+    template<typename EVENT>
+    bool exactAlternativesExist() const
+    {
+        return [this]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
+            return ((!std::is_same_v<
+                         typename TRANSITIONS::template exact_transitions<
+                             std::variant_alternative_t<INDEXs, state_variant>, EVENT>,
+                         mtl::typelist<>> &&
+                     current_.index() == INDEXs) ||
+                    ...);
+        }(std::make_index_sequence<std::variant_size_v<state_variant>>{});
+    }
+
+    template<typename... WILDCARDs, typename EVENT>
+    bool fireWildcards(mtl::typelist<WILDCARDs...>, EVENT const& event)
+    {
+        bool fired = false;
+        static_cast<void>(((internal::wildcardAllowed<WILDCARDs>() &&
+                            (fired = this->template fireShared<WILDCARDs>(event), true)) ||
+                           ...));
+        return fired;
+    }
+
+    // The shared transition body: stop any armed timer (it belongs to
+    // the state being left), replace it, and enter the target the way
+    // the constructor does - the source is unknowable here, and the
+    // shareability proof made that unobservable
+    template<typename TRANSITION, typename EVENT>
+    bool fireShared(EVENT const& event)
+    {
+        using NEW_STATE = typename TRANSITION::to;
+        std::apply([](auto&... observer) { (internal::stopIfTimed(observer), ...); },
+                   observers_);
+        if constexpr (internal::payload_constructible_v<NEW_STATE, EVENT>) {
+            if constexpr (internal::context_holder<NEW_STATE>) {
+                current_.template emplace<NEW_STATE>(
+                    event, std::get<internal::context_of_t<NEW_STATE>>(contexts_));
+            } else {
+                current_.template emplace<NEW_STATE>(event);
+            }
+        } else if constexpr (internal::context_holder<NEW_STATE>) {
+            current_.template emplace<NEW_STATE>(
+                std::get<internal::context_of_t<NEW_STATE>>(contexts_));
+        } else {
+            current_.template emplace<NEW_STATE>();
+        }
+        this->template enter<mtl::nil_type, NEW_STATE>();
+        return true;
+    }
+
+    // --- per-edge path ------------------------------------------------------
+
     // First alternative whose guard passes fires; false when none does.
     // The fold short-circuits after a firing: the state reference is
     // dangling from that point on
