@@ -24,6 +24,7 @@ struct manual_timer {
     fsm::timer_callback callback = nullptr;
     void* context                = nullptr;
     bool armed                   = false;
+    int starts                   = 0; // re-arm detection
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
@@ -31,6 +32,7 @@ struct manual_timer {
         callback = cb;
         context  = ctx;
         armed    = true;
+        ++starts;
     }
     void stop() { armed = false; }
     void expire()
@@ -574,6 +576,56 @@ namespace SharedWildcard {
         fsm::transition<fsm::from<b>, fsm::on<kill>, fsm::to<a>, fsm::guard<never>>,
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
 } // namespace SharedWildcard
+
+namespace Deadline {
+    struct step {};
+    struct bounce {};
+    struct retry {};
+
+    // a two-state phase under one 80 ms budget; probing carries a
+    // per-state timeout alongside the phase deadline
+    struct searching {
+        static constexpr auto deadline = 80ms;
+    };
+    struct probing {
+        static constexpr auto deadline = 80ms;
+        static constexpr auto timeout  = 20ms;
+    };
+    struct rearmed { // a different value: a new phase, re-armed
+        static constexpr auto deadline = 30ms;
+    };
+    struct arrived { // the zero sentinel: the phase target, clock stopped
+        static constexpr auto deadline = 0ms;
+    };
+    struct gave_up {};
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<searching>, fsm::on<step>,          fsm::to<probing>>,
+        fsm::transition<fsm::from<probing>,   fsm::on<bounce>,        fsm::to<searching>>,
+        fsm::transition<fsm::from<probing>,   fsm::on<fsm::timeout>,  fsm::to<searching>>,
+        fsm::transition<fsm::from<probing>,   fsm::on<step>,          fsm::to<arrived>>,
+        fsm::transition<fsm::from<searching>, fsm::on<fsm::deadline>, fsm::to<gave_up>>,
+        fsm::transition<fsm::from<probing>,   fsm::on<fsm::deadline>, fsm::to<gave_up>>,
+        fsm::transition<fsm::from<arrived>,   fsm::on<retry>,         fsm::to<rearmed>>,
+        fsm::transition<fsm::from<rearmed>,   fsm::on<fsm::deadline>, fsm::to<gave_up>>,
+        fsm::transition<fsm::from<gave_up>,   fsm::on<retry>,         fsm::to<searching>>>;
+
+    // the deadline bounds mirror of the timeout map checks
+    inline constexpr fsm::timeout_range phase_range{70ms, 90ms};
+    inline constexpr fsm::timeout_range short_range{20ms, 40ms};
+    using ranges = mtl::typelist<fsm::timed_by<searching, phase_range>,
+                                 fsm::timed_by<probing, phase_range>,
+                                 fsm::timed_by<rearmed, short_range>>;
+    static_assert(fsm::deadlines_within_bounds_v<tbl, ranges>);
+    static_assert(fsm::deadline_within_bounds_v<ranges, searching>);
+    // the zero sentinel and unannotated states must have no entry ...
+    static_assert(fsm::deadline_within_bounds_v<ranges, arrived>);
+    static_assert(!fsm::deadline_within_bounds_v<
+                  mtl::typelist<fsm::timed_by<arrived, phase_range>>, arrived>);
+    // ... and an active deadline outside its range fails
+    static_assert(!fsm::deadline_within_bounds_v<
+                  mtl::typelist<fsm::timed_by<rearmed, phase_range>>, rearmed>);
+} // namespace Deadline
 
 // --- runtime checks ---------------------------------------------------------
 
@@ -1138,6 +1190,40 @@ void refusedExactGroupShadowsWildcard()
     check(sm.is<dead>() && sm.getIf<dead>()->code == 2);
 }
 
+void deadlineSpansPhaseWithoutRearming()
+{
+    using namespace Deadline;
+    manual_timer clock; // the deadline's own timer, next to fsm::timed's
+    fsm::deadlined<manual_timer&> ded{clock};
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<tbl, fsm::deadlined<manual_timer&>, fsm::timed<manual_timer>> sm{ded,
+                                                                                       tim};
+
+    check(clock.armed && clock.duration == 80ms); // armed on phase entry
+    check(clock.starts == 1);
+
+    check(sm.process(step{})); // searching -> probing: same value
+    check(tim.timer.armed);    // the per-state timeout runs alongside
+    check(sm.process(bounce{})); // ... and back: still the same phase
+    check(sm.process(step{}));
+    check(clock.starts == 1); // bouncing never re-armed the deadline
+
+    clock.expire(); // the budget is up, wherever the phase stands
+    check(sm.is<gave_up>());
+    check(!tim.timer.armed); // probing's timeout stopped by the exit
+
+    check(sm.process(retry{})); // gave_up -> searching: a fresh phase
+    check(clock.starts == 2 && clock.duration == 80ms);
+    check(sm.process(step{})); // -> probing
+    check(sm.process(step{})); // -> arrived: the zero sentinel
+    check(!clock.armed);       // target reached, clock stopped
+
+    check(sm.process(retry{})); // arrived -> rearmed: a new value
+    check(clock.starts == 3 && clock.duration == 30ms);
+    clock.expire();
+    check(sm.is<gave_up>());
+}
+
 void timerInjectedByReference()
 {
     manual_timer timer; // caller-owned policy instance
@@ -1182,5 +1268,6 @@ int statemachineTests()
     sharedWildcardFiresLikePerSource();
     wildcardFallbackDeliversExitValues();
     refusedExactGroupShadowsWildcard();
+    deadlineSpansPhaseWithoutRearming();
     return failures;
 }

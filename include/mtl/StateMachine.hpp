@@ -88,6 +88,11 @@ struct any_state {};
 // Event injected by the timer policy when a state's timeout expires
 struct timeout {};
 
+// Event injected by the deadline policy when a phase deadline expires
+// (fsm::deadlined below); distinct from timeout so a state can react
+// to both
+struct deadline {};
+
 namespace internal {
 
 // A state opts into machine-owned context by holding a reference
@@ -402,6 +407,42 @@ struct timeout_handled_in {
     struct pred : std::bool_constant<
         !has_timeout_v<STATE> ||
         !std::is_same_v<typename TABLE::template find_transition<STATE, timeout>,
+                        mtl::nil_type>> {};
+};
+
+template<typename STATE>
+inline constexpr bool has_deadline_v = requires { STATE::deadline; };
+
+// A zero deadline is the phase-target sentinel: it stops the clock
+// like an unannotated state, but says so explicitly
+template<typename STATE>
+constexpr bool activeDeadline()
+{
+    if constexpr (has_deadline_v<STATE>) {
+        return STATE::deadline != decltype(STATE::deadline){};
+    } else {
+        return false;
+    }
+}
+
+// Whether the edge continues one running phase: the state left
+// carries the same nonzero deadline as the one entered
+template<typename OLD_STATE, typename NEW_STATE>
+constexpr bool continuesDeadline()
+{
+    if constexpr (has_deadline_v<OLD_STATE> && has_deadline_v<NEW_STATE>) {
+        return activeDeadline<OLD_STATE>() && OLD_STATE::deadline == NEW_STATE::deadline;
+    } else {
+        return false;
+    }
+}
+
+template<typename TABLE>
+struct deadline_handled_in {
+    template<typename STATE>
+    struct pred : std::bool_constant<
+        !activeDeadline<STATE>() ||
+        !std::is_same_v<typename TABLE::template find_transition<STATE, deadline>,
                         mtl::nil_type>> {};
 };
 
@@ -729,6 +770,76 @@ void stopIfTimed(OBSERVER& observer)
 
 } // namespace internal
 
+// Observer implementing phase deadlines on top of a TIMER policy: a
+// hard time budget spanning several states. A state annotates
+//
+//   static constexpr auto deadline = <duration>;
+//
+// and entering it arms the timer - unless the state left carries the
+// SAME nonzero value, which continues the running phase without
+// re-arming, so bouncing between the phase's states cannot extend the
+// budget. Entering a state without the annotation stops the clock; so
+// does the zero-duration sentinel, which marks the phase target
+// explicitly. Expiry injects fsm::deadline - distinct from
+// fsm::timeout, and driven by its own TIMER instance, so a state may
+// carry both a per-state timeout and a phase deadline.
+// timed<POLICY>/timed<POLICY&> ownership semantics apply
+template<concepts::timer TIMER>
+struct deadlined {
+    deadlined()
+        requires(!std::is_reference_v<TIMER>)
+    = default;
+
+    explicit deadlined(TIMER timer_ref)
+        requires std::is_reference_v<TIMER>
+        : timer(timer_ref)
+    {
+    }
+
+    // A deadline the table ignores is a bug: the timer would fire into
+    // nothing (the zero sentinel is exempt - it never arms)
+    template<concepts::transition_table TABLE>
+    static constexpr void validate()
+    {
+        static_assert(mtl::all_of_v<typename TABLE::states,
+                          internal::deadline_handled_in<TABLE>::template pred>,
+                      "fsm::deadlined: state has a deadline but no transition for "
+                      "fsm::deadline");
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    void onEnterState(MACHINE& machine)
+    {
+        if constexpr (internal::continuesDeadline<OLD_STATE, NEW_STATE>()) {
+            // the phase's clock keeps running
+        } else if constexpr (internal::activeDeadline<NEW_STATE>()) {
+            constexpr auto duration =
+                std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::deadline);
+            static_assert(duration.count() >= 0 &&
+                              duration.count() <= std::numeric_limits<std::uint32_t>::max(),
+                          "fsm::deadlined: deadline out of the 32-bit millisecond range");
+            this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
+        } else if constexpr (internal::activeDeadline<OLD_STATE>()) {
+            timer.stop(); // left the phase: unannotated or the target
+        }
+    }
+
+private:
+    // One body per machine, the duration as a 32-bit value - same
+    // measured rationale as fsm::timed::startTimer
+    template<typename MACHINE>
+    [[gnu::noinline]] void startTimer(std::uint32_t duration_ms, MACHINE& machine)
+    {
+        timer.start(
+            std::chrono::milliseconds{duration_ms},
+            [](void* context) { static_cast<MACHINE*>(context)->process(deadline{}); },
+            &machine);
+    }
+
+public:
+    TIMER timer;
+};
+
 // Transitions plus an optional initial<STATE> role; without it the first
 // state of the first transition is the initial state
 template<concepts::transition_table_entry... ENTRYs>
@@ -921,6 +1032,65 @@ struct timeouts_within_bounds
 
 template<typename TABLE, typename MAP>
 inline constexpr bool timeouts_within_bounds_v = timeouts_within_bounds<TABLE, MAP>::value;
+
+namespace internal {
+
+// The deadline mirror of the timeout bounds chain; maps reuse
+// timed_by entries. The zero sentinel counts as no deadline
+template<typename STATE, typename ENTRY,
+         bool RANGE = concepts::timeout_range<std::remove_cvref_t<decltype(ENTRY::bound)>>>
+struct entry_bounds_deadline : std::bool_constant<ENTRY::bound.contains(STATE::deadline)> {};
+
+template<typename STATE, typename ENTRY>
+struct entry_bounds_deadline<STATE, ENTRY, false>
+    : std::bool_constant<STATE::deadline == ENTRY::bound> {};
+
+template<typename STATE, typename MAP,
+         std::size_t ENTRIES = mtl::count_if_v<MAP, entries_for<STATE>::template pred>>
+struct deadline_state_bounded : std::false_type {};
+
+template<typename STATE, typename MAP>
+struct deadline_state_bounded<STATE, MAP, 1>
+    : entry_bounds_deadline<STATE,
+                            mtl::find_if_t<MAP, entries_for<STATE>::template pred>> {};
+
+} // namespace internal
+
+// Whether STATE is consistent with a deadline-range map (timed_by
+// entries): a state with an active deadline has exactly one entry
+// bounding it, every other state has none
+template<typename MAP, typename STATE, bool ACTIVE = internal::activeDeadline<STATE>()>
+struct deadline_within_bounds : internal::deadline_state_bounded<STATE, MAP> {};
+
+template<typename MAP, typename STATE>
+struct deadline_within_bounds<MAP, STATE, false>
+    : std::bool_constant<
+          mtl::count_if_v<MAP, internal::entries_for<STATE>::template pred> == 0> {};
+
+template<typename MAP, typename STATE>
+inline constexpr bool deadline_within_bounds_v = deadline_within_bounds<MAP, STATE>::value;
+
+namespace internal {
+
+template<typename MAP>
+struct deadline_bounded_in {
+    template<typename STATE>
+    struct pred : deadline_within_bounds<MAP, STATE> {};
+};
+
+} // namespace internal
+
+// Proves the table's states consistent with a deadline-range map,
+// both ways - the deadline counterpart of timeouts_within_bounds
+template<typename TABLE, typename MAP>
+struct deadlines_within_bounds
+    : std::bool_constant<
+          mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred> &&
+          mtl::all_of_v<typename TABLE::states,
+                        internal::deadline_bounded_in<MAP>::template pred>> {};
+
+template<typename TABLE, typename MAP>
+inline constexpr bool deadlines_within_bounds_v = deadlines_within_bounds<TABLE, MAP>::value;
 
 namespace internal {
 
