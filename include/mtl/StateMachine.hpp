@@ -371,6 +371,14 @@ struct matches {
                                      std::is_same_v<typename TRANSITION::event, EVENT>> {};
 };
 
+// The second-stage predicate for lists already grouped by source:
+// re-checking FROM there would only add instantiations
+template<typename EVENT>
+struct matches_event {
+    template<typename TRANSITION>
+    struct pred : std::is_same<typename TRANSITION::event, EVENT> {};
+};
+
 template<typename T>
 struct is_any_state : std::is_same<T, any_state> {};
 
@@ -673,11 +681,11 @@ private:
 
     template<typename FROM, typename EVENT>
     using find_exact = mtl::find_if_t<typename from_group<FROM>::type,
-                                      internal::matches<FROM, EVENT>::template pred>;
+                                      internal::matches_event<EVENT>::template pred>;
 
     template<typename FROM, typename EVENT>
     using find_all_exact = mtl::filter_t<typename from_group<FROM>::type,
-                                         internal::matches<FROM, EVENT>::template pred>;
+                                         internal::matches_event<EVENT>::template pred>;
 
 public:
     // Deduplicated in order of first appearance: front is the initial state
