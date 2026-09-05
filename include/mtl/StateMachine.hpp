@@ -730,7 +730,7 @@ private:
     // materializing the 64-bit chrono constant in every per-state
     // start measured ~40 bytes each on Thumb-1 (-Os, GCC 14)
     template<typename MACHINE>
-    [[gnu::noinline]] void startTimer(std::uint32_t duration_ms, MACHINE& machine)
+    void startTimer(std::uint32_t duration_ms, MACHINE& machine)
     {
         timer.start(
             std::chrono::milliseconds{duration_ms},
@@ -828,7 +828,7 @@ private:
     // One body per machine, the duration as a 32-bit value - same
     // measured rationale as fsm::timed::startTimer
     template<typename MACHINE>
-    [[gnu::noinline]] void startTimer(std::uint32_t duration_ms, MACHINE& machine)
+    void startTimer(std::uint32_t duration_ms, MACHINE& machine)
     {
         timer.start(
             std::chrono::milliseconds{duration_ms},
