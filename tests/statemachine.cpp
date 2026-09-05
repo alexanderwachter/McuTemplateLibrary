@@ -507,6 +507,74 @@ namespace Alternatives {
         fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>>;
 } // namespace Alternatives
 
+namespace SharedWildcard {
+    struct go {};
+    struct kill {
+        int code;
+    };
+
+    // idempotent: re-notifying the unchanged value is declared
+    // harmless, so the wildcard may fire through the shared body
+    struct mode_tag {
+        static constexpr bool idempotent = true;
+        constexpr bool operator==(mode_tag const&) const = default;
+    };
+
+    struct a {
+        static constexpr auto timeout = 50ms;
+        static constexpr mode_tag mode{};
+    };
+    struct b {
+        static constexpr mode_tag mode{};
+    };
+    struct dead {
+        dead() = default;
+        explicit dead(kill const& event) : code(event.code) {}
+        int code = 0;
+    };
+
+    struct mode_watcher : fsm::observing<mode_watcher> {
+        int notified = 0;
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::mode)
+        {
+            return STATE::mode;
+        }
+        void notifyEntry(mode_tag) { ++notified; }
+    };
+
+    // an exit hook makes the wildcard unprovable: it must fall back to
+    // the per-source expansion and still deliver the exit value
+    struct exit_watcher : fsm::observing<exit_watcher> {
+        int exits = 0;
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::mode)
+        {
+            return STATE::mode;
+        }
+        void notifyExit(mode_tag) { ++exits; }
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
+        fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,
+        fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+
+    struct never {
+        static bool check(b const&) { return false; }
+    };
+
+    // b has an exact pair for kill whose guard refuses: the wildcard
+    // must stay shadowed there, exactly like find_transitions says
+    using shadow_tbl = fsm::transition_table<
+        fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
+        fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,
+        fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
+        fsm::transition<fsm::from<b>, fsm::on<kill>, fsm::to<a>, fsm::guard<never>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+} // namespace SharedWildcard
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {
@@ -1022,6 +1090,54 @@ void guardedAlternativesFirstPassWins()
     check(sm.getIf<pending>()->context.used == 3);
 }
 
+void sharedWildcardFiresLikePerSource()
+{
+    using namespace SharedWildcard;
+    mode_watcher watcher;
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
+
+    check(watcher.notified == 1); // initial entry into a
+    check(tim.timer.armed);       // a is timed
+
+    check(sm.process(kill{7}));   // wildcard from a, delivered shared
+    check(sm.is<dead>() && sm.getIf<dead>()->code == 7); // payload arrived
+    check(!tim.timer.armed);      // the left state's timer was stopped
+    check(watcher.notified == 1); // dead carries no mode annotation
+
+    check(sm.process(kill{9}));   // dead has no exact pair: fires again
+    check(sm.getIf<dead>()->code == 9);
+    check(!sm.process(go{}));     // no transition at all still reports false
+}
+
+void wildcardFallbackDeliversExitValues()
+{
+    using namespace SharedWildcard;
+    exit_watcher watcher;
+    fsm::state_machine<tbl, exit_watcher> sm{watcher};
+
+    check(sm.process(go{}));  // a -> b: equal annotations, exit suppressed
+    check(watcher.exits == 0);
+    check(sm.process(kill{3})); // per-source fallback: b's exit notified
+    check(sm.is<dead>());
+    check(watcher.exits == 1);
+}
+
+void refusedExactGroupShadowsWildcard()
+{
+    using namespace SharedWildcard;
+    mode_watcher watcher;
+    fsm::timed<manual_timer> tim;
+    fsm::state_machine<shadow_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
+
+    check(sm.process(go{}));     // a -> b
+    check(!sm.process(kill{1})); // b's exact pair refused: wildcard shadowed
+    check(sm.is<b>());
+    check(sm.process(go{}));     // b -> a
+    check(sm.process(kill{2}));  // a has no exact pair: the wildcard fires
+    check(sm.is<dead>() && sm.getIf<dead>()->code == 2);
+}
+
 void timerInjectedByReference()
 {
     manual_timer timer; // caller-owned policy instance
@@ -1063,5 +1179,8 @@ int statemachineTests()
     guardedAlternativesFirstPassWins();
     internalTransitionHandlesInPlace();
     timerInjectedByReference();
+    sharedWildcardFiresLikePerSource();
+    wildcardFallbackDeliversExitValues();
+    refusedExactGroupShadowsWildcard();
     return failures;
 }
