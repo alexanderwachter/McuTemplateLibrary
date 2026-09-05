@@ -658,11 +658,26 @@ private:
                       mtl::has_a_v<endpoints, explicit_initial>,
                   "transition_table: initial<STATE> is not a state of the table");
 
-    template<typename FROM, typename EVENT>
-    using find_exact = mtl::find_if_t<transitions, internal::matches<FROM, EVENT>::template pred>;
+    // Transitions grouped by their exact source, computed once per
+    // FROM: the per-(FROM, EVENT) lookups filter the small group
+    // instead of the whole table - a large table is otherwise
+    // re-walked for every (state, event) pair the machine dispatches,
+    // which dominates compile time (measured)
+    template<typename FROM>
+    struct from_group {
+        template<typename TRANSITION>
+        struct pred : std::is_same<typename TRANSITION::from, FROM> {};
+
+        using type = mtl::filter_t<transitions, pred>;
+    };
 
     template<typename FROM, typename EVENT>
-    using find_all_exact = mtl::filter_t<transitions, internal::matches<FROM, EVENT>::template pred>;
+    using find_exact = mtl::find_if_t<typename from_group<FROM>::type,
+                                      internal::matches<FROM, EVENT>::template pred>;
+
+    template<typename FROM, typename EVENT>
+    using find_all_exact = mtl::filter_t<typename from_group<FROM>::type,
+                                         internal::matches<FROM, EVENT>::template pred>;
 
 public:
     // Deduplicated in order of first appearance: front is the initial state
