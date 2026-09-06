@@ -1390,6 +1390,21 @@ void observerGroupForwardsTransitionHook()
 
     check(sm.process(go{}));
     check(rec.steps == std::vector<step>{{"idle", "go", "busy"}});
+    check(sm.process(kill{1})); // the member wants the source: per-source fallback
+    check(rec.steps.back() == step{"busy", "kill", "dead"});
+}
+
+// A group is judged by its members: its own forwarding hooks exist for
+// every edge and must not block the shared wildcard body
+void observerGroupOfAgnosticMembersKeepsWildcardShared()
+{
+    using namespace transition_hook;
+    agnostic_recorder rec;
+    fsm::observer_group<agnostic_recorder> group{rec};
+    fsm::state_machine<tbl, fsm::observer_group<agnostic_recorder>> sm{group};
+
+    check(sm.process(kill{2}));
+    check(rec.steps == std::vector<step>{{"any_state", "kill", "dead"}});
 }
 
 void timerInjectedByReference()
@@ -1436,6 +1451,7 @@ int statemachineTests()
     transitionHookSeesEdgeAndEvent();
     sourceAgnosticHookKeepsWildcardShared();
     observerGroupForwardsTransitionHook();
+    observerGroupOfAgnosticMembersKeepsWildcardShared();
     sharedWildcardFiresLikePerSource();
     wildcardFallbackDeliversExitValues();
     refusedExactGroupShadowsWildcard();

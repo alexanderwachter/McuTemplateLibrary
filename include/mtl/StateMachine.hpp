@@ -1605,14 +1605,16 @@ private:
     {
         if constexpr (internal::is_timed_v<OBSERVER>) {
             return true;
+        } else if constexpr (internal::grouped_observer<OBSERVER>) {
+            // judged by its members: the group's own forwarding hooks
+            // exist for every edge and would block sharing wholesale
+            return membersShareEdge<OLD_STATE, EVENT, NEW_STATE>(
+                internal::group_members_t<OBSERVER>{});
         } else if constexpr (!transitionHookSharesEdge<OBSERVER, OLD_STATE, EVENT, NEW_STATE>()) {
             return false;
         } else if constexpr (std::derived_from<OBSERVER, observing<OBSERVER>>) {
             return OBSERVER::template exit_silent<OLD_STATE, state_machine> &&
                    OBSERVER::template entry_shared_from<NEW_STATE, OLD_STATE>;
-        } else if constexpr (internal::grouped_observer<OBSERVER>) {
-            return membersShareEdge<OLD_STATE, EVENT, NEW_STATE>(
-                internal::group_members_t<OBSERVER>{});
         } else {
             return !requires(OBSERVER observer, state_machine& machine) {
                 observer.template onExitState<OLD_STATE, NEW_STATE>(machine);

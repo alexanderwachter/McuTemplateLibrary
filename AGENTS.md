@@ -91,7 +91,11 @@ expecting the specific `static_assert` message - a class template's
   (transition, state, event) - do not push the event into the per-edge
   bodies. The wildcard's shared body per (event, target) must stay
   provably unobservable; a new hook needs its shareability rule in
-  `observerSharesEdge`.
+  `observerSharesEdge`, and `observer_group` is judged by its members
+  there (its forwarding hooks exist for every edge - checking them
+  blocked sharing wholesale and cost 2.7 kB in the USB-C firmware once).
+  Measure a library change on the firmware's `pd_drp` sample
+  (stm32g081b_eval, 57996 B at the time of writing) before and after.
 - `process()` instantiates the visitor for every state on purpose (the
   `return false` arms are the ignore semantics); do not "optimize" it.
 - Alternatives: first passing guard in table order fires, an unguarded
