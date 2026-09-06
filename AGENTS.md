@@ -19,7 +19,6 @@ its design.
 | `tools/dotgen` | crawls headers for tables, builds a host generator, writes `.dot` files; `west fsm_dotgen` |
 | `tools/fsmview` | live/replay viewer, Python + one HTML page; `west fsm_liveview` |
 
-`Units.hpp` is untracked work in progress: ignore it.
 
 ## Build and test - run all of it before claiming done
 
@@ -47,25 +46,31 @@ expecting the specific `static_assert` message - a class template's
 
 - Names: ALL_CAPS template parameters, packs ending in `s` (`TRANSITIONs`,
   `OBSERVERs`), `_t`/`_v` aliases for every trait, camelCase member
-  functions and hooks (`onEnterState`, `notifyEntry`, `getIf`),
-  snake_case types and constexpr flags (`renotify_safe`, `source_agnostic`).
+  functions and hooks (`onEnterState`, `notifyEntry`, `getIf`).
+  Two layers of type names: the library (`include/mtl`) is snake_case
+  like the standard library - `state_machine`, `timed`, `observing` -
+  and so are all states, events, guards and tables everywhere
+  (`reading`, `reading_done`, `sensor_table`); Zephyr glue and
+  application classes are PascalCase - `TraceLogger`, `WorkqueueTimer`,
+  a sample's `VirtualSensor`, `LedController`. Constexpr flags are
+  snake_case (`renotify_safe`, `source_agnostic`).
 - Concepts over SFINAE. Constrain template parameters with named concepts
   in a nested `concepts` namespace; detect optional members with
   requires-expressions and `if constexpr`. The one SFINAE idiom kept is
   the trailing-return-type opt-out (`-> decltype(STATE::member)`).
 - A missing optional member means "not wanted", never an error: hooks,
   annotations, sinks are all detected individually.
-- Comments explain contracts and non-obvious behavior (measured codegen,
-  ordering constraints), not what the code says. Keep the header's
+- Comments explain contracts and non-obvious behavior
+  (ordering constraints), not what the code says. Keep the header's
   contract comment at the top of `StateMachine.hpp` the source of truth
   for the rules; README's "Rules and edge cases" mirrors it.
 - Codegen claims are measured before they are written down (compiler,
-  flags, size), and the numbers stay next to the claim.
+  flags, size).
 - No backward-compatibility shims: the repo is pre-release. Pick the
   best design and update every call site, samples and tools included.
 - Commit small, descriptive commits on a topic branch off `statemachine`;
   the branch is squash-merged. Commit only what you built and tested.
-  Never commit `__pycache__`, build trees or `Units.hpp`.
+  Never commit `__pycache__`, build trees.
 
 ## Design rules that must not regress
 

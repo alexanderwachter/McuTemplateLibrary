@@ -3,16 +3,16 @@
  * board. The tables live in sensor.hpp and led.hpp (Zephyr-free, for
  * the graph generator); this file provides the observers:
  *
- *   virtual_sensor  - starts a "conversion" when the reading state is
+ *   VirtualSensor  - starts a "conversion" when the reading state is
  *                     entered (a delayed work) and injects reading_done
  *                     {value} or reading_failed when it finishes
- *   calibrator      - the calibration feature: when injected, the table
+ *   Calibrator      - the calibration feature: when injected, the table
  *                     gains the calibrating state, which it answers with
  *                     calibrated{offset} (CONFIG_SAMPLE_CALIBRATION)
- *   led_controller  - a value observer on each state's led annotation,
+ *   LedController  - a value observer on each state's led annotation,
  *                     driving its own LED state machine (the sub machine
  *                     is an observer of the sensor machine)
- *   led_driver      - value observer of the LED machine writing led0
+ *   LedDriver      - value observer of the LED machine writing led0
  *   TraceLogger     - both machines trace to the mtl_fsm log module
  *
  * The user button (alias sw0) is the emergency stop from any state and
@@ -48,9 +48,9 @@ namespace {
 // Starts a conversion when the reading state is entered; the hook is
 // constrained to that state, so it neither runs on other edges nor
 // keeps the button's any_state transition from its shared body
-class virtual_sensor {
+class VirtualSensor {
 public:
-    virtual_sensor() { k_work_init_delayable(&work_, &virtual_sensor::finish); }
+    VirtualSensor() { k_work_init_delayable(&work_, &VirtualSensor::finish); }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         requires std::is_same_v<NEW_STATE, sensor::reading>
@@ -67,7 +67,7 @@ public:
 private:
     static void finish(k_work* work)
     {
-        auto* self = CONTAINER_OF(k_work_delayable_from_work(work), virtual_sensor, work_);
+        auto* self = CONTAINER_OF(k_work_delayable_from_work(work), VirtualSensor, work_);
         if (++self->conversions_ % 4 == 0) { // every fourth conversion fails
             LOG_INF("sensor: conversion failed");
             self->failed_(self->machine_);
@@ -87,9 +87,9 @@ private:
 };
 
 // --- calibration feature ----------------------------------------------------
-class calibrator {
+class Calibrator {
 public:
-    calibrator() { k_work_init_delayable(&work_, &calibrator::finish); }
+    Calibrator() { k_work_init_delayable(&work_, &Calibrator::finish); }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         requires std::is_same_v<NEW_STATE, sensor::calibrating>
@@ -105,7 +105,7 @@ public:
 private:
     static void finish(k_work* work)
     {
-        auto* self = CONTAINER_OF(k_work_delayable_from_work(work), calibrator, work_);
+        auto* self = CONTAINER_OF(k_work_delayable_from_work(work), Calibrator, work_);
         LOG_INF("calibrated: offset 3");
         self->done_(self->machine_, 3);
     }
@@ -117,7 +117,7 @@ private:
 
 // --- LED: a driver observer on the LED machine, the machine inside the
 // observer of the sensor machine ---------------------------------------------
-struct led_driver : fsm::observing<led_driver> {
+struct LedDriver : fsm::observing<LedDriver> {
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::lit)
     {
@@ -153,7 +153,7 @@ struct led_driver : fsm::observing<led_driver> {
     bool lit   = false;
 };
 
-struct led_controller : fsm::observing<led_controller> {
+struct LedController : fsm::observing<LedController> {
     // re-notifying an unchanged pattern only restarts the same pattern:
     // lets the button's any_state transition keep its shared body
     static constexpr bool renotify_safe = true;
@@ -168,16 +168,16 @@ struct led_controller : fsm::observing<led_controller> {
 
     // observers before the machine they are injected into
     fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
-    led_driver driver;
+    LedDriver driver;
     mtl::zephyr::TraceLogger tracer;
-    fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>, led_driver,
+    fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>, LedDriver,
                        mtl::zephyr::TraceLogger>
         machine{timeouts, driver, tracer};
 };
 
 // --- the sensor machine: its table depends on the injected observers ---------
 template<typename... OBSERVERs>
-using table_for = std::conditional_t<mtl::has_a_v<mtl::typelist<OBSERVERs...>, calibrator>,
+using table_for = std::conditional_t<mtl::has_a_v<mtl::typelist<OBSERVERs...>, Calibrator>,
                                      sensor::calibrating_sensor_table, sensor::sensor_table>;
 
 template<typename... OBSERVERs>
@@ -188,15 +188,15 @@ using sensor_machine = fsm::state_machine<table_for<OBSERVERs...>,
 // first (armed before anything is notified), the tracer last (its line
 // follows the effects)
 fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
-virtual_sensor sensor;
-led_controller leds;
+VirtualSensor sensor;
+LedController leds;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
-calibrator cal;
-sensor_machine<virtual_sensor, calibrator, led_controller, mtl::zephyr::TraceLogger>
+Calibrator cal;
+sensor_machine<VirtualSensor, Calibrator, LedController, mtl::zephyr::TraceLogger>
     monitor{timeouts, sensor, cal, leds, tracer};
 #else
-sensor_machine<virtual_sensor, led_controller, mtl::zephyr::TraceLogger>
+sensor_machine<VirtualSensor, LedController, mtl::zephyr::TraceLogger>
     monitor{timeouts, sensor, leds, tracer};
 #endif
 

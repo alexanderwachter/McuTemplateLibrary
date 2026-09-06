@@ -8,16 +8,16 @@ traced, so `tools/fsmview` shows the whole thing live.
 
 | Feature | Where |
 |---|---|
-| Observer starting work on a state, event with payload | `virtual_sensor` (main.cpp) enters `reading`, answers `reading_done{value}` / `reading_failed` |
+| Observer starting work on a state, event with payload | `VirtualSensor` (main.cpp) enters `reading`, answers `reading_done{value}` / `reading_failed` |
 | Machine-owned context, constructor from `(event, context)` | `retry_budget`: `retrying` counts a failure, `idle` resets (sensor.hpp) |
 | Guarded alternatives, guard on state data | `reading -(reading_failed)->` `retrying` while `retries_left`, else `failed` |
 | Guard on the event payload | `reading -(reading_done)->` `alarm` when `above_limit`, else `idle` |
 | State constructed from the event | `alarm(reading_done const&)` keeps the value |
 | Wildcard source, exact pair overriding it | `any_state -(button)-> emergency`, `emergency -(button)-> idle` |
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |
-| Sub state machine as an observer | `led_controller` observes each state's `led` annotation and runs the LED machine (led.hpp) |
-| Value observers with change suppression | `led_controller` (`led`), `led_driver` (`lit`, writes `led0`) |
-| Feature enabled by an observer | with `calibrator` injected, the table starts in `calibrating` (`CONFIG_SAMPLE_CALIBRATION`) |
+| Sub state machine as an observer | `LedController` observes each state's `led` annotation and runs the LED machine (led.hpp) |
+| Value observers with change suppression | `LedController` (`led`), `LedDriver` (`lit`, writes `led0`) |
+| Feature enabled by an observer | with `Calibrator` injected, the table starts in `calibrating` (`CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's transition keeps its shared body (`renotify_safe`, constrained hooks) |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
 

@@ -37,7 +37,7 @@ struct calibrated {
 };
 struct button {};
 
-// --- what the LED shows per state (consumed by the led_controller observer)
+// --- what the LED shows per state (consumed by the LedController observer)
 enum class led_pattern { off, on, blink };
 
 // --- machine-owned context: survives transitions, one instance per type
