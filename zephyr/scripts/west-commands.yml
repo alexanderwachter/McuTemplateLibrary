@@ -1,0 +1,12 @@
+# Keep the help strings in sync with the .py files
+west-commands:
+  - file: tools/dotgen/dotgen.py
+    commands:
+      - name: fsm_dotgen
+        class: DotGen
+        help: write Graphviz DOT graphs of fsm transition tables
+  - file: tools/fsmview/fsmview.py
+    commands:
+      - name: fsm_liveview
+        class: LiveView
+        help: watch or replay fsm state machines in the browser

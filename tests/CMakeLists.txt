@@ -18,6 +18,7 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_CURRENT_LIST_DIR}/typename.cpp
     ${CMAKE_CURRENT_LIST_DIR}/statemachine.cpp
     ${CMAKE_CURRENT_LIST_DIR}/dot.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/trace.cpp
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp
 )
 

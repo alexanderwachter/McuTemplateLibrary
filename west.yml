@@ -1,0 +1,17 @@
+# The library as a west project. As the manifest repository of a
+# workspace this registers the extension commands; a consuming manifest
+# lists the repository as a project and declares them itself:
+#
+#   projects:
+#     - name: mtl
+#       url: https://github.com/alexanderwachter/McuTemplateLibrary
+#       revision: statemachine
+#       west-commands: zephyr/scripts/west-commands.yml
+#
+# Copyright (c) 2026 Alexander Wachter
+# SPDX-License-Identifier: Apache-2.0
+
+manifest:
+  self:
+    path: mtl
+    west-commands: zephyr/scripts/west-commands.yml

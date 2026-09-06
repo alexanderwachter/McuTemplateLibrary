@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Alexander Wachter
+#
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Sensor monitor sample"
+
+config SAMPLE_CALIBRATION
+	bool "Calibrate the sensor at start"
+	default y
+	help
+	  Inject the calibrator observer. The sensor machine's table then
+	  starts in the calibrating state, which the observer answers with
+	  calibrated{offset}; without it the table has no such state.
+
+source "Kconfig.zephyr"

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026 Alexander Wachter
+  SPDX-License-Identifier: Apache-2.0
+
+  Viewer page served by fsmview.py: one tab per machine, the current
+  state and the edge just taken in the highlight color, the last N steps
+  fading toward the graph's neutral colors.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fsmview</title>
+<style>
+:root {
+    --hl: hsl(140 65% 32%); /* outline of the current state and edge label */
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0; height: 100vh; display: grid; grid-template-rows: auto auto 1fr auto;
+    font: 14px system-ui, sans-serif; color: #202020; background: #f7f7f7;
+}
+header {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 6px 12px; background: #1f2937; color: #fff;
+}
+header .title { font-weight: 600; margin-right: 8px; }
+header .muted { color: #cbd5e1; font-size: 12px; }
+#tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+#tabs button {
+    background: #374151; color: #e5e7eb; border: 0; border-radius: 4px; padding: 4px 10px;
+    cursor: pointer; font: inherit;
+}
+#tabs button.active { background: #e0432f; color: #fff; }
+#status { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+#live {
+    border: 1px solid #9ca3af; border-radius: 10px; padding: 1px 10px; color: #9ca3af;
+    background: transparent; cursor: pointer; font: inherit; font-size: 12px;
+}
+#live.on { border-color: #4ade80; color: #4ade80; }
+#current { font-family: monospace; }
+#warnings {
+    display: none; padding: 4px 12px; background: #fde68a; color: #78350f;
+    font-size: 12px; max-height: 6em; overflow: auto; white-space: pre-line;
+}
+main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+#graph { overflow: auto; padding: 10px; display: flex; align-items: flex-start; justify-content: center; }
+#graph svg { max-width: 100%; height: auto; }
+#log { overflow: auto; border-left: 1px solid #ddd; background: #fff; font: 12px ui-monospace, monospace; }
+#log div { padding: 2px 8px; white-space: nowrap; cursor: pointer; border-left: 3px solid transparent; }
+#log div:hover { background: #f1f5f9; }
+#log div.current { background: #fee2e2; border-left-color: #e0432f; }
+#log div.warn { color: #b45309; }
+#log .ts { color: #94a3b8; margin-right: 6px; }
+footer {
+    display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+    border-top: 1px solid #ddd; background: #fff;
+}
+footer button { font: inherit; padding: 3px 10px; cursor: pointer; }
+footer input[type=range] { flex: 1; }
+#counter { font-family: monospace; min-width: 9em; text-align: right; }
+
+/* Graphviz SVG: state nodes are <path> (box, rounded), any_state a dashed
+   <path>, the initial marker an <ellipse>; edges are <path> + arrowhead
+   <polygon> + label <text>. Presentation attributes lose against CSS.
+   --c is set per element by mark(): green for the current step, then
+   red fading through orange to pale yellow along the trail; .now marks
+   age 0. */
+g.node.hl > path, g.node.hl > polygon, g.node.hl > ellipse { fill: var(--c); }
+g.node.now > path, g.node.now > polygon { stroke: var(--hl); stroke-width: 3; }
+g.node.now > text { fill: #fff; font-weight: 600; }
+g.edge.hl > path { stroke: var(--c); stroke-width: var(--w); }
+g.edge.hl > polygon { fill: var(--c); stroke: var(--c); }
+g.edge.hl > text { fill: var(--c); font-weight: 600; }
+g.edge.now > text { fill: var(--hl); }
+</style>
+</head>
+<body>
+<header>
+    <span class="title">fsmview</span>
+    <nav id="tabs"></nav>
+    <label class="muted"><input type="checkbox" id="follow" checked> follow machine</label>
+    <div id="status">
+        <span id="current" title="tracked state of the shown machine"></span>
+        <span id="source" class="muted"></span>
+        <button id="live" title="follow the newest step">LIVE</button>
+    </div>
+</header>
+<div id="warnings"></div>
+<main>
+    <div id="graph"></div>
+    <div id="log"></div>
+</main>
+<footer>
+    <button id="first" title="first step (Home)">|&lt;</button>
+    <button id="prev" title="previous step (←)">&lt;</button>
+    <button id="play" title="play / pause (space)">▶</button>
+    <button id="next" title="next step (→)">&gt;</button>
+    <button id="last" title="last step (End)">&gt;|</button>
+    <input type="range" id="slider" min="-1" max="-1" value="-1">
+    <span id="counter">- / 0</span>
+    <select id="speed" title="play speed">
+        <option value="real">real time</option>
+        <option value="150">fast</option>
+        <option value="500" selected>medium</option>
+        <option value="1500">slow</option>
+    </select>
+</footer>
+<script>
+"use strict";
+
+const VIZ_URL = "https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js";
+
+const ui = {};
+for (const id of ["tabs", "follow", "current", "source", "live", "warnings", "graph", "log",
+                  "first", "prev", "play", "next", "last", "slider", "counter", "speed"]) {
+    ui[id] = document.getElementById(id);
+}
+
+let config = null;
+let steps = [];          // by index, as served
+let cursor = -1;         // shown step, -1 before the first
+let live = false;        // cursor follows the newest step
+let ended = false;       // the source is exhausted (replay, or EOF)
+let playTimer = null;
+let activeGraph = null;  // stem of the shown graph
+const graphs = new Map(); // stem -> {data, svg, nodes: Map(name -> <g>)}
+const warnings = new Set();
+
+// --- graphs -----------------------------------------------------------------
+
+function svgFromText(text) {
+    const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+    return document.importNode(doc.documentElement, true);
+}
+
+let vizPromise = null;
+async function svgFromDot(dot) {
+    if (!vizPromise) {
+        vizPromise = new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = VIZ_URL;
+            script.onload = () => resolve(Viz.instance());
+            script.onerror = () => reject(new Error("viz.js could not be loaded from " + VIZ_URL));
+            document.head.appendChild(script);
+        });
+    }
+    const viz = await vizPromise;
+    return viz.renderSVGElement(dot);
+}
+
+async function buildGraph(data) {
+    let svg;
+    try {
+        svg = data.svg ? svgFromText(data.svg) : await svgFromDot(data.dot);
+    } catch (error) {
+        warn(`${data.stem}: ${error.message}`);
+        svg = svgFromText('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+    }
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    const nodes = new Map();
+    for (const title of svg.querySelectorAll("g.node > title")) {
+        nodes.set(title.textContent, title.parentNode);
+    }
+    graphs.set(data.stem, {data, svg, nodes});
+}
+
+function showGraph(stem) {
+    if (activeGraph === stem || !graphs.has(stem)) return;
+    activeGraph = stem;
+    ui.graph.replaceChildren(graphs.get(stem).svg);
+    for (const button of ui.tabs.children) {
+        button.classList.toggle("active", button.dataset.stem === stem);
+    }
+    renderStatus();
+}
+
+// --- highlighting -----------------------------------------------------------
+
+function clearHighlights() {
+    for (const graph of graphs.values()) {
+        for (const element of graph.svg.querySelectorAll(".hl")) {
+            element.classList.remove("hl", "now");
+            element.style.removeProperty("--c");
+            element.style.removeProperty("--w");
+        }
+    }
+}
+
+// Age 0 is green; the trail starts at half-strength red right behind it
+// (never darker than a 50% tint) and steps through orange to a pale
+// yellow, hue and lightness both moving per step so neighbouring ages
+// stay apart
+function trailColor(age) {
+    if (age === 0) return "hsl(140 65% 42%)";
+    const t = Math.min(1, (age - 1) / Math.max(1, config.history - 2));
+    const hue = 0 + 55 * t;
+    const saturation = 85 - 25 * t;
+    const lightness = 74 + 22 * t;
+    return `hsl(${hue.toFixed(0)} ${saturation.toFixed(0)}% ${lightness.toFixed(0)}%)`;
+}
+
+function mark(element, age) {
+    if (!element || element.classList.contains("hl")) return; // newer step wins
+    element.classList.add("hl");
+    if (age === 0) element.classList.add("now");
+    element.style.setProperty("--c", trailColor(age));
+    element.style.setProperty("--w", age === 0 ? "3.5" : (2.5 - 1.5 * age / config.history).toFixed(2));
+}
+
+function render() {
+    clearHighlights();
+    const remaining = new Map([...graphs.keys()].map(stem => [stem, config.history]));
+    for (let i = cursor; i >= 0; i--) {
+        const step = steps[i];
+        if (!step || !step.graph) continue;
+        const left = remaining.get(step.graph);
+        if (!left) continue;
+        const graph = graphs.get(step.graph);
+        const age = config.history - left;
+        mark(graph.nodes.get(step.state), age);
+        for (const id of step.edges) {
+            for (const edge of graph.svg.querySelectorAll(`g.edge[id="${CSS.escape(id)}"]`)) {
+                mark(edge, age);
+            }
+        }
+        remaining.set(step.graph, left - 1);
+    }
+    const step = steps[cursor];
+    if (step && step.graph && ui.follow.checked) showGraph(step.graph);
+    ui.slider.max = steps.length - 1;
+    ui.slider.value = cursor;
+    ui.counter.textContent = `${cursor + 1} / ${steps.length}`;
+    for (const line of ui.log.children) line.classList.remove("current");
+    const line = ui.log.children[cursor];
+    if (line) {
+        line.classList.add("current");
+        line.scrollIntoView({block: "nearest"});
+    }
+    renderStatus();
+}
+
+function renderStatus() {
+    let state = null;
+    for (let i = cursor; i >= 0; i--) {
+        if (steps[i] && steps[i].graph === activeGraph) { state = steps[i].state; break; }
+    }
+    const graph = graphs.get(activeGraph);
+    if (state === null && graph) state = graph.data.initial;
+    ui.current.textContent = graph ? `${graph.data.table || graph.data.name}: ${state ?? "?"}` : "";
+    ui.live.classList.toggle("on", live);
+    ui.live.disabled = ended;
+}
+
+// --- steps and the log list -------------------------------------------------
+
+function formatTs(ts) {
+    return ts === null ? "" : ts.toFixed(3) + "s";
+}
+
+function addStep(step) {
+    steps[step.i] = step;
+    const line = document.createElement("div");
+    const ts = document.createElement("span");
+    ts.className = "ts";
+    ts.textContent = formatTs(step.ts);
+    line.appendChild(ts);
+    line.appendChild(document.createTextNode(step.raw.slice(step.raw.indexOf("fsm["))));
+    if (step.warnings.length) {
+        line.classList.add("warn");
+        line.title = step.warnings.join("\n");
+        for (const message of step.warnings) warn(message);
+    }
+    line.addEventListener("click", () => { setLive(false); goTo(step.i); });
+    ui.log.appendChild(line);
+}
+
+function warn(message) {
+    if (warnings.has(message)) return;
+    warnings.add(message);
+    ui.warnings.textContent = [...warnings].join("\n");
+    ui.warnings.style.display = "block";
+}
+
+function goTo(index) {
+    cursor = Math.max(-1, Math.min(steps.length - 1, index));
+    render();
+}
+
+function setLive(on) {
+    live = on && !ended;
+    if (live) {
+        stopPlaying();
+        goTo(steps.length - 1);
+    } else {
+        renderStatus();
+    }
+}
+
+// --- playback ---------------------------------------------------------------
+
+function playDelay() {
+    const speed = ui.speed.value;
+    if (speed !== "real") return Number(speed);
+    const current = steps[cursor], next = steps[cursor + 1];
+    if (!current || !next || current.ts === null || next.ts === null) return 500;
+    return Math.min(5000, Math.max(20, (next.ts - current.ts) * 1000));
+}
+
+function stopPlaying() {
+    clearTimeout(playTimer);
+    playTimer = null;
+    ui.play.textContent = "▶";
+}
+
+function playStep() {
+    if (cursor >= steps.length - 1) {
+        stopPlaying();
+        if (config.mode === "live" && !ended) setLive(true);
+        return;
+    }
+    goTo(cursor + 1);
+    playTimer = setTimeout(playStep, playDelay());
+}
+
+function togglePlay() {
+    if (playTimer) {
+        stopPlaying();
+    } else {
+        setLive(false);
+        ui.play.textContent = "❚❚";
+        playTimer = setTimeout(playStep, playDelay());
+    }
+}
+
+// --- live stream ------------------------------------------------------------
+
+function openStream(from) {
+    const stream = new EventSource(`/stream?from=${from}`);
+    stream.onmessage = event => {
+        const step = JSON.parse(event.data);
+        addStep(step);
+        if (live) goTo(step.i); else render();
+    };
+    stream.addEventListener("end", () => {
+        stream.close();
+        ended = true;
+        live = false;
+        ui.source.textContent += " (ended)";
+        renderStatus();
+    });
+    stream.onerror = () => renderStatus();
+}
+
+// --- controls ---------------------------------------------------------------
+
+ui.first.addEventListener("click", () => { setLive(false); stopPlaying(); goTo(0); });
+ui.prev.addEventListener("click", () => { setLive(false); stopPlaying(); goTo(cursor - 1); });
+ui.next.addEventListener("click", () => { setLive(false); stopPlaying(); goTo(cursor + 1); });
+ui.last.addEventListener("click", () => {
+    stopPlaying();
+    if (config.mode === "live" && !ended) setLive(true); else goTo(steps.length - 1);
+});
+ui.play.addEventListener("click", togglePlay);
+ui.live.addEventListener("click", () => setLive(!live));
+ui.slider.addEventListener("input", () => { setLive(false); stopPlaying(); goTo(Number(ui.slider.value)); });
+ui.follow.addEventListener("change", render);
+document.addEventListener("keydown", event => {
+    if (event.target.tagName === "SELECT" || event.target.tagName === "INPUT") return;
+    const actions = {ArrowLeft: ui.prev, ArrowRight: ui.next, Home: ui.first, End: ui.last, " ": ui.play};
+    const button = actions[event.key];
+    if (button) { event.preventDefault(); button.click(); }
+});
+
+// --- start ------------------------------------------------------------------
+
+async function init() {
+    config = await (await fetch("/state")).json();
+    ui.source.textContent = config.mode === "replay" ? `replay ${config.source}` : config.source;
+    for (const message of config.warnings) warn(message);
+    for (const data of config.graphs) {
+        await buildGraph(data);
+        const button = document.createElement("button");
+        button.textContent = data.table && data.table !== data.name ? `${data.name} (${data.table})` : data.name;
+        button.dataset.stem = data.stem;
+        button.addEventListener("click", () => { ui.follow.checked = false; showGraph(data.stem); });
+        ui.tabs.appendChild(button);
+    }
+    showGraph(config.graphs[0].stem);
+
+    const events = await (await fetch("/events?from=0")).json();
+    for (const step of events.steps) addStep(step);
+    ended = events.ended;
+    if (config.mode === "live" && !ended) {
+        live = true;
+        openStream(steps.length);
+    } else if (config.mode === "replay") {
+        ui.source.textContent += " (ended)";
+    }
+    goTo(config.mode === "replay" ? 0 : steps.length - 1);
+}
+
+init().catch(error => warn(error.message));
+</script>
+</body>
+</html>
