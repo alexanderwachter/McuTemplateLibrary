@@ -45,22 +45,35 @@ LOG_MODULE_REGISTER(sensor_sample, LOG_LEVEL_INF);
 namespace {
 
 // --- virtual sensor ---------------------------------------------------------
-// Starts a conversion when the reading state is entered; the hook is
-// constrained to that state, so it neither runs on other edges nor
-// keeps the button's any_state transition from its shared body
+// Two constrained hooks: the construction-time entry (OLD = nil_type)
+// binds the machine once - its address never changes - and every entry
+// into reading starts a conversion. Constrained this way the hooks run
+// on no other edge, so the button's any_state transition keeps its
+// shared body. The constraints must exclude each other: an ambiguous
+// overload would make the machine's detection treat the hook as absent
 class VirtualSensor {
 public:
     VirtualSensor() { k_work_init_delayable(&work_, &VirtualSensor::finish); }
 
+    // initial state: bind
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        requires std::is_same_v<NEW_STATE, sensor::reading>
-    void onEnterState(MACHINE& machine)
+        requires std::is_same_v<OLD_STATE, mtl::nil_type>
+    void onEnterState(MACHINE& stateMachine)
     {
-        machine_ = &machine;
-        done_    = [](void* m, int value) {
+        stateMachine_ = &stateMachine;
+        done_         = [](void* m, int value) {
             static_cast<MACHINE*>(m)->process(sensor::reading_done{value});
         };
         failed_ = [](void* m) { static_cast<MACHINE*>(m)->process(sensor::reading_failed{}); };
+    }
+
+    // transition to reading. Initial must be excluded, otherwise it is
+    // ambiguous with the function above
+    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        requires std::is_same_v<NEW_STATE, sensor::reading> &&
+                 (!std::is_same_v<OLD_STATE, mtl::nil_type>)
+    void onEnterState(MACHINE&)
+    {
         k_work_reschedule(&work_, K_MSEC(300));
     }
 
@@ -70,20 +83,20 @@ private:
         auto* self = CONTAINER_OF(k_work_delayable_from_work(work), VirtualSensor, work_);
         if (++self->conversions_ % 4 == 0) { // every fourth conversion fails
             LOG_INF("sensor: conversion failed");
-            self->failed_(self->machine_);
+            self->failed_(self->stateMachine_);
             return;
         }
         self->value_ = 35 + (self->value_ + 13) % 60; // a wandering value, 35..94
         LOG_INF("sensor: %d", self->value_);
-        self->done_(self->machine_, self->value_);
+        self->done_(self->stateMachine_, self->value_);
     }
 
     k_work_delayable work_;
-    void* machine_                  = nullptr;
-    void (*done_)(void*, int)       = nullptr;
-    void (*failed_)(void*)          = nullptr;
-    int conversions_                = 0;
-    int value_                      = 0;
+    void* stateMachine_       = nullptr;
+    void (*done_)(void*, int) = nullptr;
+    void (*failed_)(void*)    = nullptr;
+    int conversions_          = 0;
+    int value_                = 0;
 };
 
 // --- calibration feature ----------------------------------------------------
@@ -91,12 +104,14 @@ class Calibrator {
 public:
     Calibrator() { k_work_init_delayable(&work_, &Calibrator::finish); }
 
+    // calibrating is the initial state: the construction-time entry is
+    // the entry that starts the calibration, so one hook binds and starts
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         requires std::is_same_v<NEW_STATE, sensor::calibrating>
-    void onEnterState(MACHINE& machine)
+    void onEnterState(MACHINE& stateMachine)
     {
-        machine_ = &machine;
-        done_    = [](void* m, int offset) {
+        stateMachine_ = &stateMachine;
+        done_         = [](void* m, int offset) {
             static_cast<MACHINE*>(m)->process(sensor::calibrated{offset});
         };
         k_work_reschedule(&work_, K_MSEC(1500));
@@ -107,11 +122,11 @@ private:
     {
         auto* self = CONTAINER_OF(k_work_delayable_from_work(work), Calibrator, work_);
         LOG_INF("calibrated: offset 3");
-        self->done_(self->machine_, 3);
+        self->done_(self->stateMachine_, 3);
     }
 
     k_work_delayable work_;
-    void* machine_            = nullptr;
+    void* stateMachine_       = nullptr;
     void (*done_)(void*, int) = nullptr;
 };
 
@@ -164,25 +179,25 @@ struct LedController : fsm::observing<LedController> {
         return STATE::led;
     }
 
-    void notifyEntry(sensor::led_pattern kind) { machine.process(led::pattern{kind}); }
+    void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
-    // observers before the machine they are injected into
+    // observers before the state machine they are injected into
     fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
     LedDriver driver;
     mtl::zephyr::TraceLogger tracer;
     fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>, LedDriver,
                        mtl::zephyr::TraceLogger>
-        machine{timeouts, driver, tracer};
+        stateMachine{timeouts, driver, tracer};
 };
 
-// --- the sensor machine: its table depends on the injected observers ---------
+// --- the sensor state machine: its table depends on the injected observers ---
 template<typename... OBSERVERs>
 using table_for = std::conditional_t<mtl::has_a_v<mtl::typelist<OBSERVERs...>, Calibrator>,
                                      sensor::calibrating_sensor_table, sensor::sensor_table>;
 
 template<typename... OBSERVERs>
-using sensor_machine = fsm::state_machine<table_for<OBSERVERs...>,
-                                          fsm::timed<mtl::zephyr::WorkqueueTimer>, OBSERVERs...>;
+using SensorStateMachine = fsm::state_machine<table_for<OBSERVERs...>,
+                                              fsm::timed<mtl::zephyr::WorkqueueTimer>, OBSERVERs...>;
 
 // Static: work items and machine addresses must stay put. Order: timer
 // first (armed before anything is notified), the tracer last (its line
@@ -193,10 +208,10 @@ LedController leds;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-sensor_machine<VirtualSensor, Calibrator, LedController, mtl::zephyr::TraceLogger>
+SensorStateMachine<VirtualSensor, Calibrator, LedController, mtl::zephyr::TraceLogger>
     monitor{timeouts, sensor, cal, leds, tracer};
 #else
-sensor_machine<VirtualSensor, LedController, mtl::zephyr::TraceLogger>
+SensorStateMachine<VirtualSensor, LedController, mtl::zephyr::TraceLogger>
     monitor{timeouts, sensor, leds, tracer};
 #endif
 

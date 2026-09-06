@@ -41,13 +41,14 @@ namespace {
 using traffic_light::pedestrian_button;
 using traffic_light::traffic_light_table;
 
-using machine = fsm::state_machine<traffic_light_table, fsm::timed<mtl::zephyr::WorkqueueTimer>,
-                                   mtl::zephyr::TraceLogger>;
+using StateMachine = fsm::state_machine<traffic_light_table,
+                                        fsm::timed<mtl::zephyr::WorkqueueTimer>,
+                                        mtl::zephyr::TraceLogger>;
 
 // Static: the timer's work item and the machine's address must stay put
 fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
 mtl::zephyr::TraceLogger trace_logger;
-machine light{timeouts, trace_logger};
+StateMachine light{timeouts, trace_logger};
 
 // --- pedestrian button ------------------------------------------------------
 // The ISR only queues work: the machine runs on the system workqueue,

@@ -134,6 +134,11 @@ expecting the specific `static_assert` message - a class template's
 
 - VS Code IntelliSense reports "alias template incompatible" and similar
   errors in the headers; they are EDG misparses of C++20. Trust GCC.
+- Hooks are detected with requires-expressions, so an observer with two
+  constrained `onEnterState` overloads whose constraints can both hold
+  for one edge makes that call ambiguous - and the machine then treats
+  the hook as absent, silently. Keep such constraints mutually exclusive
+  (the sensor sample's `VirtualSensor`).
 - In `fsmview.py`, the source runs in a thread: `sys.exit` there only
   ends the thread. Raise, catch in `pump()`, shut the server down.
 - Graphviz `dot` may exist on the host but not in a sandbox; the viewer
