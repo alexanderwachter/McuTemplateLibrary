@@ -40,3 +40,9 @@
 # debug information files
 *.dwo
 build*/
+
+# Python caches of the tools
+__pycache__/
+
+# Work in progress, kept local
+include/mtl/Units.hpp

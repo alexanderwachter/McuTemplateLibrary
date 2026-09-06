@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Alexander Wachter
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config MTL
+	bool "mtl template library"
+	select CPP
+	select REQUIRES_FULL_LIBCPP
+	help
+	  Enable the mtl header-only library (template-based state machine,
+	  typelists, units) and its Zephyr glue: timer policies for fsm::timed
+	  and the transition trace logger. Needs C++20 or later
+	  (CONFIG_STD_CPP20).
+
+if MTL
+
+config MTL_FSM_TRACE
+	bool "Trace state machine transitions"
+	depends on LOG
+	help
+	  Provide mtl::zephyr::TraceLogger, an observer logging every
+	  transition of the state machine it is injected into on the mtl_fsm
+	  log module, in the fsm::tracing line grammar read by tools/fsmview:
+	    fsm[<machine>] -> <state>
+	    fsm[<machine>] <from> -(<event>)-> <to>
+	  The lines are emitted at info level; below that level the observer
+	  compiles to nothing, name strings included.
+
+if MTL_FSM_TRACE
+
+module = MTL_FSM
+module-str = mtl state machine trace
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # MTL_FSM_TRACE
+
+endif # MTL

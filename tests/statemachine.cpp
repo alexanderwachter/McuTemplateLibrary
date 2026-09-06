@@ -5,11 +5,13 @@
  */
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/TypeName.hpp>
 #include <mtl/Typelist.hpp>
 
 #include <chrono>
 #include <print>
 #include <source_location>
+#include <string_view>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -921,6 +923,55 @@ namespace raw_hooks {
     };
 } // namespace raw_hooks
 
+// --- transition hook: the edge and its event, after the change --------------
+namespace transition_hook {
+    struct go {};
+    struct tick {};
+    struct kill {
+        int code;
+    };
+
+    struct idle {
+        int ticks = 0;
+        void handle(tick const&) { ++ticks; }
+    };
+    struct busy {};
+    struct dead {
+        dead() = default;
+        explicit dead(kill const& event) : code(event.code) {}
+        int code = 0;
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>,
+        fsm::internal_transition<fsm::from<idle>, fsm::on<tick>>,
+        fsm::transition<fsm::from<busy>, fsm::on<go>, fsm::to<idle>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+
+    struct step {
+        std::string_view from;
+        std::string_view event;
+        std::string_view to;
+        bool operator==(step const&) const = default;
+    };
+
+    // wants the real source: the wildcard falls back to per-source bodies
+    struct recorder {
+        template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
+        void onTransition(MACHINE&)
+        {
+            steps.push_back({mtl::short_name<FROM_STATE>(), mtl::short_name<EVENT>(),
+                             mtl::short_name<TO_STATE>()});
+        }
+        std::vector<step> steps;
+    };
+
+    // accepts any_state as source: the wildcard stays shared
+    struct agnostic_recorder : recorder {
+        static constexpr bool source_agnostic = true;
+    };
+} // namespace transition_hook
+
 // --- guards deciding on the event payload ------------------------------------
 namespace event_guard {
     struct reading {
@@ -1224,6 +1275,53 @@ void deadlineSpansPhaseWithoutRearming()
     check(sm.is<gave_up>());
 }
 
+void transitionHookSeesEdgeAndEvent()
+{
+    using namespace transition_hook;
+    recorder rec;
+    fsm::state_machine<tbl, recorder> sm{rec};
+
+    check(rec.steps.empty()); // construction is no transition
+
+    check(sm.process(tick{})); // handled in place
+    check(rec.steps.back() == step{"idle", "tick", "internal_target"});
+    check(sm.getIf<idle>()->ticks == 1);
+
+    check(sm.process(go{})); // default-constructed target
+    check(rec.steps.back() == step{"idle", "go", "busy"});
+
+    check(sm.process(kill{3})); // payload edge, per-source fallback: real source
+    check(rec.steps.back() == step{"busy", "kill", "dead"});
+    check(sm.getIf<dead>()->code == 3);
+    check(rec.steps.size() == 3);
+}
+
+void sourceAgnosticHookKeepsWildcardShared()
+{
+    using namespace transition_hook;
+    agnostic_recorder rec;
+    fsm::state_machine<tbl, agnostic_recorder> sm{rec};
+
+    check(sm.process(go{}));
+    check(rec.steps.back() == step{"idle", "go", "busy"}); // exact edges unchanged
+
+    check(sm.process(kill{5})); // shared body: the source is any_state
+    check(rec.steps.back() == step{"any_state", "kill", "dead"});
+    check(rec.steps.size() == 2); // exactly one notification per firing
+    check(sm.getIf<dead>()->code == 5);
+}
+
+void observerGroupForwardsTransitionHook()
+{
+    using namespace transition_hook;
+    recorder rec;
+    fsm::observer_group<recorder> group{rec};
+    fsm::state_machine<tbl, fsm::observer_group<recorder>> sm{group};
+
+    check(sm.process(go{}));
+    check(rec.steps == std::vector<step>{{"idle", "go", "busy"}});
+}
+
 void timerInjectedByReference()
 {
     manual_timer timer; // caller-owned policy instance
@@ -1265,6 +1363,9 @@ int statemachineTests()
     guardedAlternativesFirstPassWins();
     internalTransitionHandlesInPlace();
     timerInjectedByReference();
+    transitionHookSeesEdgeAndEvent();
+    sourceAgnosticHookKeepsWildcardShared();
+    observerGroupForwardsTransitionHook();
     sharedWildcardFiresLikePerSource();
     wildcardFallbackDeliversExitValues();
     refusedExactGroupShadowsWildcard();

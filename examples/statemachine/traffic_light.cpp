@@ -8,12 +8,21 @@
 // driven by state timeouts. A pedestrian button shortens the green phase,
 // guarded by a minimum green time. lamp_driver prints the lamp levels;
 // on a real target it would write GPIOs and the polling timer would be a
-// hardware timer or work queue.
+// hardware timer or work queue. trace_printer prints every transition in
+// the fsm::tracing grammar, so the run can be watched live with
+// tools/fsmview:
+//   TrafficLightExample --dot > traffic_light.dot
+//   TrafficLightExample | fsmview.py traffic_light.dot --stdin
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/StateMachineDot.hpp>
+#include <mtl/StateMachineTrace.hpp>
 
 #include <chrono>
+#include <cstdio>
+#include <iostream>
 #include <print>
+#include <string_view>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -75,6 +84,21 @@ struct lamp_driver : fsm::observing<lamp_driver> {
     std::chrono::steady_clock::time_point start;
 };
 
+// Flushed per line: through a pipe stdout is block-buffered, and the
+// live view wants every line as it happens
+struct trace_printer : fsm::tracing<trace_printer> {
+    void traceInitial(char const* machine, char const* state)
+    {
+        std::println(fsm::trace_format::initial, machine, state);
+        std::fflush(stdout);
+    }
+    void traceTransition(char const* machine, char const* from, char const* event, char const* to)
+    {
+        std::println(fsm::trace_format::transition, machine, from, event, to);
+        std::fflush(stdout);
+    }
+};
+
 // --- events and states ------------------------------------------------------
 struct pedestrian_button {};
 
@@ -109,21 +133,29 @@ struct minimum_green_elapsed {
     }
 };
 
-using table = fsm::transition_table<
+// A named table: its short name identifies the machine in trace lines
+// and in the DOT graph
+struct traffic_light_table : fsm::transition_table<
     fsm::initial<red>,
     fsm::transition<fsm::from<red>,        fsm::on<fsm::timeout>,      fsm::to<red_yellow>>,
     fsm::transition<fsm::from<red_yellow>, fsm::on<fsm::timeout>,      fsm::to<green>>,
     fsm::transition<fsm::from<green>,      fsm::on<fsm::timeout>,      fsm::to<yellow>>,
     fsm::transition<fsm::from<yellow>,     fsm::on<fsm::timeout>,      fsm::to<red>>,
     fsm::transition<fsm::from<green>,      fsm::on<pedestrian_button>, fsm::to<yellow>,
-                    fsm::guard<minimum_green_elapsed>>>;
+                    fsm::guard<minimum_green_elapsed>>> {};
 
-using machine = fsm::state_machine<table, fsm::timed<polling_timer>, lamp_driver>;
+using machine = fsm::state_machine<traffic_light_table, fsm::timed<polling_timer>, lamp_driver,
+                                   trace_printer>;
 
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
+    if (argc > 1 && std::string_view{argv[1]} == "--dot") {
+        fsm::writeDot<traffic_light_table>(std::cout, "traffic_light");
+        return 0;
+    }
+
     auto const start   = std::chrono::steady_clock::now();
     auto const elapsed = [start] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -132,7 +164,8 @@ int main()
 
     fsm::timed<polling_timer> timeouts;
     lamp_driver driver{.start = start};
-    machine sm{timeouts, driver};
+    trace_printer tracer;
+    machine sm{timeouts, driver, tracer};
 
     auto const press_button = [&] {
         std::print("[{:>6}] pedestrian button pressed\n", elapsed());

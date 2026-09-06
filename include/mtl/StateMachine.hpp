@@ -37,9 +37,18 @@
  * a (state, event) pair when guards distinguish them: the alternatives
  * are tried in table order and the first whose guard passes fires; an
  * unguarded alternative is the catch-all and must be the last of its
- * group. When no alternative fires, process() returns false, no
+ * group - an entry after it could never fire, so a second unguarded
+ * entry for the pair (a plain duplicate included) is a static_assert.
+ * When no alternative fires, process() returns false, no
  * exit/entry/hook runs, a running timeout timer keeps running, but a
  * blocked fsm::timeout transition does not re-arm the one-shot timer.
+ *
+ * from<any_state> matches every state, and a state may handle the same
+ * event itself: its exact (state, event) group then replaces the
+ * wildcard group entirely - also when every guard of the exact group
+ * refuses, which yields false rather than the wildcard (so an exact
+ * pair is the way to exempt a state from a wildcard). Wildcard entries
+ * form alternatives among themselves like any other group.
  *
  * Timer policy contract (owned by fsm::timed<TIMER>):
  *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
@@ -54,7 +63,18 @@
  *   template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
  *   void onExitState(MACHINE&);  - transition fires, old state still alive
  *   void onEnterState(MACHINE&); - new state emplaced, before onEntry();
- *                                    on construction with OLD = mtl::nil_type
+ *                                    on construction with OLD = mtl::nil_type,
+ *                                    OLD = fsm::any_state on the shared
+ *                                    wildcard path (see process())
+ *   template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
+ *   void onTransition(MACHINE&); - after the change completed (after
+ *                                    onEntry()); TO = fsm::internal_target for
+ *                                    an internal transition, FROM =
+ *                                    fsm::any_state on the shared wildcard
+ *                                    path, which the observer accepts by
+ *                                    declaring `static constexpr bool
+ *                                    source_agnostic = true` (otherwise its
+ *                                    hook forces the per-source expansion)
  *   template<typename TABLE> static constexpr void validate();
  *                                  - invoked at machine instantiation: the
  *                                    place for an observer's compile-time
@@ -81,8 +101,8 @@
 
 namespace fsm {
 
-// Matches every state in from<>; a specific (state, event) transition
-// takes precedence over the wildcard
+// Matches every state in from<>; a state's own (state, event) group
+// replaces the wildcard group, even when all its guards refuse
 struct any_state {};
 
 // Event injected by the timer policy when a state's timeout expires
@@ -1257,6 +1277,17 @@ void enterHook(OBSERVER& observer, MACHINE& machine)
     }
 }
 
+template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename OBSERVER,
+         typename MACHINE>
+void transitionHook(OBSERVER& observer, MACHINE& machine)
+{
+    if constexpr (requires {
+                      observer.template onTransition<FROM_STATE, EVENT, TO_STATE>(machine);
+                  }) {
+        observer.template onTransition<FROM_STATE, EVENT, TO_STATE>(machine);
+    }
+}
+
 } // namespace internal
 
 // Composite observer: forwards every hook to caller-owned member
@@ -1295,6 +1326,16 @@ public:
             members_);
     }
 
+    template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
+    void onTransition(MACHINE& machine)
+    {
+        std::apply(
+            [&machine](auto&... member) {
+                (internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(member, machine), ...);
+            },
+            members_);
+    }
+
 private:
     std::tuple<OBSERVERs&...> members_;
 };
@@ -1322,6 +1363,7 @@ class state_machine {
     static_assert((internal::validated<OBSERVERs, TRANSITIONS>() && ...));
 
 public:
+    using table         = TRANSITION_TABLE; // named tables identify the machine (fsm::tracing)
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
@@ -1431,21 +1473,34 @@ public:
 private:
     // --- shared wildcard path -----------------------------------------------
 
+    // An onTransition hook would receive the real source state; on the
+    // shared path it gets fsm::any_state instead, which an observer
+    // accepts by declaring `static constexpr bool source_agnostic = true`
+    template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
+    static constexpr bool transitionHookSharesEdge()
+    {
+        return !requires(OBSERVER observer, state_machine& machine) {
+            observer.template onTransition<OLD_STATE, EVENT, NEW_STATE>(machine);
+        } || requires { requires OBSERVER::source_agnostic; };
+    }
+
     // One observer's view of the shared edge into NEW_STATE from the
     // unknowable OLD_STATE: the timed observer is handled by the
     // unconditional stop, an observing one must prove its exit silent
     // and its entry source-independent, and a raw per-edge hook (which
     // would receive the real source state) blocks sharing entirely
-    template<typename OBSERVER, typename NEW_STATE, typename OLD_STATE>
+    template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
     static constexpr bool observerSharesEdge()
     {
         if constexpr (internal::is_timed_v<OBSERVER>) {
             return true;
+        } else if constexpr (!transitionHookSharesEdge<OBSERVER, OLD_STATE, EVENT, NEW_STATE>()) {
+            return false;
         } else if constexpr (std::derived_from<OBSERVER, observing<OBSERVER>>) {
             return OBSERVER::template exit_silent<OLD_STATE, state_machine> &&
                    OBSERVER::template entry_shared_from<NEW_STATE, OLD_STATE>;
         } else if constexpr (internal::grouped_observer<OBSERVER>) {
-            return membersShareEdge<NEW_STATE, OLD_STATE>(
+            return membersShareEdge<OLD_STATE, EVENT, NEW_STATE>(
                 internal::group_members_t<OBSERVER>{});
         } else {
             return !requires(OBSERVER observer, state_machine& machine) {
@@ -1456,10 +1511,10 @@ private:
         }
     }
 
-    template<typename NEW_STATE, typename OLD_STATE, typename... MEMBERs>
+    template<typename OLD_STATE, typename EVENT, typename NEW_STATE, typename... MEMBERs>
     static constexpr bool membersShareEdge(mtl::typelist<MEMBERs...>)
     {
-        return (observerSharesEdge<MEMBERs, NEW_STATE, OLD_STATE>() && ...);
+        return (observerSharesEdge<MEMBERs, OLD_STATE, EVENT, NEW_STATE>() && ...);
     }
 
     // States without an exact group for EVENT: exactly those the
@@ -1475,9 +1530,9 @@ private:
     template<typename TO, typename EVENT>
     struct wildcard_source_ok {
         template<typename STATE>
-        struct pred : std::bool_constant<!requires(STATE state) { state.onExit(); } &&
-                                         (observerSharesEdge<OBSERVERs, TO, STATE>() && ...)> {
-        };
+        struct pred
+            : std::bool_constant<!requires(STATE state) { state.onExit(); } &&
+                                 (observerSharesEdge<OBSERVERs, STATE, EVENT, TO>() && ...)> {};
     };
 
     template<typename EVENT, typename... WILDCARDs>
@@ -1533,9 +1588,9 @@ private:
     }
 
     // The shared transition body: stop any armed timer (it belongs to
-    // the state being left), replace it, and enter the target the way
-    // the constructor does - the source is unknowable here, and the
-    // shareability proof made that unobservable
+    // the state being left), replace it, and enter the target from
+    // any_state - the source is unknowable here, and the shareability
+    // proof made that unobservable
     template<typename TRANSITION, typename EVENT>
     bool fireShared(EVENT const& event)
     {
@@ -1555,7 +1610,8 @@ private:
         } else {
             current_.template emplace<NEW_STATE>();
         }
-        this->template enter<mtl::nil_type, NEW_STATE>();
+        this->template enter<any_state, NEW_STATE>();
+        this->template notifyTransition<any_state, EVENT, NEW_STATE>();
         return true;
     }
 
@@ -1574,20 +1630,38 @@ private:
         return fired;
     }
 
+    // Already instantiated per (transition, state, event): the only
+    // place the per-edge bodies below can stay event-agnostic while the
+    // onTransition hook still learns the event. After the emplace the
+    // state reference is dead - the hook only ever receives the machine
     template<typename TRANSITION, typename STATE, typename EVENT>
     bool fire(STATE& state, EVENT const& event)
     {
+        using TO_STATE = typename TRANSITION::to;
         if constexpr (internal::is_internal_v<TRANSITION>) {
             static_assert(requires { state.handle(event); },
                           "internal transition: the state must provide handle(EVENT const&)");
             state.handle(event);
-            return true;
-        } else if constexpr (internal::payload_constructible_v<typename TRANSITION::to, EVENT>) {
-            return this->template doTransition<STATE, typename TRANSITION::to>(event);
+        } else if constexpr (internal::payload_constructible_v<TO_STATE, EVENT>) {
+            this->template doTransition<STATE, TO_STATE>(event);
         } else {
             // the emplace does not depend on the event: one body per edge
-            return this->template doDefaultTransition<STATE, typename TRANSITION::to>();
+            this->template doDefaultTransition<STATE, TO_STATE>();
         }
+        this->template notifyTransition<STATE, EVENT, TO_STATE>();
+        return true;
+    }
+
+    // Runs after the transition completed (after onEntry()), so a trace
+    // line follows the effects of the change
+    template<typename FROM_STATE, typename EVENT, typename TO_STATE>
+    void notifyTransition()
+    {
+        std::apply(
+            [this](auto&... observer) {
+                (internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(observer, *this), ...);
+            },
+            observers_);
     }
 
     // Payload delivery: instantiated per (edge, event) - only for

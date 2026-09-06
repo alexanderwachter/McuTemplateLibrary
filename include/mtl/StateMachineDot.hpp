@@ -9,6 +9,13 @@
  * gets an entry marker, and an any_state wildcard source is shown as a
  * dashed node.
  *
+ * For tools/fsmview the graph carries a "// table: <short name>" comment
+ * naming the table (the machine id of fsm::tracing lines) and every edge
+ * an id "<from>__<event>__<to>__<index>" that Graphviz passes into its
+ * SVG output; the index in the table keeps guarded alternatives of one
+ * (state, event) pair distinct, <to> is internal_target for internal
+ * transitions - the same names the trace lines use.
+ *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
  */
@@ -20,9 +27,11 @@
 #include <mtl/Typelist.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <ostream>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace fsm {
 
@@ -60,7 +69,7 @@ void writeDotNode(std::ostream& out)
     out << ";\n";
 }
 
-template<typename TRANSITION>
+template<std::size_t INDEX, typename TRANSITION>
 void writeDotEdge(std::ostream& out)
 {
     // an internal transition renders as a dashed self-edge
@@ -72,10 +81,15 @@ void writeDotEdge(std::ostream& out)
         out << "\\n[" << label<typename TRANSITION::guard>() << ']';
     }
     if constexpr (is_internal_v<TRANSITION>) {
-        out << "\\n(internal)\" style=dashed];\n";
-    } else {
-        out << "\"];\n";
+        out << "\\n(internal)";
     }
+    out << "\" id=\"" << label<typename TRANSITION::from>() << "__"
+        << label<typename TRANSITION::event>() << "__" << label<typename TRANSITION::to>()
+        << "__" << INDEX << '"';
+    if constexpr (is_internal_v<TRANSITION>) {
+        out << " style=dashed";
+    }
+    out << "];\n";
 }
 
 template<typename STATES, typename TRANSITIONS>
@@ -86,7 +100,9 @@ struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
     static void write(std::ostream& out)
     {
         (writeDotNode<STATEs>(out), ...);
-        (writeDotEdge<TRANSITIONs>(out), ...);
+        [&out]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
+            (writeDotEdge<INDEXs, TRANSITIONs>(out), ...);
+        }(std::index_sequence_for<TRANSITIONs...>{});
     }
 
     static constexpr bool uses_wildcard =
@@ -102,6 +118,7 @@ void writeDot(std::ostream& out, std::string_view name = "fsm")
     using initial = mtl::front_t<typename TABLE::states>;
 
     out << "digraph \"" << name << "\" {\n"
+        << "    // table: " << internal::label<TABLE>() << '\n'
         << "    rankdir=LR;\n"
         << "    node [shape=box, style=rounded];\n"
         << "    __initial [shape=point];\n";

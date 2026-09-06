@@ -8,9 +8,10 @@
 
 int statemachineTests();
 int dotTests();
+int traceTests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = statemachineTests() + dotTests();
+    int const failures = statemachineTests() + dotTests() + traceTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;
