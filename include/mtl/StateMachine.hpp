@@ -1192,6 +1192,117 @@ struct handles_event
 template<typename TABLE, typename STATE, typename EVENT>
 inline constexpr bool handles_event_v = handles_event<TABLE, STATE, EVENT>::value;
 
+// --- optional features as tags ----------------------------------------------
+// A state declares the feature it belongs to (`using feature = TAG;`),
+// an observer declaring the same tag (`using enables = TAG;`, or an
+// mtl::typelist of tags) switches the feature on. A disabled feature's
+// states - and every table entry touching them, initial<> included -
+// are filtered out of the entry list at compile time; states without a
+// feature always stay. Build the table from the filtered list, keyed by
+// the observers that will be injected:
+//   template<typename... OBSERVERs>
+//   struct my_table : mtl::rebind_t<fsm::remove_disabled_features_t<entries, OBSERVERs...>,
+//                                   fsm::transition_table> {};
+
+namespace internal {
+
+template<typename ENABLES, typename TAG>
+struct enables_lists : std::is_same<ENABLES, TAG> {};
+
+template<typename... TAGs, typename TAG>
+struct enables_lists<mtl::typelist<TAGs...>, TAG>
+    : std::bool_constant<(std::is_same_v<TAGs, TAG> || ...)> {};
+
+template<typename STATE>
+concept featured = requires { typename STATE::feature; };
+
+} // namespace internal
+
+// Whether OBSERVER's enables declaration names TAG
+template<typename OBSERVER, typename TAG>
+struct observer_enables : std::false_type {};
+
+template<typename OBSERVER, typename TAG>
+    requires requires { typename OBSERVER::enables; }
+struct observer_enables<OBSERVER, TAG> : internal::enables_lists<typename OBSERVER::enables, TAG> {};
+
+template<typename OBSERVER, typename TAG>
+inline constexpr bool observer_enables_v = observer_enables<OBSERVER, TAG>::value;
+
+// Whether STATE declares TAG as its feature
+template<typename STATE, typename TAG>
+struct state_in_feature : std::false_type {};
+
+template<internal::featured STATE, typename TAG>
+struct state_in_feature<STATE, TAG> : std::is_same<typename STATE::feature, TAG> {};
+
+template<typename STATE, typename TAG>
+inline constexpr bool state_in_feature_v = state_in_feature<STATE, TAG>::value;
+
+// Whether any of the observers enables TAG
+template<typename TAG, typename... OBSERVERs>
+inline constexpr bool feature_enabled_v = (observer_enables_v<OBSERVERs, TAG> || ...);
+
+namespace internal {
+
+// Entries touching a state the STATE_PRED selects: transitions from or
+// to it, an initial<> naming it (the next entry's source leads then),
+// and a timer-range map's timed_by<> entry for it
+template<template<typename> typename STATE_PRED>
+struct entry_touching {
+    template<typename ENTRY>
+    struct pred : std::false_type {};
+
+    template<concepts::transition ENTRY>
+    struct pred<ENTRY> : std::bool_constant<STATE_PRED<typename ENTRY::from>::value ||
+                                            STATE_PRED<typename ENTRY::to>::value> {};
+
+    template<typename STATE>
+    struct pred<fsm::initial<STATE>> : STATE_PRED<STATE> {};
+
+    template<typename STATE, auto const& BOUND>
+    struct pred<fsm::timed_by<STATE, BOUND>> : STATE_PRED<STATE> {};
+};
+
+// A state of any of the listed features
+template<typename TAGS>
+struct in_features;
+
+template<typename... TAGs>
+struct in_features<mtl::typelist<TAGs...>> {
+    template<typename STATE>
+    struct pred : std::bool_constant<(state_in_feature_v<STATE, TAGs> || ...)> {};
+};
+
+// A featured state whose feature none of the observers enables
+template<typename... OBSERVERs>
+struct in_disabled_feature {
+    template<typename STATE>
+    struct pred : std::false_type {};
+
+    template<featured STATE>
+    struct pred<STATE>
+        : std::bool_constant<!feature_enabled_v<typename STATE::feature, OBSERVERs...>> {};
+};
+
+} // namespace internal
+
+// The entries with every feature none of the observers enables removed:
+// the states of those features and everything touching them, in one
+// pass; works on transition lists and on timer-range maps alike
+template<mtl::concepts::typelist LIST, typename... OBSERVERs>
+using remove_disabled_features_t = mtl::remove_if_t<
+    LIST,
+    internal::entry_touching<internal::in_disabled_feature<OBSERVERs...>::template pred>::template pred>;
+
+// The same for an explicit mtl::typelist of feature tags
+template<mtl::concepts::typelist LIST, mtl::concepts::typelist TAGS>
+using remove_features_t = mtl::remove_if_t<
+    LIST, internal::entry_touching<internal::in_features<TAGS>::template pred>::template pred>;
+
+template<mtl::concepts::typelist LIST, typename TAG>
+using remove_feature_t = remove_features_t<LIST, mtl::typelist<TAG>>;
+
 namespace concepts {
 
 // OBSERVER's static observation of STATE reaches a notify hook: the

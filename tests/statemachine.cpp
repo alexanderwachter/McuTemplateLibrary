@@ -511,6 +511,76 @@ namespace Alternatives {
         fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>>;
 } // namespace Alternatives
 
+namespace Features {
+    struct go {};
+    struct swap_feature {};
+    struct vconn_feature {};
+
+    struct plain {};
+    struct swapping {
+        using feature = swap_feature;
+    };
+    struct powering {
+        using feature = vconn_feature;
+    };
+
+    struct swap_policy {
+        using enables = swap_feature;
+    };
+    struct both_policies {
+        using enables = mtl::typelist<vconn_feature, swap_feature>;
+    };
+    struct bystander {};
+
+    static_assert(fsm::observer_enables_v<swap_policy, swap_feature>);
+    static_assert(!fsm::observer_enables_v<swap_policy, vconn_feature>);
+    static_assert(fsm::observer_enables_v<both_policies, swap_feature>);
+    static_assert(fsm::observer_enables_v<both_policies, vconn_feature>);
+    static_assert(!fsm::observer_enables_v<bystander, swap_feature>);
+
+    static_assert(fsm::state_in_feature_v<swapping, swap_feature>);
+    static_assert(!fsm::state_in_feature_v<swapping, vconn_feature>);
+    static_assert(!fsm::state_in_feature_v<plain, swap_feature>);
+
+    static_assert(fsm::feature_enabled_v<swap_feature, bystander, swap_policy>);
+    static_assert(!fsm::feature_enabled_v<vconn_feature, bystander, swap_policy>);
+    static_assert(!fsm::feature_enabled_v<swap_feature>); // no observers at all
+
+    using swap_in    = fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<swapping>>;
+    using swap_out   = fsm::transition<fsm::from<swapping>, fsm::on<go>, fsm::to<plain>>;
+    using power_in   = fsm::transition<fsm::from<plain>, fsm::on<fsm::timeout>, fsm::to<powering>>;
+    using plain_self = fsm::transition<fsm::from<plain>, fsm::on<fsm::timeout>, fsm::to<plain>>;
+    using entries    = mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, power_in, plain_self>;
+
+    // one feature removed: its initial<> and both transitions go, the rest stays
+    static_assert(std::is_same_v<fsm::remove_feature_t<entries, swap_feature>,
+                                 mtl::typelist<power_in, plain_self>>);
+
+    // filtered by observers: unenabled features go, featureless states stay
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, bystander>,
+                                 mtl::typelist<plain_self>>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, swap_policy>,
+                                 mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, plain_self>>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, bystander, both_policies>, entries>);
+
+    // the table built from the filtered list: without the initial<>, the
+    // first remaining transition's source leads
+    using trimmed = mtl::rebind_t<fsm::remove_disabled_features_t<entries, bystander>, fsm::transition_table>;
+    static_assert(std::is_same_v<mtl::front_t<trimmed::states>, plain>);
+    static_assert(!mtl::has_a_v<trimmed::states, swapping>);
+
+    // several features in one pass, and the same filter on a timer-range map
+    static_assert(std::is_same_v<
+                  fsm::remove_features_t<entries, mtl::typelist<swap_feature, vconn_feature>>,
+                  mtl::typelist<plain_self>>);
+
+    constexpr fsm::timeout_range any_time{0us, 1s};
+    using ranges = mtl::typelist<fsm::timed_by<powering, any_time>, fsm::timed_by<plain, any_time>>;
+    static_assert(std::is_same_v<fsm::remove_feature_t<ranges, vconn_feature>,
+                                 mtl::typelist<fsm::timed_by<plain, any_time>>>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<ranges, both_policies>, ranges>);
+} // namespace Features
+
 namespace SharedWildcard {
     struct go {};
     struct kill {

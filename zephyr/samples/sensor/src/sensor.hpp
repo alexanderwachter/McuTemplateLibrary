@@ -6,9 +6,13 @@
  * sensor observer starts it) and answered with reading_done{value} or
  * reading_failed. Failures are retried through the retrying state up to
  * a budget kept in machine-owned context; a value above the limit takes
- * the alarm branch. The button is an emergency stop from every state,
- * and the calibration at start exists only when a calibrator observer
- * is injected: the table is composed accordingly.
+ * the alarm branch. The button is an emergency stop from every state.
+ *
+ * The calibration at start is a feature: its state declares
+ * `using feature = calibration_feature;`, and only an injected observer
+ * declaring `using enables = calibration_feature;` switches it on -
+ * otherwise the feature's states and every entry touching them are
+ * filtered out of the table at compile time.
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -22,10 +26,14 @@
 #include <mtl/TypelistAlgorithms.hpp>
 
 #include <chrono>
+#include <type_traits>
 
 namespace sensor {
 
 using namespace std::chrono_literals;
+
+// --- the feature tag: declared by its states and by the enabling observer
+struct calibration_feature {};
 
 // --- events -----------------------------------------------------------------
 struct reading_done {
@@ -57,9 +65,12 @@ struct idle {
     explicit idle(retry_budget& budget) : context(budget) { context.failures = 0; }
 };
 
-// Feature state: in the table only with a calibrator observer, which
-// answers with calibrated{offset}; the timeout is the fallback
+// Feature state: in the table only with an observer enabling the
+// feature, which answers with calibrated{offset}; the timeout is the
+// fallback
 struct calibrating {
+    using feature = calibration_feature;
+
     static constexpr auto timeout = 3000ms;
     static constexpr auto led     = led_pattern::on;
 };
@@ -120,8 +131,13 @@ struct retries_left {
     static bool check(reading const& state) { return state.context.failures < max_retries; }
 };
 
-// --- tables: the core, and the calibration feature prepended when enabled
-using core_transitions = mtl::typelist<
+// --- the table: one list, features included; a disabled feature is
+// filtered out. Without the calibration entries the first transition's
+// source, idle, is the initial state
+using sensor_transitions = mtl::typelist<
+    fsm::initial<calibrating>,
+    fsm::transition<fsm::from<calibrating>, fsm::on<calibrated>,   fsm::to<idle>>,
+    fsm::transition<fsm::from<calibrating>, fsm::on<fsm::timeout>, fsm::to<failed>>,
     fsm::transition<fsm::from<idle>,     fsm::on<fsm::timeout>,   fsm::to<reading>>,
     fsm::transition<fsm::from<reading>,  fsm::on<reading_done>,   fsm::to<alarm>,
                     fsm::guard<above_limit>>,
@@ -138,16 +154,23 @@ using core_transitions = mtl::typelist<
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_done>>,
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_failed>>>;
 
-using calibration_transitions = mtl::typelist<
-    fsm::initial<calibrating>,
-    fsm::transition<fsm::from<calibrating>, fsm::on<calibrated>,   fsm::to<idle>>,
-    fsm::transition<fsm::from<calibrating>, fsm::on<fsm::timeout>, fsm::to<failed>>>;
-
-// Named: the short names identify the machines in trace lines and graphs
-struct sensor_table : mtl::rebind_t<core_transitions, fsm::transition_table> {};
-
-struct calibrating_sensor_table
-    : mtl::rebind_t<mtl::concat_t<calibration_transitions, core_transitions>,
+// The table for the observers injected into the machine: every feature
+// none of them enables is removed. Named (a struct, not an alias): the
+// short name, sensor_table, identifies the machine in trace lines and
+// graphs whatever the observers are
+template<typename... OBSERVERs>
+struct sensor_table
+    : mtl::rebind_t<fsm::remove_disabled_features_t<sensor_transitions, OBSERVERs...>,
                     fsm::transition_table> {};
+
+// A stand-in observer enabling every feature, for the graph generator
+// and the checks below (the real enablers live with the board code)
+struct every_feature {
+    using enables = calibration_feature;
+};
+
+static_assert(std::is_same_v<mtl::front_t<sensor_table<every_feature>::states>, calibrating>);
+static_assert(std::is_same_v<mtl::front_t<sensor_table<>::states>, idle>);
+static_assert(!mtl::has_a_v<sensor_table<>::states, calibrating>);
 
 } // namespace sensor

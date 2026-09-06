@@ -95,6 +95,12 @@ whether a transition fired.
   constructed with a machine-owned instance of that type, shared by
   every state naming it and surviving transitions: a retry budget, a
   running count.
+- **Features as tags.** A state declares `using feature = tag;`, an
+  observer `using enables = tag;` (or a typelist of tags).
+  `fsm::remove_disabled_features_t<entries, OBSERVERs...>` drops every entry
+  touching a feature no injected observer enables, `initial<>`
+  included, so the table shrinks with the observers
+  (`remove_features_t` for explicit tags).
 - **Observers** are the only extension point. Injected by reference,
   they get `onExitState<OLD, NEW>`, `onEnterState<OLD, NEW>` and
   `onTransition<FROM, EVENT, TO>` hooks (each optional) and a

@@ -17,11 +17,11 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |
 | Sub state machine as an observer | `LedController` observes each state's `led` annotation and runs the LED machine (led.hpp) |
 | Value observers with change suppression | `LedController` (`led`), `LedDriver` (`lit`, writes `led0`) |
-| Feature enabled by an observer | with `Calibrator` injected, the table starts in `calibrating` (`CONFIG_SAMPLE_CALIBRATION`) |
+| Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's transition keeps its shared body (`renotify_safe`, constrained hooks) |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
 
-The tables (`sensor_table`, `calibrating_sensor_table`, `led_table`) are
+The tables (`sensor_table<OBSERVERs...>`, filtered by the observers, and `led_table`) are
 Zephyr-free headers, so the graph generator builds them on the host.
 
 ## Build
@@ -31,17 +31,18 @@ west build -b nucleo_g474re modules/mtl/zephyr/samples/sensor && west flash
 west build -b nucleo_g474re modules/mtl/zephyr/samples/sensor -- -DCONFIG_SAMPLE_CALIBRATION=n
 ```
 
-The second form leaves the calibrator out: the machine is built on
-`sensor_table`, which has no `calibrating` state at all. Boards without
-`led0` or `sw0` run without the LED or the emergency stop.
+The second form leaves the calibrator out: no observer enables the
+feature, so the machine is built on `sensor_table`, which has no
+`calibrating` state at all. Boards without `led0` or `sw0` run without
+the LED driver or the emergency stop.
 
 ## Watch it live
 
 ```sh
-west build -t dot        # sensor_table.dot, calibrating_sensor_table.dot, led_table.dot in build/
+west build -t dot        # sensor_table.dot (the configured variant), led_table.dot in build/
 west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/
 ```
 
 The page gets one tab per machine; "follow machine" jumps to the one
-that just moved. The unused table variant stays idle. Press the button
+that just moved. Press the button
 during a reading to see the internal transition in `emergency`.

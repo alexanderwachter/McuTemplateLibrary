@@ -80,6 +80,12 @@ expecting the specific `static_assert` message - a class template's
 - The machine core knows nothing about timers, annotations, tracing or
   targets. Observers are its only extension point; new behavior goes into
   an observer, not into `state_machine`.
+- Optional features are tags: states declare `using feature = TAG;`,
+  observers `using enables = TAG;`, and the table is one full entry
+  list filtered with `fsm::remove_disabled_features_t` (or `remove_features_t`)
+  (one pass, `initial<>` and `timed_by<>` entries included). Do not
+  compose feature tables by hand from partial lists, and do not
+  reimplement the filter in an application.
 - Transition bodies are instantiated per edge, not per event. Anything
   that must know the event runs from `fire()`, which is already per
   (transition, state, event) - do not push the event into the per-edge

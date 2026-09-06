@@ -18,7 +18,7 @@
  * The user button (alias sw0) is the emergency stop from any state and
  * resumes from emergency; everything runs on the system workqueue.
  *
- *   west build -t dot        (sensor_table, calibrating_sensor_table, led_table)
+ *   west build -t dot        (sensor_table as configured, led_table)
  *   west fsm_liveview        (reads /dev/ttyACM0, graphs from build/)
  *
  * Copyright (c) 2026 Alexander Wachter
@@ -100,8 +100,11 @@ private:
 };
 
 // --- calibration feature ----------------------------------------------------
+// Declaring the feature's tag switches its states into the table
 class Calibrator {
 public:
+    using enables = sensor::calibration_feature;
+
     Calibrator() { k_work_init_delayable(&work_, &Calibrator::finish); }
 
     // calibrating is the initial state: the construction-time entry is
@@ -132,6 +135,11 @@ private:
 
 // --- LED: a driver observer on the LED machine, the machine inside the
 // observer of the sensor machine ---------------------------------------------
+// Boards without led0 get the LED machine without its driver: the
+// states still run (and trace), nothing is written
+#define SAMPLE_HAS_LED DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(led0))
+
+#if SAMPLE_HAS_LED
 struct LedDriver : fsm::observing<LedDriver> {
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::lit)
@@ -155,18 +163,15 @@ struct LedDriver : fsm::observing<LedDriver> {
         if (ready) {
             gpio_pin_set_dt(&pin, lit);
         } else {
-            LOG_WRN("no led0 on this board: LED states run unlit");
+            LOG_ERR("led0 not ready: LED states run unlit");
         }
     }
 
-#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(led0))
     gpio_dt_spec pin = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-#else
-    gpio_dt_spec pin{};
-#endif
-    bool ready = false;
-    bool lit   = false;
+    bool ready       = false;
+    bool lit         = false;
 };
+#endif
 
 struct LedController : fsm::observing<LedController> {
     // re-notifying an unchanged pattern only restarts the same pattern:
@@ -183,20 +188,22 @@ struct LedController : fsm::observing<LedController> {
 
     // observers before the state machine they are injected into
     fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
-    LedDriver driver;
     mtl::zephyr::TraceLogger tracer;
+#if SAMPLE_HAS_LED
+    LedDriver driver;
     fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>, LedDriver,
                        mtl::zephyr::TraceLogger>
         stateMachine{timeouts, driver, tracer};
+#else
+    fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>,
+                       mtl::zephyr::TraceLogger>
+        stateMachine{timeouts, tracer};
+#endif
 };
 
-// --- the sensor state machine: its table depends on the injected observers ---
+// --- the sensor state machine: its table is filtered by the injected observers
 template<typename... OBSERVERs>
-using table_for = std::conditional_t<mtl::has_a_v<mtl::typelist<OBSERVERs...>, Calibrator>,
-                                     sensor::calibrating_sensor_table, sensor::sensor_table>;
-
-template<typename... OBSERVERs>
-using SensorStateMachine = fsm::state_machine<table_for<OBSERVERs...>,
+using SensorStateMachine = fsm::state_machine<sensor::sensor_table<OBSERVERs...>,
                                               fsm::timed<mtl::zephyr::WorkqueueTimer>, OBSERVERs...>;
 
 // Static: work items and machine addresses must stay put. Order: timer
@@ -273,7 +280,11 @@ int initButton()
 
 int main()
 {
+#if SAMPLE_HAS_LED
     leds.driver.attach();
+#else
+    LOG_WRN("no led0 on this board: LED states run unlit");
+#endif
     initButton();
     k_sleep(K_FOREVER);
     return 0;
