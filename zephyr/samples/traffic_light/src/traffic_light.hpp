@@ -24,20 +24,39 @@ int64_t uptimeMs();
 
 struct pedestrian_button {};
 
+// The three lamps, one type each: an observer picks them by overload,
+// and a phase change notifies only the lamps that actually switch
+struct red_lamp {
+    bool on;
+    constexpr bool operator==(red_lamp const&) const = default;
+};
+struct yellow_lamp {
+    bool on;
+    constexpr bool operator==(yellow_lamp const&) const = default;
+};
+struct green_lamp {
+    bool on;
+    constexpr bool operator==(green_lamp const&) const = default;
+};
+
 struct red {
-    static constexpr auto timeout = 2000ms;
+    static constexpr auto timeout     = 2000ms;
+    static constexpr auto annotations = fsm::annotate(red_lamp{true}, yellow_lamp{false}, green_lamp{false});
 };
 struct red_yellow {
-    static constexpr auto timeout = 500ms;
+    static constexpr auto timeout     = 500ms;
+    static constexpr auto annotations = fsm::annotate(red_lamp{true}, yellow_lamp{true}, green_lamp{false});
 };
 struct green {
-    static constexpr auto timeout = 6000ms; // full phase without a button press
+    static constexpr auto timeout     = 6000ms; // full phase without a button press
+    static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{false}, green_lamp{true});
 
     int64_t entered = 0;
     void onEntry() { entered = uptimeMs(); }
 };
 struct yellow {
-    static constexpr auto timeout = 1000ms;
+    static constexpr auto timeout     = 1000ms;
+    static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{true}, green_lamp{false});
 };
 
 struct minimum_green_elapsed {

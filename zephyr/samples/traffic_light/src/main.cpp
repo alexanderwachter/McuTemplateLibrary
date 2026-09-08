@@ -41,14 +41,54 @@ namespace {
 using traffic_light::pedestrian_button;
 using traffic_light::traffic_light_table;
 
+// One observer for the three lamps: each lamp type has its overload,
+// and only a lamp that switches is notified (red stays on from red to
+// red_yellow: yellow alone is reported). The green lamp also drives the
+// board's led0 when there is one
+struct LampDriver : fsm::observing<LampDriver> {
+    void notifyEntry(traffic_light::red_lamp lamp) { LOG_INF("red lamp %s", lamp.on ? "on" : "off"); }
+    void notifyEntry(traffic_light::yellow_lamp lamp)
+    {
+        LOG_INF("yellow lamp %s", lamp.on ? "on" : "off");
+    }
+    void notifyEntry(traffic_light::green_lamp lamp)
+    {
+        LOG_INF("green lamp %s", lamp.on ? "on" : "off");
+        green = lamp.on;
+        if (ready) {
+            gpio_pin_set_dt(&led, green);
+        }
+    }
+
+    // The machine is constructed before main() configures the pin
+    void attach()
+    {
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(led0))
+        ready = gpio_is_ready_dt(&led) && gpio_pin_configure_dt(&led, GPIO_OUTPUT_INACTIVE) == 0;
+        if (ready) {
+            gpio_pin_set_dt(&led, green);
+        }
+#endif
+    }
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(led0))
+    gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+#else
+    gpio_dt_spec led{}; // never touched: ready stays false
+#endif
+    bool ready = false;
+    bool green = false;
+};
+
 using StateMachine = fsm::state_machine<traffic_light_table,
-                                        fsm::timed<mtl::zephyr::WorkqueueTimer>,
+                                        fsm::timed<mtl::zephyr::WorkqueueTimer>, LampDriver,
                                         mtl::zephyr::TraceLogger>;
 
 // Static: the timer's work item and the machine's address must stay put
 fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
+LampDriver lamps;
 mtl::zephyr::TraceLogger trace_logger;
-StateMachine light{timeouts, trace_logger};
+StateMachine light{timeouts, lamps, trace_logger};
 
 // --- pedestrian button ------------------------------------------------------
 // The ISR only queues work: the machine runs on the system workqueue,
@@ -113,8 +153,9 @@ int initButton()
 
 int main()
 {
-    // Construction already logged the initial state and armed red's
-    // timeout; everything else runs on the system workqueue
+    // Construction already logged the initial state, reported the lamps
+    // and armed red's timeout; everything else runs on the system workqueue
+    lamps.attach();
     initButton();
     k_sleep(K_FOREVER);
     return 0;

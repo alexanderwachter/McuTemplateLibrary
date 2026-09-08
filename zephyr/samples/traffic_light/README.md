@@ -6,8 +6,13 @@ workqueue, the board's user button (devicetree alias `sw0`) as the
 pedestrian button - it shortens the green phase once the minimum green
 time has elapsed, its ISR only queues work so the machine stays on the
 workqueue - and every transition logged by `mtl::zephyr::TraceLogger` on
-the `mtl_fsm` log module in the line grammar of `tools/fsmview`. Boards
-without `sw0` run on timeouts alone.
+the `mtl_fsm` log module in the line grammar of `tools/fsmview`. The
+three lamps are an annotation set on every state
+(`fsm::annotate(red_lamp{..}, yellow_lamp{..}, green_lamp{..})`), and one
+`LampDriver` observer consumes them through three `notifyEntry`
+overloads: a phase change reports only the lamps that switch, and the
+green lamp drives `led0`. Boards without `sw0` run on timeouts alone,
+boards without `led0` only log the lamps.
 
 ## Build
 

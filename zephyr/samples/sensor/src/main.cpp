@@ -9,9 +9,10 @@
  *   Calibrator      - the calibration feature: when injected, the table
  *                     gains the calibrating state, which it answers with
  *                     calibrated{offset} (CONFIG_SAMPLE_CALIBRATION)
- *   LedController  - a value observer on each state's led annotation,
- *                     driving its own LED state machine (the sub machine
- *                     is an observer of the sensor machine)
+ *   LedController  - picks the led_pattern element of each state's
+ *                     annotation set and drives its own LED state machine
+ *                     (the sub machine is an observer of the sensor machine)
+ *   PowerRail      - picks the sensor_power element of the same sets
  *   LedDriver      - value observer of the LED machine writing led0
  *   TraceLogger     - both machines trace to the mtl_fsm log module
  *
@@ -173,16 +174,12 @@ struct LedDriver : fsm::observing<LedDriver> {
 };
 #endif
 
+// Picks the led_pattern element of each state's annotation set by the
+// overload's type alone
 struct LedController : fsm::observing<LedController> {
     // re-notifying an unchanged pattern only restarts the same pattern:
     // lets the button's any_state transition keep its shared body
     static constexpr bool renotify_safe = true;
-
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::led)
-    {
-        return STATE::led;
-    }
 
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
@@ -201,6 +198,16 @@ struct LedController : fsm::observing<LedController> {
 #endif
 };
 
+// --- sensor power rail: the other element of the same annotation sets;
+// reading -> retrying changes the LED but not the rail, so only the LED
+// is notified there
+struct PowerRail : fsm::observing<PowerRail> {
+    void notifyEntry(sensor::sensor_power power)
+    {
+        LOG_INF("sensor power %s", power.on ? "on" : "off");
+    }
+};
+
 // --- the sensor state machine: its table is filtered by the injected observers
 template<typename... OBSERVERs>
 using SensorStateMachine = fsm::state_machine<sensor::sensor_table<OBSERVERs...>,
@@ -212,14 +219,15 @@ using SensorStateMachine = fsm::state_machine<sensor::sensor_table<OBSERVERs...>
 fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
 VirtualSensor sensor;
 LedController leds;
+PowerRail rail;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-SensorStateMachine<VirtualSensor, Calibrator, LedController, mtl::zephyr::TraceLogger>
-    monitor{timeouts, sensor, cal, leds, tracer};
+SensorStateMachine<VirtualSensor, Calibrator, LedController, PowerRail, mtl::zephyr::TraceLogger>
+    monitor{timeouts, sensor, cal, leds, rail, tracer};
 #else
-SensorStateMachine<VirtualSensor, LedController, mtl::zephyr::TraceLogger>
-    monitor{timeouts, sensor, leds, tracer};
+SensorStateMachine<VirtualSensor, LedController, PowerRail, mtl::zephyr::TraceLogger>
+    monitor{timeouts, sensor, leds, rail, tracer};
 #endif
 
 // --- emergency button -------------------------------------------------------

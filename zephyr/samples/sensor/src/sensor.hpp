@@ -45,8 +45,17 @@ struct calibrated {
 };
 struct button {};
 
-// --- what the LED shows per state (consumed by the LedController observer)
+// --- per-state annotations, observed by type: the LED pattern (the
+// LedController observer) and the sensor's power rail (PowerRail).
+// Re-switching the rail to its current level is harmless, so the type
+// says so - the button's any_state transition keeps its shared body
 enum class led_pattern { off, on, blink };
+
+struct sensor_power {
+    bool on;
+    static constexpr bool idempotent = true;
+    constexpr bool operator==(sensor_power const&) const = default;
+};
 
 // --- machine-owned context: survives transitions, one instance per type
 struct retry_budget {
@@ -59,7 +68,7 @@ struct stop_log {
 // --- states -----------------------------------------------------------------
 struct idle {
     static constexpr auto timeout = 1000ms;
-    static constexpr auto led     = led_pattern::off;
+    static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{false});
 
     retry_budget& context;
     explicit idle(retry_budget& budget) : context(budget) { context.failures = 0; }
@@ -72,12 +81,12 @@ struct calibrating {
     using feature = calibration_feature;
 
     static constexpr auto timeout = 3000ms;
-    static constexpr auto led     = led_pattern::on;
+    static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{true});
 };
 
 struct reading {
     static constexpr auto timeout = 2000ms; // the sensor never answered
-    static constexpr auto led     = led_pattern::on;
+    static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{true});
 
     retry_budget& context;
     explicit reading(retry_budget& budget) : context(budget) {}
@@ -85,7 +94,7 @@ struct reading {
 
 struct retrying {
     static constexpr auto timeout = 200ms;
-    static constexpr auto led     = led_pattern::off;
+    static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{true});
 
     retry_budget& context;
     // constructed from the failure: one more attempt used
@@ -98,7 +107,7 @@ struct retrying {
 
 struct alarm {
     static constexpr auto timeout = 2000ms;
-    static constexpr auto led     = led_pattern::blink;
+    static constexpr auto annotations = fsm::annotate(led_pattern::blink, sensor_power{false});
 
     int value = 0;
     alarm() = default;
@@ -107,11 +116,11 @@ struct alarm {
 
 struct failed {
     static constexpr auto timeout = 3000ms;
-    static constexpr auto led     = led_pattern::blink;
+    static constexpr auto annotations = fsm::annotate(led_pattern::blink, sensor_power{false});
 };
 
 struct emergency {
-    static constexpr auto led = led_pattern::on;
+    static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{false});
 
     stop_log& context;
     explicit emergency(stop_log& log) : context(log) {}

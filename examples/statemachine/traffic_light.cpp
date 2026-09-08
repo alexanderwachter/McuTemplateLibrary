@@ -6,7 +6,7 @@
 
 // Traffic light example: red -> red_yellow -> green -> yellow -> red,
 // driven by state timeouts. A pedestrian button shortens the green phase,
-// guarded by a minimum green time. lamp_driver prints the lamp levels;
+// guarded by a minimum green time. lamp_driver prints each lamp that switches;
 // on a real target it would write GPIOs and the polling timer would be a
 // hardware timer or work queue. trace_printer prints every transition in
 // the fsm::tracing grammar, so the run can be watched live with
@@ -59,26 +59,32 @@ private:
 static_assert(fsm::concepts::timer<polling_timer>);
 
 // --- lamps and the observer driving them ------------------------------------
-struct lamps_t {
-    bool red;
-    bool yellow;
-    bool green;
-    constexpr bool operator==(lamps_t const&) const = default;
+// One type per lamp: the states carry all three as an annotation set,
+// the driver picks them by overload, and a phase change reports only
+// the lamps that switch
+struct red_lamp {
+    bool on;
+    constexpr bool operator==(red_lamp const&) const = default;
+};
+struct yellow_lamp {
+    bool on;
+    constexpr bool operator==(yellow_lamp const&) const = default;
+};
+struct green_lamp {
+    bool on;
+    constexpr bool operator==(green_lamp const&) const = default;
 };
 
 struct lamp_driver : fsm::observing<lamp_driver> {
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::lamps)
-    {
-        return STATE::lamps;
-    }
+    void notifyEntry(red_lamp lamp) { report("red", lamp.on); }
+    void notifyEntry(yellow_lamp lamp) { report("yellow", lamp.on); }
+    void notifyEntry(green_lamp lamp) { report("green", lamp.on); }
 
-    void notifyEntry(lamps_t const& lamps)
+    void report(std::string_view lamp, bool on)
     {
         auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
-        std::print("[{:>6}] lamps: red={:<5} yellow={:<5} green={:<5}\n",
-                   elapsed, lamps.red, lamps.yellow, lamps.green);
+        std::print("[{:>6}] {} lamp {}\n", elapsed, lamp, on ? "on" : "off");
     }
 
     std::chrono::steady_clock::time_point start;
@@ -103,17 +109,17 @@ struct trace_printer : fsm::tracing<trace_printer> {
 struct pedestrian_button {};
 
 struct red {
-    static constexpr lamps_t lamps{.red = true, .yellow = false, .green = false};
+    static constexpr auto annotations = fsm::annotate(red_lamp{true}, yellow_lamp{false}, green_lamp{false});
     static constexpr auto timeout = 2000ms;
 };
 
 struct red_yellow {
-    static constexpr lamps_t lamps{.red = true, .yellow = true, .green = false};
+    static constexpr auto annotations = fsm::annotate(red_lamp{true}, yellow_lamp{true}, green_lamp{false});
     static constexpr auto timeout = 500ms;
 };
 
 struct green {
-    static constexpr lamps_t lamps{.red = false, .yellow = false, .green = true};
+    static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{false}, green_lamp{true});
     static constexpr auto timeout = 6000ms; // full phase without a button press
 
     std::chrono::steady_clock::time_point entered;
@@ -121,7 +127,7 @@ struct green {
 };
 
 struct yellow {
-    static constexpr lamps_t lamps{.red = false, .yellow = true, .green = false};
+    static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{true}, green_lamp{false});
     static constexpr auto timeout = 1000ms;
 };
 

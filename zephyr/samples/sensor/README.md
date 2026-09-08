@@ -15,8 +15,8 @@ traced, so `tools/fsmview` shows the whole thing live.
 | State constructed from the event | `alarm(reading_done const&)` keeps the value |
 | Wildcard source, exact pair overriding it | `any_state -(button)-> emergency`, `emergency -(button)-> idle` |
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |
-| Sub state machine as an observer | `LedController` observes each state's `led` annotation and runs the LED machine (led.hpp) |
-| Value observers with change suppression | `LedController` (`led`), `LedDriver` (`lit`, writes `led0`) |
+| Sub state machine as an observer | `LedController` picks the `led_pattern` element of each state's annotation set and runs the LED machine (led.hpp) |
+| Annotation sets, value observers with per-element change suppression | states carry `fsm::annotate(led_pattern, sensor_power)`; `LedController` and `PowerRail` consume one element each through their `notifyEntry` overloads (`reading -> retrying` changes the LED, not the rail); `LedDriver` observes the LED machine's `lit` member (`observe_static`) |
 | Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's transition keeps its shared body (`renotify_safe`, constrained hooks) |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
