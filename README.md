@@ -107,7 +107,10 @@ whether a transition fired.
   compile-time `validate<TABLE>()`. Built on them: `fsm::timed<TIMER>`
   (state timeouts through an injected timer policy), `fsm::observing`
   (value observers on state annotations, with compile-time change
-  suppression), `fsm::tracing` (transition trace lines),
+  suppression: one named member via `observe_static`, or a state's
+  `static constexpr auto annotations = fsm::annotate(a, b, c)` whose
+  elements reach the observer's `notifyEntry`/`notifyExit` overloads by
+  type, each suppressed on its own), `fsm::tracing` (transition trace lines),
   `fsm::observer_group` (several observers as one). A state feature no
   observer consumes is silently unobserved.
 - **Checked at compile time.** Malformed transitions, dead alternatives,

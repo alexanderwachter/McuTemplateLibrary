@@ -511,6 +511,71 @@ namespace Alternatives {
         fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>>;
 } // namespace Alternatives
 
+namespace AnnotationSets {
+    enum class light { off, on };
+    struct level {
+        int value;
+        constexpr bool operator==(level const&) const = default;
+    };
+    struct heat {
+        bool on;
+        static constexpr bool idempotent = true; // re-notifying is harmless
+        constexpr bool operator==(heat const&) const = default;
+    };
+
+    struct next {};
+    struct kill {};
+
+    struct dark {
+        static constexpr auto annotations = fsm::annotate(light::off, level{1});
+    };
+    struct lit {
+        static constexpr auto annotations = fsm::annotate(light::on, level{1}, heat{true});
+    };
+    struct bare {}; // no set at all
+    struct dead {
+        static constexpr auto annotations = fsm::annotate(heat{false});
+    };
+
+    static_assert(dark::annotations.has<light> && dark::annotations.has<level>);
+    static_assert(!dark::annotations.has<heat>);
+    static_assert(dark::annotations.get<level>() == level{1});
+    static_assert(std::is_same_v<decltype(lit::annotations)::types, mtl::typelist<light, level, heat>>);
+
+    // an observer consuming two of the three elements through overloads
+    struct panel : fsm::observing<panel> {
+        void notifyEntry(light l) { lights.push_back(l); }
+        void notifyEntry(level const& l) { levels.push_back(l.value); }
+        void notifyExit(level const& l) { level_exits.push_back(l.value); }
+        std::vector<light> lights;
+        std::vector<int> levels;
+        std::vector<int> level_exits;
+    };
+
+    // the coverage traits see set elements
+    static_assert(fsm::is_observed_v<panel, dark>);
+    static_assert(fsm::is_notified_of_v<panel, dark>);
+    static_assert(!fsm::is_notified_of_v<panel, bare>);
+    static_assert(!fsm::is_notified_of_v<panel, dead>); // heat has no hook in panel
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<dark>, fsm::on<next>, fsm::to<lit>>,
+        fsm::transition<fsm::from<lit>,  fsm::on<next>, fsm::to<bare>>,
+        fsm::transition<fsm::from<bare>, fsm::on<next>, fsm::to<dark>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+
+    // shared wildcard facts per element: entering dead (heat only, an
+    // idempotent type) from an unknown source is fine for a heat
+    // observer, a level exit hook blocks sharing
+    struct heater : fsm::observing<heater> {
+        void notifyEntry(heat) {}
+    };
+    using machine_type = fsm::state_machine<tbl, heater>;
+    static_assert(heater::entry_shared_from<dead, lit>);
+    static_assert(heater::exit_silent<lit, machine_type>);
+    static_assert(!panel::exit_silent<lit, fsm::state_machine<tbl, panel>>);
+} // namespace AnnotationSets
+
 namespace Features {
     struct go {};
     struct swap_feature {};
@@ -1115,6 +1180,34 @@ namespace ordering {
         fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>>;
 } // namespace ordering
 
+void annotationSetElementsAreNotifiedIndependently()
+{
+    using namespace AnnotationSets;
+    panel p;
+    fsm::state_machine<tbl, panel> sm{p};
+
+    // construction: every consumed element of dark
+    check(p.lights == std::vector<light>{light::off});
+    check(p.levels == std::vector<int>{1});
+
+    check(sm.process(next{})); // dark -> lit: light changes, level stays 1
+    check(p.lights == std::vector<light>{light::off, light::on});
+    check(p.levels == std::vector<int>{1});
+    check(p.level_exits.empty());
+
+    check(sm.process(next{})); // lit -> bare: bare has no set, both leave
+    check(p.level_exits == std::vector<int>{1});
+    check(p.lights.size() == 2);
+
+    check(sm.process(next{})); // bare -> dark: both arrive again
+    check(p.lights == std::vector<light>{light::off, light::on, light::off});
+    check(p.levels == std::vector<int>{1, 1});
+
+    check(sm.process(kill{})); // -> dead: heat only, nothing for the panel
+    check(p.level_exits == std::vector<int>{1, 1});
+    check(p.lights.size() == 3);
+}
+
 void staticHookRunsBeforeNonstaticHook()
 {
     ordering::dual_observer observer;
@@ -1440,6 +1533,7 @@ int statemachineTests()
     guardBlocksAndAllows();
     rawHookObserverSeesEveryTransition();
     guardSeesTheEventPayload();
+    annotationSetElementsAreNotifiedIndependently();
     staticHookRunsBeforeNonstaticHook();
     observerGroupForwardsHooksInMemberOrder();
     contextIsMachineOwnedAndShared();

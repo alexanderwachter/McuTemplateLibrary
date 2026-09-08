@@ -552,6 +552,113 @@ inline constexpr bool idempotent_annotation_v = requires {
     requires std::remove_cvref_t<decltype(OBSERVER::template annotation<STATE>())>::idempotent;
 };
 
+template<typename T>
+inline constexpr bool idempotent_v = requires { requires T::idempotent; };
+
+} // namespace internal
+
+// Several annotations on one state, keyed by their types:
+//
+//   struct green {
+//       static constexpr auto annotations = fsm::annotate(led_pattern::on, power::high);
+//   };
+//
+// An fsm::observing observer then needs no observe_static(): its
+// notifyEntry(led_pattern) / notifyExit(power) overloads pick the
+// elements they consume, each with its own change suppression. The type
+// is the key, so the types of one set are distinct and meaningful (a
+// strong type per annotation, not int)
+template<typename... Ts>
+struct annotation_set {
+    static_assert(std::is_same_v<mtl::unique_t<mtl::typelist<Ts...>>, mtl::typelist<Ts...>>,
+                  "fsm::annotate: the annotation types of one state must be distinct");
+
+    using types = mtl::typelist<Ts...>;
+
+    template<typename T>
+    static constexpr bool has = (std::is_same_v<T, Ts> || ...);
+
+    template<typename T>
+        requires has<T>
+    constexpr T const& get() const
+    {
+        return std::get<T>(values);
+    }
+
+    std::tuple<Ts...> values;
+};
+
+template<typename... Ts>
+constexpr annotation_set<std::remove_cvref_t<Ts>...> annotate(Ts&&... values)
+{
+    return {{std::forward<Ts>(values)...}};
+}
+
+namespace internal {
+
+template<typename T>
+struct is_annotation_set : std::false_type {};
+
+template<typename... Ts>
+struct is_annotation_set<annotation_set<Ts...>> : std::true_type {};
+
+template<typename STATE>
+concept annotated = requires {
+    STATE::annotations;
+    requires is_annotation_set<std::remove_cvref_t<decltype(STATE::annotations)>>::value;
+};
+
+// The element types of a state's set, none for a state without one
+template<typename STATE>
+struct annotation_types : std::type_identity<mtl::typelist<>> {};
+
+template<annotated STATE>
+struct annotation_types<STATE>
+    : std::type_identity<typename std::remove_cvref_t<decltype(STATE::annotations)>::types> {};
+
+template<typename STATE>
+using annotation_types_t = typename annotation_types<STATE>::type;
+
+// Lazy: the set is only named for annotated states (a plain && would
+// substitute both operands)
+template<typename STATE, typename T>
+struct has_annotation : std::false_type {};
+
+template<annotated STATE, typename T>
+struct has_annotation<STATE, T>
+    : std::bool_constant<std::remove_cvref_t<decltype(STATE::annotations)>::template has<T>> {};
+
+template<typename STATE, typename T>
+inline constexpr bool has_annotation_v = has_annotation<STATE, T>::value;
+
+// Whether STATE's T element differs from OTHER's: an element OTHER lacks
+// always counts as a change, a state without the element never notifies
+template<typename T, typename STATE, typename OTHER>
+constexpr bool set_annotation_changes()
+{
+    if constexpr (!has_annotation_v<STATE, T>) {
+        return false;
+    } else if constexpr (!has_annotation_v<OTHER, T>) {
+        return true;
+    } else {
+        return STATE::annotations.template get<T>() != OTHER::annotations.template get<T>();
+    }
+}
+
+// Whether any element of STATE's set reaches one of OBSERVER's hooks
+template<typename OBSERVER, typename STATE, typename... Ts>
+constexpr bool setNotified(mtl::typelist<Ts...>)
+{
+    return ((requires(OBSERVER observer) {
+                observer.notifyEntry(STATE::annotations.template get<Ts>());
+            } || requires(OBSERVER observer) {
+                observer.notifyExit(STATE::annotations.template get<Ts>());
+            }) || ...);
+}
+
+template<typename OBSERVER, typename STATE>
+inline constexpr bool set_notified_v = setNotified<OBSERVER, STATE>(annotation_types_t<STATE>{});
+
 } // namespace internal
 
 // Value observer base: the derived class names the watched member once and
@@ -593,6 +700,11 @@ inline constexpr bool idempotent_annotation_v = requires {
 // guaranteed to run before the nonstatic one. This ordering is part of
 // the contract: a static annotation can prepare (e.g. reset) what the
 // nonstatic observation then consumes.
+//
+// A state's annotation set (fsm::annotate above) is observed without
+// any observe declaration: every element type with a notifyEntry /
+// notifyExit overload is delivered, change-suppressed per element, in
+// the set's order, between the static and the nonstatic hook.
 template<typename DERIVED>
 struct observing {
     template<typename STATE>
@@ -614,6 +726,7 @@ struct observing {
                 self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
         }
+        this->template setExit<OLD_STATE, NEW_STATE>(internal::annotation_types_t<OLD_STATE>{});
         this->template nonstaticExit<OLD_STATE>(machine);
     }
 
@@ -626,10 +739,57 @@ struct observing {
                 self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
         }
+        this->template setEnter<OLD_STATE, NEW_STATE>(internal::annotation_types_t<NEW_STATE>{});
         this->template nonstaticEnter<NEW_STATE>(machine);
     }
 
 private:
+    // The set elements, each on its own change check
+    template<typename OLD_STATE, typename NEW_STATE, typename... Ts>
+    void setExit(mtl::typelist<Ts...>)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
+        ([&] {
+            if constexpr (internal::set_annotation_changes<Ts, OLD_STATE, NEW_STATE>()) {
+                if constexpr (requires { self.notifyExit(OLD_STATE::annotations.template get<Ts>()); }) {
+                    self.notifyExit(OLD_STATE::annotations.template get<Ts>());
+                }
+            }
+        }(), ...);
+    }
+
+    template<typename OLD_STATE, typename NEW_STATE, typename... Ts>
+    void setEnter(mtl::typelist<Ts...>)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
+        ([&] {
+            if constexpr (internal::set_annotation_changes<Ts, NEW_STATE, OLD_STATE>()) {
+                if constexpr (requires { self.notifyEntry(NEW_STATE::annotations.template get<Ts>()); }) {
+                    self.notifyEntry(NEW_STATE::annotations.template get<Ts>());
+                }
+            }
+        }(), ...);
+    }
+
+    template<typename OLD_STATE, typename... Ts>
+    static constexpr bool setExitSilent(mtl::typelist<Ts...>)
+    {
+        return (!requires(DERIVED self) {
+                    self.notifyExit(OLD_STATE::annotations.template get<Ts>());
+                } && ...);
+    }
+
+    template<typename NEW_STATE, typename OLD_STATE, typename... Ts>
+    static constexpr bool setEntrySharedFrom(mtl::typelist<Ts...>)
+    {
+        return ((internal::set_annotation_changes<Ts, NEW_STATE, OLD_STATE>() ||
+                 !requires(DERIVED self) {
+                     self.notifyEntry(NEW_STATE::annotations.template get<Ts>());
+                 } ||
+                 internal::idempotent_v<Ts> || requires { requires DERIVED::renotify_safe; }) &&
+                ...);
+    }
+
     template<typename STATE, typename MACHINE>
     void nonstaticExit(MACHINE& machine)
     {
@@ -667,6 +827,7 @@ public:
         !requires(DERIVED self) {
             self.notifyExit(DERIVED::template annotation<OLD_STATE>());
         } &&
+        setExitSilent<OLD_STATE>(internal::annotation_types_t<OLD_STATE>{}) &&
         !requires(DERIVED self, MACHINE machine) {
             self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
         };
@@ -677,12 +838,13 @@ public:
     // per-annotation `idempotent` declaration, generalized
     template<typename NEW_STATE, typename OLD_STATE>
     static constexpr bool entry_shared_from =
-        internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>() ||
-        !requires(DERIVED self) {
-            self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
-        } ||
-        internal::idempotent_annotation_v<DERIVED, NEW_STATE> ||
-        requires { requires DERIVED::renotify_safe; };
+        (internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>() ||
+         !requires(DERIVED self) {
+             self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
+         } ||
+         internal::idempotent_annotation_v<DERIVED, NEW_STATE> ||
+         requires { requires DERIVED::renotify_safe; }) &&
+        setEntrySharedFrom<NEW_STATE, OLD_STATE>(internal::annotation_types_t<NEW_STATE>{});
 };
 
 // Observer implementing the state-timeout semantics on top of a TIMER
@@ -1316,14 +1478,16 @@ concept notified_of =
     } ||
     requires(OBSERVER observer) {
         observer.notifyExit(OBSERVER::template annotation<STATE>());
-    };
+    } || internal::set_notified_v<OBSERVER, STATE>;
 
 } // namespace concepts
 
 // Whether OBSERVER's static observation covers STATE at all - even
-// without a hook accepting the annotation
+// without a hook accepting the annotation; a state's annotation set
+// counts when one of its elements reaches a hook
 template<typename OBSERVER, typename STATE>
-struct is_observed : std::bool_constant<internal::observes_v<OBSERVER, STATE>> {};
+struct is_observed : std::bool_constant<internal::observes_v<OBSERVER, STATE> ||
+                                        internal::set_notified_v<OBSERVER, STATE>> {};
 
 template<typename OBSERVER, typename STATE>
 inline constexpr bool is_observed_v = is_observed<OBSERVER, STATE>::value;

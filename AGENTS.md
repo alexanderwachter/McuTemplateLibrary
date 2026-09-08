@@ -59,7 +59,14 @@ expecting the specific `static_assert` message - a class template's
   requires-expressions and `if constexpr`. The one SFINAE idiom kept is
   the trailing-return-type opt-out (`-> decltype(STATE::member)`).
 - A missing optional member means "not wanted", never an error: hooks,
-  annotations, sinks are all detected individually.
+  annotations, sinks are all detected individually. Value observers
+  register by writing overloads: a state's `fsm::annotate(a, b)` set is
+  matched to `notifyEntry(A)`/`notifyExit(B)` by type; `observe_static`
+  remains for a single named member.
+- Traits that name an optional member (`STATE::annotations`,
+  `STATE::feature`) are specializations constrained on a concept, never
+  a `&&` of two instantiations: the second operand gets substituted for
+  every state, `mtl::nil_type` included, and hard-errors.
 - Comments explain contracts and non-obvious behavior
   (ordering constraints), not what the code says. Keep the header's
   contract comment at the top of `StateMachine.hpp` the source of truth
