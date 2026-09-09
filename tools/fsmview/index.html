@@ -3,9 +3,9 @@
   Copyright (c) 2026 Alexander Wachter
   SPDX-License-Identifier: Apache-2.0
 
-  Viewer page served by fsmview.py: one tab per machine, the current
-  state and the edge just taken in the highlight color, the last N steps
-  fading toward the graph's neutral colors.
+  Viewer page served by fsmview.py: the selected machines stacked below
+  each other, the current state and the edge just taken in the highlight
+  color, the last N steps fading toward the graph's neutral colors.
 -->
 <html lang="en">
 <head>
@@ -27,12 +27,12 @@ header {
 }
 header .title { font-weight: 600; margin-right: 8px; }
 header .muted { color: #cbd5e1; font-size: 12px; }
-#tabs { display: flex; gap: 4px; flex-wrap: wrap; }
-#tabs button {
-    background: #374151; color: #e5e7eb; border: 0; border-radius: 4px; padding: 4px 10px;
-    cursor: pointer; font: inherit;
+#machines { display: flex; gap: 4px; flex-wrap: wrap; }
+#machines button {
+    background: #374151; color: #9ca3af; border: 0; border-radius: 4px; padding: 4px 10px;
+    cursor: pointer; font: inherit; text-decoration: line-through;
 }
-#tabs button.active { background: #e0432f; color: #fff; }
+#machines button.shown { background: #4b5563; color: #fff; text-decoration: none; }
 #status { margin-left: auto; display: flex; gap: 12px; align-items: center; }
 #live {
     border: 1px solid #9ca3af; border-radius: 10px; padding: 1px 10px; color: #9ca3af;
@@ -45,8 +45,12 @@ header .muted { color: #cbd5e1; font-size: 12px; }
     font-size: 12px; max-height: 6em; overflow: auto; white-space: pre-line;
 }
 main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
-#graph { overflow: auto; padding: 10px; display: flex; align-items: flex-start; justify-content: center; }
-#graph svg { max-width: 100%; height: auto; }
+#graph { overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 14px; }
+.panel { border: 1px solid #ddd; border-radius: 6px; background: #fff; padding: 6px 10px; }
+.panel h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; display: flex; gap: 12px; align-items: baseline; }
+.panel h2 .state { font: 12px ui-monospace, monospace; color: #555; }
+.panel.active h2 { color: hsl(140 65% 32%); }
+.panel svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
 #log { overflow: auto; border-left: 1px solid #ddd; background: #fff; font: 12px ui-monospace, monospace; }
 #log div { padding: 2px 8px; white-space: nowrap; cursor: pointer; border-left: 3px solid transparent; }
 #log div:hover { background: #f1f5f9; }
@@ -81,7 +85,7 @@ g.edge.now > text { fill: var(--hl); }
 <body>
 <header>
     <span class="title">fsmview</span>
-    <nav id="tabs"></nav>
+    <nav id="machines" title="show or hide a machine; the shown ones stack below each other"></nav>
     <label class="muted"><input type="checkbox" id="follow" checked> follow machine</label>
     <div id="status">
         <span id="current" title="tracked state of the shown machine"></span>
@@ -115,7 +119,7 @@ g.edge.now > text { fill: var(--hl); }
 const VIZ_URL = "https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js";
 
 const ui = {};
-for (const id of ["tabs", "follow", "current", "source", "live", "warnings", "graph", "log",
+for (const id of ["machines", "follow", "current", "source", "live", "warnings", "graph", "log",
                   "first", "prev", "play", "next", "last", "slider", "counter", "speed"]) {
     ui[id] = document.getElementById(id);
 }
@@ -126,8 +130,8 @@ let cursor = -1;         // shown step, -1 before the first
 let live = false;        // cursor follows the newest step
 let ended = false;       // the source is exhausted (replay, or EOF)
 let playTimer = null;
-let activeGraph = null;  // stem of the shown graph
-const graphs = new Map(); // stem -> {data, svg, nodes: Map(name -> <g>)}
+const graphs = new Map(); // stem -> {data, svg, nodes: Map(name -> <g>), panel, button, state}
+const shownKey = "fsmview.shown"; // the selection survives a reload
 const warnings = new Set();
 
 // --- graphs -----------------------------------------------------------------
@@ -166,17 +170,44 @@ async function buildGraph(data) {
     for (const title of svg.querySelectorAll("g.node > title")) {
         nodes.set(title.textContent, title.parentNode);
     }
-    graphs.set(data.stem, {data, svg, nodes});
+    const title = data.table && data.table !== data.name ? `${data.name} (${data.table})` : data.name;
+
+    // its panel in the stack, and its toggle in the header
+    const panel = document.createElement("section");
+    panel.className = "panel";
+    const heading = document.createElement("h2");
+    const name = document.createElement("span");
+    name.textContent = title;
+    const state = document.createElement("span");
+    state.className = "state";
+    heading.append(name, state);
+    panel.append(heading, svg);
+    ui.graph.appendChild(panel);
+
+    const button = document.createElement("button");
+    button.textContent = title;
+    button.addEventListener("click", () => setShown(data.stem, panel.hidden));
+    ui.machines.appendChild(button);
+
+    graphs.set(data.stem, {data, svg, nodes, panel, button, state});
 }
 
-function showGraph(stem) {
-    if (activeGraph === stem || !graphs.has(stem)) return;
-    activeGraph = stem;
-    ui.graph.replaceChildren(graphs.get(stem).svg);
-    for (const button of ui.tabs.children) {
-        button.classList.toggle("active", button.dataset.stem === stem);
-    }
-    renderStatus();
+function setShown(stem, on) {
+    const graph = graphs.get(stem);
+    if (!graph) return;
+    graph.panel.hidden = !on;
+    graph.button.classList.toggle("shown", on);
+    try {
+        localStorage.setItem(shownKey, JSON.stringify([...graphs.keys()].filter(s => !graphs.get(s).panel.hidden)));
+    } catch (error) { /* no storage: the selection lives for this page only */ }
+}
+
+// Every machine shown, unless a saved selection names some of them
+function restoreShown() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(shownKey)); } catch (error) { saved = null; }
+    const known = Array.isArray(saved) ? saved.filter(stem => graphs.has(stem)) : [];
+    for (const stem of graphs.keys()) setShown(stem, known.length === 0 || known.includes(stem));
 }
 
 // --- highlighting -----------------------------------------------------------
@@ -231,7 +262,12 @@ function render() {
         remaining.set(step.graph, left - 1);
     }
     const step = steps[cursor];
-    if (step && step.graph && ui.follow.checked) showGraph(step.graph);
+    for (const graph of graphs.values()) graph.panel.classList.toggle("active", !!step && step.graph === graph.data.stem);
+    if (step && step.graph && ui.follow.checked) {
+        const graph = graphs.get(step.graph);
+        if (graph.panel.hidden) setShown(step.graph, true);
+        graph.panel.scrollIntoView({block: "nearest"});
+    }
     ui.slider.max = steps.length - 1;
     ui.slider.value = cursor;
     ui.counter.textContent = `${cursor + 1} / ${steps.length}`;
@@ -244,14 +280,24 @@ function render() {
     renderStatus();
 }
 
+// The tracked state of every machine at the cursor, on its panel; the
+// current step's machine in the header
 function renderStatus() {
-    let state = null;
-    for (let i = cursor; i >= 0; i--) {
-        if (steps[i] && steps[i].graph === activeGraph) { state = steps[i].state; break; }
+    const pending = new Map([...graphs.keys()].map(stem => [stem, null]));
+    let open = pending.size;
+    for (let i = cursor; i >= 0 && open > 0; i--) {
+        const step = steps[i];
+        if (step && step.graph && pending.get(step.graph) === null) {
+            pending.set(step.graph, step.state);
+            open--;
+        }
     }
-    const graph = graphs.get(activeGraph);
-    if (state === null && graph) state = graph.data.initial;
-    ui.current.textContent = graph ? `${graph.data.table || graph.data.name}: ${state ?? "?"}` : "";
+    for (const [stem, graph] of graphs) {
+        graph.state.textContent = pending.get(stem) ?? graph.data.initial ?? "?";
+    }
+    const step = steps[cursor];
+    const graph = step && graphs.get(step.graph);
+    ui.current.textContent = graph ? `${graph.data.table || graph.data.name}: ${step.state}` : "";
     ui.live.classList.toggle("on", live);
     ui.live.disabled = ended;
 }
@@ -384,13 +430,8 @@ async function init() {
     for (const message of config.warnings) warn(message);
     for (const data of config.graphs) {
         await buildGraph(data);
-        const button = document.createElement("button");
-        button.textContent = data.table && data.table !== data.name ? `${data.name} (${data.table})` : data.name;
-        button.dataset.stem = data.stem;
-        button.addEventListener("click", () => { ui.follow.checked = false; showGraph(data.stem); });
-        ui.tabs.appendChild(button);
     }
-    showGraph(config.graphs[0].stem);
+    restoreShown();
 
     const events = await (await fetch("/events?from=0")).json();
     for (const step of events.steps) addStep(step);

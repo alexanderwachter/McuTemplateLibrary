@@ -43,6 +43,7 @@ west build -t dot        # sensor_table.dot (the configured variant), led_table.
 west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/
 ```
 
-The page gets one tab per machine; "follow machine" jumps to the one
+The page stacks both machines, each with its tracked state in the
+heading (the header buttons hide one); "follow machine" scrolls to the one
 that just moved. Press the button
 during a reading to see the internal transition in `emergency`.
