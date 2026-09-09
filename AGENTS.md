@@ -158,6 +158,9 @@ expecting the specific `static_assert` message - a class template's
   (the sensor sample's `VirtualSensor`).
 - In `fsmview.py`, the source runs in a thread: `sys.exit` there only
   ends the thread. Raise, catch in `pump()`, shut the server down.
+  And `server.shutdown()` is lost when called before `serve_forever()`
+  has started (it resets the flag): the pump thread is started from the
+  server's `service_actions()`, i.e. from inside the serving loop.
 - Graphviz `dot` may exist on the host but not in a sandbox; the viewer
   falls back to viz.js, dotgen needs a host C++ compiler.
 - The submodule copy of this library inside a firmware may be ahead of

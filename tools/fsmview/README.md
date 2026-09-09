@@ -124,6 +124,8 @@ drag pans, and each panel has `−`/`+`/`fit`/`1:1` buttons; the zoom is
 remembered per machine. The log on the right is resized by dragging
 the bar between graphs and log (double-click resets it); the wheel over
 that bar, or over the gaps between panels, scrolls the stack of graphs.
+The log shows the trace lines; "all log lines" shows every received
+line in between (a click on one jumps to the last step before it).
 Stop the viewer with Ctrl+C.
 
 ### 4. Replay a saved log

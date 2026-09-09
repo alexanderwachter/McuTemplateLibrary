@@ -114,6 +114,16 @@ class StepResolution(unittest.TestCase):
     def step(self, line):
         return self.trace.add_line(line)
 
+    def test_every_line_is_kept_and_trace_lines_carry_their_step(self):
+        self.assertIsNone(self.step("[00:00:01.000,000] <inf> app: booting\x1b[0m"))
+        step = self.step("fsm[traffic_light_table] -> red")
+        self.assertEqual([entry["raw"] for entry in self.trace.lines],
+                         ["[00:00:01.000,000] <inf> app: booting", "fsm[traffic_light_table] -> red"])
+        self.assertIsNone(self.trace.lines[0]["step"])
+        self.assertAlmostEqual(self.trace.lines[0]["ts"], 1.0)
+        self.assertIs(self.trace.lines[1]["step"], step)
+        self.assertEqual((step["i"], step["line"]), (0, 1))
+
     def test_initial_and_transitions(self):
         step = self.step("fsm[traffic_light_table] -> red")
         self.assertEqual((step["i"], step["prev"], step["state"], step["edges"]), (0, None, "red", []))

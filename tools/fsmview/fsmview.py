@@ -201,6 +201,7 @@ class Trace:
         self.graphs = graphs
         self.mapping = mapping  # machine id -> graph stem (--map)
         self.steps = []
+        self.lines = []  # every received line, in order; a trace line carries its step
         self.state = {}  # machine id -> tracked state name
         self.subscribers = set()
         self.ended = False
@@ -284,15 +285,21 @@ class Trace:
         }
 
     def add_line(self, line):
+        """Records the line; returns its step when it is a trace line."""
+        text = ANSI_RE.sub("", line).rstrip("\r\n")
         record = parse_line(line)
-        if record is None:
-            return None
         with self.lock:
-            step = self.resolve(record)
-            step["i"] = len(self.steps)
-            self.steps.append(step)
+            entry = {"i": len(self.lines), "raw": text, "ts": parse_timestamp(text), "step": None}
+            step = None
+            if record is not None:
+                step = self.resolve(record)
+                step["i"] = len(self.steps)
+                step["line"] = entry["i"]
+                self.steps.append(step)
+                entry["step"] = step
+            self.lines.append(entry)
             for subscriber in list(self.subscribers):
-                subscriber.put(step)
+                subscriber.put(entry)
         return step
 
     def end(self):
@@ -304,7 +311,7 @@ class Trace:
     def subscribe(self, start):
         subscriber = queue.Queue()
         with self.lock:
-            backlog = self.steps[start:]
+            backlog = self.lines[start:]
             ended = self.ended
             self.subscribers.add(subscriber)
         return subscriber, backlog, ended
@@ -386,6 +393,21 @@ def pump(source, trace, save, server):
 
 # --- HTTP: the page, the graphs, the steps, and the live stream ------------
 
+class Server(ThreadingHTTPServer):
+    """Starts the log pump from inside serve_forever(): a shutdown() the
+    pump requests (source failed before its first line) is only honored
+    once the serving loop runs, so the pump must not start before it."""
+
+    daemon_threads = True
+    pump = None  # a callable starting the pump thread, run once
+
+    def service_actions(self):
+        super().service_actions()
+        if self.pump is not None:
+            start, self.pump = self.pump, None
+            start()
+
+
 class Handler(BaseHTTPRequestHandler):
     trace = None
     config = None
@@ -401,14 +423,14 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, "text/html; charset=utf-8", self.page)
         elif url.path == "/state":
             with self.trace.lock:
-                state = dict(self.config, ended=self.trace.ended, count=len(self.trace.steps),
+                state = dict(self.config, ended=self.trace.ended, count=len(self.trace.lines),
                              warnings=self.trace.warnings,
                              graphs=[graph.as_json() for graph in self.trace.graphs])
             self.reply_json(state)
         elif url.path == "/events":
             start = int(query.get("from", ["0"])[0])
             with self.trace.lock:
-                self.reply_json({"steps": self.trace.steps[start:], "ended": self.trace.ended})
+                self.reply_json({"lines": self.trace.lines[start:], "ended": self.trace.ended})
         elif url.path == "/stream":
             self.stream(query)
         else:
@@ -459,8 +481,8 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.trace.unsubscribe(subscriber)
 
-    def send_event(self, step):
-        self.wfile.write(f"id: {step['i']}\ndata: {json.dumps(step)}\n\n".encode("utf-8"))
+    def send_event(self, entry):
+        self.wfile.write(f"id: {entry['i']}\ndata: {json.dumps(entry)}\n\n".encode("utf-8"))
         self.wfile.flush()
 
 
@@ -549,12 +571,12 @@ def run(args):
     Handler.config = {"history": args.history, "mode": mode, "source": description}
     Handler.page = (Path(__file__).with_name("index.html")).read_text(encoding="utf-8")
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
+        server = Server(("127.0.0.1", args.http), Handler)
     except OSError as error:
         sys.exit(f"fsmview: cannot serve on port {args.http}: {error.strerror} "
                  f"(another viewer running? pick one with --http)")
-    server.daemon_threads = True
-    threading.Thread(target=pump, args=(source, trace, save, server), daemon=True).start()
+    server.pump = lambda: threading.Thread(target=pump, args=(source, trace, save, server),
+                                           daemon=True).start()
     print(f"fsmview: running - open http://localhost:{args.http}/ in your browser",
           file=sys.stderr)
     try:

@@ -68,6 +68,9 @@ main { display: grid; grid-template-columns: 1fr 10px var(--log-width, 360px); m
 #log div:hover { background: #f1f5f9; }
 #log div.current { background: #fee2e2; border-left-color: #e0432f; }
 #log div.warn { color: #b45309; }
+/* lines that are no trace lines: shown only when "all log lines" is on */
+#log div.other { color: #6b7280; }
+#log.steps-only div.other { display: none; }
 #log .ts { color: #94a3b8; margin-right: 6px; }
 footer {
     display: flex; gap: 10px; align-items: center; padding: 6px 12px;
@@ -99,6 +102,7 @@ g.edge.now > text { fill: var(--hl); }
     <span class="title">fsmview</span>
     <nav id="machines" title="show or hide a machine; the shown ones stack below each other"></nav>
     <label class="muted"><input type="checkbox" id="follow" checked> follow machine</label>
+    <label class="muted" title="show every received log line, not only the trace lines"><input type="checkbox" id="alllines"> all log lines</label>
     <div id="status">
         <span id="current" title="tracked state of the shown machine"></span>
         <span id="source" class="muted"></span>
@@ -132,13 +136,15 @@ g.edge.now > text { fill: var(--hl); }
 const VIZ_URL = "https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js";
 
 const ui = {};
-for (const id of ["machines", "follow", "current", "source", "live", "warnings", "graph", "splitter", "log",
+for (const id of ["machines", "follow", "alllines", "current", "source", "live", "warnings", "graph", "splitter", "log",
                   "first", "prev", "play", "next", "last", "slider", "counter", "speed"]) {
     ui[id] = document.getElementById(id);
 }
 
 let config = null;
-let steps = [];          // by index, as served
+let lines = [];          // every log line by index, as served
+let steps = [];          // the trace lines' steps by step index
+let currentLine = null;  // the log <div> of the step at the cursor
 let cursor = -1;         // shown step, -1 before the first
 let live = false;        // cursor follows the newest step
 let ended = false;       // the source is exhausted (replay, or EOF)
@@ -380,11 +386,11 @@ function render() {
     ui.slider.max = steps.length - 1;
     ui.slider.value = cursor;
     ui.counter.textContent = `${cursor + 1} / ${steps.length}`;
-    for (const line of ui.log.children) line.classList.remove("current");
-    const line = ui.log.children[cursor];
-    if (line) {
-        line.classList.add("current");
-        line.scrollIntoView({block: "nearest"});
+    if (currentLine) currentLine.classList.remove("current");
+    currentLine = step ? step.div : null;
+    if (currentLine) {
+        currentLine.classList.add("current");
+        currentLine.scrollIntoView({block: "nearest"});
     }
     renderStatus();
 }
@@ -413,25 +419,43 @@ function renderStatus() {
 
 // --- steps and the log list -------------------------------------------------
 
-function formatTs(ts) {
-    return ts === null ? "" : ts.toFixed(3) + "s";
+// Every received line goes into the log list; a trace line also becomes
+// a step. Clicking a line jumps to its step, or to the last step before it
+function addLine(entry) {
+    lines[entry.i] = entry;
+    const div = document.createElement("div");
+    div.textContent = entry.raw;
+    const step = entry.step;
+    if (step) {
+        steps[step.i] = step;
+        step.div = div;
+        if (step.warnings.length) {
+            div.classList.add("warn");
+            div.title = step.warnings.join("\n");
+            for (const message of step.warnings) warn(message);
+        }
+    } else {
+        div.classList.add("other");
+    }
+    div.addEventListener("click", () => { setLive(false); goTo(step ? step.i : stepBefore(entry.i)); });
+    ui.log.appendChild(div);
 }
 
-function addStep(step) {
-    steps[step.i] = step;
-    const line = document.createElement("div");
-    const ts = document.createElement("span");
-    ts.className = "ts";
-    ts.textContent = formatTs(step.ts);
-    line.appendChild(ts);
-    line.appendChild(document.createTextNode(step.raw.slice(step.raw.indexOf("fsm["))));
-    if (step.warnings.length) {
-        line.classList.add("warn");
-        line.title = step.warnings.join("\n");
-        for (const message of step.warnings) warn(message);
+// The index of the last step at or before a log line, -1 if none
+function stepBefore(lineIndex) {
+    for (let i = lineIndex; i >= 0; i--) {
+        if (lines[i] && lines[i].step) return lines[i].step.i;
     }
-    line.addEventListener("click", () => { setLive(false); goTo(step.i); });
-    ui.log.appendChild(line);
+    return -1;
+}
+
+const allLinesKey = "fsmview.allLines";
+
+function setAllLines(on) {
+    ui.alllines.checked = on;
+    ui.log.classList.toggle("steps-only", !on);
+    try { localStorage.setItem(allLinesKey, on ? "1" : "0"); } catch (error) { /* page-local */ }
+    if (currentLine) currentLine.scrollIntoView({block: "nearest"});
 }
 
 function warn(message) {
@@ -497,9 +521,10 @@ function togglePlay() {
 function openStream(from) {
     const stream = new EventSource(`/stream?from=${from}`);
     stream.onmessage = event => {
-        const step = JSON.parse(event.data);
-        addStep(step);
-        if (live) goTo(step.i); else render();
+        const entry = JSON.parse(event.data);
+        addLine(entry);
+        if (!entry.step) return;
+        if (live) goTo(entry.step.i); else render();
     };
     stream.addEventListener("end", () => {
         stream.close();
@@ -557,6 +582,8 @@ ui.play.addEventListener("click", togglePlay);
 ui.live.addEventListener("click", () => setLive(!live));
 ui.slider.addEventListener("input", () => { setLive(false); stopPlaying(); goTo(Number(ui.slider.value)); });
 ui.follow.addEventListener("change", render);
+ui.alllines.addEventListener("change", () => setAllLines(ui.alllines.checked));
+try { setAllLines(localStorage.getItem(allLinesKey) === "1"); } catch (error) { setAllLines(false); }
 document.addEventListener("keydown", event => {
     if (event.target.tagName === "SELECT" || event.target.tagName === "INPUT") return;
     const actions = {ArrowLeft: ui.prev, ArrowRight: ui.next, Home: ui.first, End: ui.last, " ": ui.play};
@@ -576,11 +603,11 @@ async function init() {
     restoreShown();
 
     const events = await (await fetch("/events?from=0")).json();
-    for (const step of events.steps) addStep(step);
+    for (const entry of events.lines) addLine(entry);
     ended = events.ended;
     if (config.mode === "live" && !ended) {
         live = true;
-        openStream(steps.length);
+        openStream(lines.length);
     } else if (config.mode === "replay") {
         ui.source.textContent += " (ended)";
     }
