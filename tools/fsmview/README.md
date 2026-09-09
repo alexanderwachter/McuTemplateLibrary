@@ -114,9 +114,17 @@ Open the printed link. `LIVE` follows the newest step; stepping back
 (buttons, slider, arrow keys, a click on a log line) leaves live mode,
 `>|` re-enters it. Play replays at a fixed pace or in real time when
 the lines carry timestamps (Zephyr's `[HH:MM:SS.mmm,uuu]` or the
-example's `[ 1234ms]`). The tab bar switches between machines; "follow
-machine" jumps to the machine of the current step. Stop the viewer with
-Ctrl+C.
+example's `[ 1234ms]`). Every machine has a panel, stacked below each
+other; the buttons in the header show or hide one (the selection is
+remembered by the browser), each panel's heading names the machine's
+tracked state, and "follow machine" reveals and scrolls to the machine
+of the current step. A large machine is read by zooming, not by
+shrinking: the wheel over a graph zooms around the pointer, click and
+drag pans, and each panel has `−`/`+`/`fit`/`1:1` buttons; the zoom is
+remembered per machine. The log on the right is resized by dragging
+the bar between graphs and log (double-click resets it); the wheel over
+that bar, or over the gaps between panels, scrolls the stack of graphs.
+Stop the viewer with Ctrl+C.
 
 ### 4. Replay a saved log
 
@@ -186,7 +194,7 @@ west fsm_liveview                       # reads /dev/ttyACM0 at 115200, graphs f
 Or without the build target: `west fsm_dotgen
 modules/mtl/zephyr/samples/traffic_light/src -o graphs` and then `west
 fsm_liveview graphs`. `zephyr/samples/sensor` is the larger tour with
-two machines (sensor monitor and LED), one tab each.
+two machines (sensor monitor and LED), one panel each.
 
 `west fsm_liveview` is this viewer as a west command (manifest note
 above); `tools/fsmview/fsmview.py` takes its place outside a workspace.
