@@ -55,7 +55,9 @@ yielding `::value`, `template<typename, typename> typename COMPARE`).
 `short_name<T>()` (namespaces and template arguments stripped), both
 `constexpr std::string_view`; `short_name_of<T>` the short name as a
 null-terminated `char const*` in static storage, for C APIs and
-deferred loggers.
+deferred loggers. `value_name<V>()` / `short_value_name<V>()` spell a
+constant of structural type (`ns::color::red` / `color::red`,
+`ns::lamp{true}` / `lamp{true}`), for diagrams of constexpr annotations.
 
 **`Utils.hpp`** - `width_to_uint_t<WIDTH>` / `width_to_int_t<WIDTH>`:
 the smallest fixed-width integer holding WIDTH bits (`bool` for 1);
@@ -184,6 +186,8 @@ manifest with `west-commands: zephyr/scripts/west-commands.yml` adds
 ## Tools
 
 - `tools/dotgen`: finds the tables in a source tree and writes one
-  Graphviz `.dot` per table, built with the host compiler.
+  Graphviz `.dot` per table, built with the host compiler. A node lists
+  the state's timeout and its annotation set as values (`color::red`,
+  `lamp{true}`), so the graph shows what each state switches.
 - `tools/fsmview`: live and replay viewer in the browser, fed by trace
   lines from a serial port, TCP, a pipe or a saved log.

@@ -67,8 +67,10 @@ footer input[type=range] { flex: 1; }
    --c is set per element by mark(): green for the current step, then
    red fading through orange to pale yellow along the trail; .now marks
    age 0. */
-g.node.hl > path, g.node.hl > polygon, g.node.hl > ellipse { fill: var(--c); }
-g.node.now > path, g.node.now > polygon { stroke: var(--hl); stroke-width: 3; }
+/* the node's shape is the <path> (rounded box) or <ellipse>; the
+   <polygon>s inside a node are the rules of its sectioned label */
+g.node.hl > path, g.node.hl > ellipse { fill: var(--c); }
+g.node.now > path { stroke: var(--hl); stroke-width: 3; }
 g.node.now > text { fill: #fff; font-weight: 600; }
 g.edge.hl > path { stroke: var(--c); stroke-width: var(--w); }
 g.edge.hl > polygon { fill: var(--c); stroke: var(--c); }

@@ -3,11 +3,13 @@
  * documenting state machines. Development tooling for hosted builds -
  * not meant for target code.
  *
- * States become nodes (timeouts annotated, and a state's optional
- * static dot_note and dot_action strings appended to its label), every
- * transition one labeled edge (guards in brackets), the initial state
- * gets an entry marker, and an any_state wildcard source is shown as a
- * dashed node.
+ * States become nodes whose label is sectioned by rules: the name, the
+ * timeout, the elements of the state's annotation set (fsm::annotate) as
+ * the compiler spells their values (color::red, lamp{true}; a
+ * non-structural element by its type name), and a state's optional
+ * static dot_note and dot_action strings. Every transition is one
+ * labeled edge (guards in brackets), the initial state gets an entry
+ * marker, and an any_state wildcard source is shown as a dashed node.
  *
  * For tools/fsmview the graph carries a "// table: <short name>" comment
  * naming the table (the machine id of fsm::tracing lines) and every edge
@@ -30,6 +32,7 @@
 #include <cstddef>
 #include <ostream>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -44,27 +47,87 @@ constexpr std::string_view label()
     return mtl::short_name<T>();
 }
 
+// Text inside an HTML-like label: the markup characters escaped
+inline void writeHtmlText(std::ostream& out, std::string_view text)
+{
+    for (char const c : text) {
+        switch (c) {
+        case '<': out << "&lt;"; break;
+        case '>': out << "&gt;"; break;
+        case '&': out << "&amp;"; break;
+        default: out << c;
+        }
+    }
+}
+
+// One row of the node's label table: the detail rows left-aligned,
+// the name row centered, bold and larger
+inline void writeDotRow(std::ostream& out, std::string_view text)
+{
+    out << "<tr><td align=\"left\">";
+    writeHtmlText(out, text);
+    out << "</td></tr>";
+}
+
+inline void writeDotNameRow(std::ostream& out, std::string_view name)
+{
+    out << "<tr><td><b><font point-size=\"16\">";
+    writeHtmlText(out, name);
+    out << "</font></b></td></tr>";
+}
+
+// One annotation-set element: its value when the compiler can spell it
+// (a structural type usable as a template argument), else its type
+template<typename STATE, std::size_t INDEX>
+void writeDotAnnotation(std::ostream& out)
+{
+    if constexpr (requires { mtl::value_name<std::get<INDEX>(STATE::annotations.values)>(); }) {
+        writeDotRow(out, mtl::short_value_name<std::get<INDEX>(STATE::annotations.values)>());
+    } else {
+        writeDotRow(out, label<mtl::at_t<INDEX, annotation_types_t<STATE>>>());
+    }
+}
+
+template<typename STATE>
+void writeDotAnnotations(std::ostream& out)
+{
+    [&out]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
+        (writeDotAnnotation<STATE, INDEXs>(out), ...);
+    }(std::make_index_sequence<mtl::count_v<annotation_types_t<STATE>>>{});
+}
+
+// The label is an HTML-like table so that a rule separates the
+// sections: the name, the timeout, the annotation set, the notes
 template<typename STATE>
 void writeDotNode(std::ostream& out)
 {
-    constexpr bool timed  = has_timeout_v<STATE>;
-    constexpr bool noted  = requires { std::string_view{STATE::dot_note}; };
-    constexpr bool acting = requires { std::string_view{STATE::dot_action}; };
+    constexpr bool timed     = has_timeout_v<STATE>;
+    constexpr bool annotated = internal::annotated<STATE>;
+    constexpr bool noted     = requires { std::string_view{STATE::dot_note}; };
+    constexpr bool acting    = requires { std::string_view{STATE::dot_action}; };
 
     out << "    \"" << label<STATE>() << '"';
-    if constexpr (timed || noted || acting) {
-        out << " [label=\"" << label<STATE>();
+    if constexpr (timed || annotated || noted || acting) {
+        out << " [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">";
+        writeDotNameRow(out, label<STATE>());
         if constexpr (timed) {
             auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
-            out << "\\ntimeout " << ms << " ms";
+            out << "<hr/><tr><td align=\"left\">timeout " << ms << " ms</td></tr>";
+        }
+        if constexpr (annotated) {
+            out << "<hr/>";
+            writeDotAnnotations<STATE>(out);
+        }
+        if constexpr (noted || acting) {
+            out << "<hr/>";
         }
         if constexpr (noted) {
-            out << "\\n" << std::string_view{STATE::dot_note};
+            writeDotRow(out, std::string_view{STATE::dot_note});
         }
         if constexpr (acting) {
-            out << "\\n" << std::string_view{STATE::dot_action};
+            writeDotRow(out, std::string_view{STATE::dot_action});
         }
-        out << "\"]";
+        out << "</table>>]";
     }
     out << ";\n";
 }
