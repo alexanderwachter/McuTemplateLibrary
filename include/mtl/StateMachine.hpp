@@ -356,6 +356,20 @@ concept transition_table = mtl::concepts::typelist<typename T::transitions> &&
 
 } // namespace concepts
 
+// The table's lookups (transition_table below) as traits: spelled
+// without typename/template in dependent contexts
+template<concepts::transition_table TABLE, typename FROM, typename EVENT>
+using exact_transitions_t = typename TABLE::template exact_transitions<FROM, EVENT>;
+
+template<concepts::transition_table TABLE, typename EVENT>
+using wildcard_transitions_t = typename TABLE::template wildcard_transitions<EVENT>;
+
+template<concepts::transition_table TABLE, typename FROM, typename EVENT>
+using transitions_for_t = typename TABLE::template transitions_for<FROM, EVENT>;
+
+template<concepts::transition_table TABLE, typename FROM, typename EVENT>
+using transition_for_t = typename TABLE::template transition_for<FROM, EVENT>;
+
 namespace internal {
 
 // Fold-based alternative to std::visit for process(): every visitor
@@ -434,8 +448,7 @@ struct timeout_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !has_timeout_v<STATE> ||
-        !std::is_same_v<typename TABLE::template transition_for<STATE, timeout>,
-                        mtl::nil_type>> {};
+        !std::is_same_v<transition_for_t<TABLE, STATE, timeout>, mtl::nil_type>> {};
 };
 
 // A zero deadline is the phase-target sentinel: it stops the clock
@@ -456,8 +469,7 @@ struct deadline_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !active_deadline_v<STATE> ||
-        !std::is_same_v<typename TABLE::template transition_for<STATE, deadline>,
-                        mtl::nil_type>> {};
+        !std::is_same_v<transition_for_t<TABLE, STATE, deadline>, mtl::nil_type>> {};
 };
 
 template<typename TRANSITION>
@@ -1337,8 +1349,8 @@ inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::valu
 // guards all decline at runtime still count as handled
 template<typename TABLE, typename STATE, typename EVENT>
 struct handles_event
-    : std::bool_constant<!std::is_same_v<
-          typename TABLE::template transition_for<STATE, EVENT>, mtl::nil_type>> {};
+    : std::bool_constant<
+          !std::is_same_v<transition_for_t<TABLE, STATE, EVENT>, mtl::nil_type>> {};
 
 template<typename TABLE, typename STATE, typename EVENT>
 inline constexpr bool handles_event_v = handles_event<TABLE, STATE, EVENT>::value;
@@ -1676,8 +1688,7 @@ public:
             bool const fired = internal::dispatch(
                 [this, &event](auto& state) -> bool {
                     using state_type = std::decay_t<decltype(state)>;
-                    using alternatives =
-                        typename TRANSITIONS::template exact_transitions<state_type, EVENT>;
+                    using alternatives = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
                     return this->template tryAlternatives<state_type>(alternatives{}, state,
                                                                       event);
                 },
@@ -1688,14 +1699,12 @@ public:
             if (this->template exactAlternativesExist<EVENT>()) {
                 return false; // a refused exact group shadows the wildcard
             }
-            return this->fireWildcards(
-                typename TRANSITIONS::template wildcard_transitions<EVENT>{}, event);
+            return this->fireWildcards(wildcard_transitions_t<TRANSITIONS, EVENT>{}, event);
         } else {
             return internal::dispatch(
                 [this, &event](auto& state) -> bool {
                     using state_type = std::decay_t<decltype(state)>;
-                    using alternatives =
-                        typename TRANSITIONS::template transitions_for<state_type, EVENT>;
+                    using alternatives = transitions_for_t<TRANSITIONS, state_type, EVENT>;
                     return this->template tryAlternatives<state_type>(alternatives{}, state,
                                                                       event);
                 },
@@ -1793,8 +1802,7 @@ private:
     struct exactless_for {
         template<typename STATE>
         struct pred
-            : std::is_same<typename TRANSITIONS::template exact_transitions<STATE, EVENT>,
-                           mtl::typelist<>> {};
+            : std::is_same<exact_transitions_t<TRANSITIONS, STATE, EVENT>, mtl::typelist<>> {};
     };
 
     template<typename TO, typename EVENT>
@@ -1824,9 +1832,8 @@ private:
 
     template<typename EVENT>
     static constexpr bool wildcard_shareable =
-        !std::is_same_v<typename TRANSITIONS::template wildcard_transitions<EVENT>,
-                        mtl::typelist<>> &&
-        mtl::all_of_v<typename TRANSITIONS::template wildcard_transitions<EVENT>,
+        !std::is_same_v<wildcard_transitions_t<TRANSITIONS, EVENT>, mtl::typelist<>> &&
+        mtl::all_of_v<wildcard_transitions_t<TRANSITIONS, EVENT>,
                       wildcard_shareable_for<EVENT>::template pred>;
 
     // Whether the active state has an exact group for EVENT - a refused
@@ -1836,10 +1843,10 @@ private:
     bool exactAlternativesExist() const
     {
         return [this]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
-            return ((!std::is_same_v<
-                         typename TRANSITIONS::template exact_transitions<
-                             std::variant_alternative_t<INDEXs, state_variant>, EVENT>,
-                         mtl::typelist<>> &&
+            return ((!std::is_same_v<exact_transitions_t<TRANSITIONS,
+                                                         std::variant_alternative_t<INDEXs, state_variant>,
+                                                         EVENT>,
+                                     mtl::typelist<>> &&
                      current_.index() == INDEXs) ||
                     ...);
         }(std::make_index_sequence<std::variant_size_v<state_variant>>{});
