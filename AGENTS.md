@@ -98,7 +98,7 @@ expecting the specific `static_assert` message - a class template's
   (transition, state, event) - do not push the event into the per-edge
   bodies. The wildcard's shared body per (event, target) must stay
   provably unobservable; a new hook needs its shareability rule in
-  `observerSharesEdge`, and `observer_group` is judged by its members
+  `observer_shares_edge`, and `observer_group` is judged by its members
   there (its forwarding hooks exist for every edge - checking them
   blocked sharing wholesale and cost 2.7 kB in the USB-C firmware once).
   Measure a library change on the firmware's `pd_drp` sample

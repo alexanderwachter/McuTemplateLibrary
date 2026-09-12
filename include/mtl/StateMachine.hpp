@@ -132,17 +132,14 @@ using context_of_t = typename context_of<STATE>::type;
 // Whether STATE is constructed from this event (with its context when
 // it has one)
 template<typename STATE, typename EVENT>
-consteval bool payloadConstructible()
-{
-    if constexpr (context_holder<STATE>) {
-        return std::constructible_from<STATE, EVENT const&, context_of_t<STATE>&>;
-    } else {
-        return std::constructible_from<STATE, EVENT const&>;
-    }
-}
+struct payload_constructible : std::bool_constant<std::constructible_from<STATE, EVENT const&>> {};
+
+template<context_holder STATE, typename EVENT>
+struct payload_constructible<STATE, EVENT>
+    : std::bool_constant<std::constructible_from<STATE, EVENT const&, context_of_t<STATE>&>> {};
 
 template<typename STATE, typename EVENT>
-inline constexpr bool payload_constructible_v = payloadConstructible<STATE, EVENT>();
+inline constexpr bool payload_constructible_v = payload_constructible<STATE, EVENT>::value;
 
 // Arguments constructing STATE in place inside a variant. The tuple
 // round-trip through make_from_tuple is free: its prvalue is elided
@@ -234,17 +231,28 @@ namespace concepts {
 
 // check(from_state, event) for conditions on the event payload before
 // any handler applied it, check(from_state) for conditions on state
-// data, check() for state-independent ones. The event form is
-// validated with a payload stand-in - the concrete event type is only
-// known at the process() call
+// data, check() for state-independent ones
+template<typename GUARD, typename STATE, typename EVENT>
+concept event_guard_for = requires(STATE const& state, EVENT const& event) {
+    { GUARD::check(state, event) } -> std::convertible_to<bool>;
+};
+
 template<typename GUARD, typename STATE>
-concept guard_for = requires(STATE const& state) {
+concept state_guard_for = requires(STATE const& state) {
     { GUARD::check(state) } -> std::convertible_to<bool>;
-} || requires(STATE const& state) {
-    { GUARD::check(state, internal::any_payload{}) } -> std::convertible_to<bool>;
-} || requires {
+};
+
+template<typename GUARD>
+concept stateless_guard = requires {
     { GUARD::check() } -> std::convertible_to<bool>;
 };
+
+// The event form is validated with a payload stand-in - the concrete
+// event type is only known at the process() call
+template<typename GUARD, typename STATE>
+concept guard_for = state_guard_for<GUARD, STATE> ||
+                    event_guard_for<GUARD, STATE, internal::any_payload> ||
+                    stateless_guard<GUARD>;
 
 // Anything exposing the four role aliases works as a transition
 template<typename T>
@@ -430,38 +438,24 @@ struct timeout_handled_in {
                         mtl::nil_type>> {};
 };
 
-template<typename STATE>
-inline constexpr bool has_deadline_v = requires { STATE::deadline; };
-
 // A zero deadline is the phase-target sentinel: it stops the clock
 // like an unannotated state, but says so explicitly
 template<typename STATE>
-constexpr bool activeDeadline()
-{
-    if constexpr (has_deadline_v<STATE>) {
-        return STATE::deadline != decltype(STATE::deadline){};
-    } else {
-        return false;
-    }
-}
+inline constexpr bool active_deadline_v =
+    requires { requires STATE::deadline != decltype(STATE::deadline){}; };
 
 // Whether the edge continues one running phase: the state left
 // carries the same nonzero deadline as the one entered
 template<typename OLD_STATE, typename NEW_STATE>
-constexpr bool continuesDeadline()
-{
-    if constexpr (has_deadline_v<OLD_STATE> && has_deadline_v<NEW_STATE>) {
-        return activeDeadline<OLD_STATE>() && OLD_STATE::deadline == NEW_STATE::deadline;
-    } else {
-        return false;
-    }
-}
+inline constexpr bool continues_deadline_v =
+    active_deadline_v<OLD_STATE> &&
+    requires { requires OLD_STATE::deadline == NEW_STATE::deadline; };
 
 template<typename TABLE>
 struct deadline_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
-        !activeDeadline<STATE>() ||
+        !active_deadline_v<STATE> ||
         !std::is_same_v<typename TABLE::template find_transition<STATE, deadline>,
                         mtl::nil_type>> {};
 };
@@ -469,16 +463,14 @@ struct deadline_handled_in {
 template<typename TRANSITION>
 inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
 
-// A guard provides check(state, event), check(state), or check() -
-// the most specific overload wins. The event form decides on the
-// payload before any handler has applied it to the state. Callability
-// was validated by the transition's guard_for static_assert
+// The most specific guard form wins. Callability was validated by the
+// transition's guard_for static_assert
 template<typename GUARD, concepts::state STATE, typename EVENT>
 bool checkGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
 {
-    if constexpr (requires { GUARD::check(state, event); }) {
+    if constexpr (concepts::event_guard_for<GUARD, STATE, EVENT>) {
         return GUARD::check(state, event);
-    } else if constexpr (requires { GUARD::check(state); }) {
+    } else if constexpr (concepts::state_guard_for<GUARD, STATE>) {
         return GUARD::check(state);
     } else {
         return GUARD::check();
@@ -528,20 +520,22 @@ struct no_shadowed_alternatives<mtl::typelist<FIRST, RESTs...>>
 template<typename OBSERVER, typename STATE>
 inline constexpr bool observes_v = requires { OBSERVER::template annotation<STATE>(); };
 
+// Whether STATE's annotation differs from OTHER's: an annotation OTHER
+// lacks, or of another type, always counts as a change; an unobserved
+// STATE never notifies
 template<typename OBSERVER, typename STATE, typename OTHER>
-constexpr bool annotation_changes()
-{
-    if constexpr (!observes_v<OBSERVER, STATE>) {
-        return false;
-    } else if constexpr (!observes_v<OBSERVER, OTHER>) {
-        return true;
-    } else if constexpr (!std::is_same_v<decltype(OBSERVER::template annotation<STATE>()),
-                                         decltype(OBSERVER::template annotation<OTHER>())>) {
-        return true; // different annotation types always differ
-    } else {
-        return OBSERVER::template annotation<STATE>() != OBSERVER::template annotation<OTHER>();
-    }
-}
+struct annotation_changes : std::bool_constant<observes_v<OBSERVER, STATE>> {};
+
+template<typename OBSERVER, typename STATE, typename OTHER>
+    requires observes_v<OBSERVER, STATE> && observes_v<OBSERVER, OTHER> &&
+             std::same_as<decltype(OBSERVER::template annotation<STATE>()),
+                          decltype(OBSERVER::template annotation<OTHER>())>
+struct annotation_changes<OBSERVER, STATE, OTHER>
+    : std::bool_constant<OBSERVER::template annotation<STATE>() !=
+                         OBSERVER::template annotation<OTHER>()> {};
+
+template<typename OBSERVER, typename STATE, typename OTHER>
+inline constexpr bool annotation_changes_v = annotation_changes<OBSERVER, STATE, OTHER>::value;
 
 // An annotation type declaring `static constexpr bool idempotent =
 // true` promises that notifying its value again with no change in
@@ -634,30 +628,31 @@ inline constexpr bool has_annotation_v = has_annotation<STATE, T>::value;
 // Whether STATE's T element differs from OTHER's: an element OTHER lacks
 // always counts as a change, a state without the element never notifies
 template<typename T, typename STATE, typename OTHER>
-constexpr bool set_annotation_changes()
-{
-    if constexpr (!has_annotation_v<STATE, T>) {
-        return false;
-    } else if constexpr (!has_annotation_v<OTHER, T>) {
-        return true;
-    } else {
-        return STATE::annotations.template get<T>() != OTHER::annotations.template get<T>();
-    }
-}
+struct set_annotation_changes : std::bool_constant<has_annotation_v<STATE, T>> {};
 
-// Whether any element of STATE's set reaches one of OBSERVER's hooks
-template<typename OBSERVER, typename STATE, typename... Ts>
-constexpr bool setNotified(mtl::typelist<Ts...>)
-{
-    return ((requires(OBSERVER observer) {
-                observer.notifyEntry(STATE::annotations.template get<Ts>());
-            } || requires(OBSERVER observer) {
-                observer.notifyExit(STATE::annotations.template get<Ts>());
-            }) || ...);
-}
+template<typename T, typename STATE, typename OTHER>
+    requires has_annotation_v<STATE, T> && has_annotation_v<OTHER, T>
+struct set_annotation_changes<T, STATE, OTHER>
+    : std::bool_constant<STATE::annotations.template get<T>() !=
+                         OTHER::annotations.template get<T>()> {};
+
+template<typename T, typename STATE, typename OTHER>
+inline constexpr bool set_annotation_changes_v = set_annotation_changes<T, STATE, OTHER>::value;
+
+// Whether STATE's T element reaches one of OBSERVER's hooks
+template<typename OBSERVER, typename STATE>
+struct element_notified {
+    template<typename T>
+    struct pred : std::bool_constant<requires(OBSERVER observer) {
+                      observer.notifyEntry(STATE::annotations.template get<T>());
+                  } || requires(OBSERVER observer) {
+                      observer.notifyExit(STATE::annotations.template get<T>());
+                  }> {};
+};
 
 template<typename OBSERVER, typename STATE>
-inline constexpr bool set_notified_v = setNotified<OBSERVER, STATE>(annotation_types_t<STATE>{});
+inline constexpr bool set_notified_v =
+    mtl::any_of_v<annotation_types_t<STATE>, element_notified<OBSERVER, STATE>::template pred>;
 
 } // namespace internal
 
@@ -721,7 +716,7 @@ struct observing {
     void onExitState(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (internal::annotation_changes<DERIVED, OLD_STATE, NEW_STATE>()) {
+        if constexpr (internal::annotation_changes_v<DERIVED, OLD_STATE, NEW_STATE>) {
             if constexpr (requires { self.notifyExit(DERIVED::template annotation<OLD_STATE>()); }) {
                 self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
@@ -734,7 +729,7 @@ struct observing {
     void onEnterState(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>()) {
+        if constexpr (internal::annotation_changes_v<DERIVED, NEW_STATE, OLD_STATE>) {
             if constexpr (requires { self.notifyEntry(DERIVED::template annotation<NEW_STATE>()); }) {
                 self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
@@ -750,7 +745,7 @@ private:
     {
         auto& self = static_cast<DERIVED&>(*this);
         ([&] {
-            if constexpr (internal::set_annotation_changes<Ts, OLD_STATE, NEW_STATE>()) {
+            if constexpr (internal::set_annotation_changes_v<Ts, OLD_STATE, NEW_STATE>) {
                 if constexpr (requires { self.notifyExit(OLD_STATE::annotations.template get<Ts>()); }) {
                     self.notifyExit(OLD_STATE::annotations.template get<Ts>());
                 }
@@ -763,7 +758,7 @@ private:
     {
         auto& self = static_cast<DERIVED&>(*this);
         ([&] {
-            if constexpr (internal::set_annotation_changes<Ts, NEW_STATE, OLD_STATE>()) {
+            if constexpr (internal::set_annotation_changes_v<Ts, NEW_STATE, OLD_STATE>) {
                 if constexpr (requires { self.notifyEntry(NEW_STATE::annotations.template get<Ts>()); }) {
                     self.notifyEntry(NEW_STATE::annotations.template get<Ts>());
                 }
@@ -771,24 +766,26 @@ private:
         }(), ...);
     }
 
-    template<typename OLD_STATE, typename... Ts>
-    static constexpr bool setExitSilent(mtl::typelist<Ts...>)
-    {
-        return (!requires(DERIVED self) {
-                    self.notifyExit(OLD_STATE::annotations.template get<Ts>());
-                } && ...);
-    }
+    // The set elements' share of the wildcard facts below
+    template<typename OLD_STATE>
+    struct element_exit_silent {
+        template<typename T>
+        struct pred : std::bool_constant<!requires(DERIVED self) {
+                          self.notifyExit(OLD_STATE::annotations.template get<T>());
+                      }> {};
+    };
 
-    template<typename NEW_STATE, typename OLD_STATE, typename... Ts>
-    static constexpr bool setEntrySharedFrom(mtl::typelist<Ts...>)
-    {
-        return ((internal::set_annotation_changes<Ts, NEW_STATE, OLD_STATE>() ||
-                 !requires(DERIVED self) {
-                     self.notifyEntry(NEW_STATE::annotations.template get<Ts>());
-                 } ||
-                 internal::idempotent_v<Ts> || requires { requires DERIVED::renotify_safe; }) &&
-                ...);
-    }
+    template<typename NEW_STATE, typename OLD_STATE>
+    struct element_entry_shared_from {
+        template<typename T>
+        struct pred
+            : std::bool_constant<internal::set_annotation_changes_v<T, NEW_STATE, OLD_STATE> ||
+                                 !requires(DERIVED self) {
+                                     self.notifyEntry(NEW_STATE::annotations.template get<T>());
+                                 } ||
+                                 internal::idempotent_v<T> ||
+                                 requires { requires DERIVED::renotify_safe; }> {};
+    };
 
     template<typename STATE, typename MACHINE>
     void nonstaticExit(MACHINE& machine)
@@ -827,7 +824,8 @@ public:
         !requires(DERIVED self) {
             self.notifyExit(DERIVED::template annotation<OLD_STATE>());
         } &&
-        setExitSilent<OLD_STATE>(internal::annotation_types_t<OLD_STATE>{}) &&
+        mtl::all_of_v<internal::annotation_types_t<OLD_STATE>,
+                      element_exit_silent<OLD_STATE>::template pred> &&
         !requires(DERIVED self, MACHINE machine) {
             self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<OLD_STATE>()));
         };
@@ -838,13 +836,14 @@ public:
     // per-annotation `idempotent` declaration, generalized
     template<typename NEW_STATE, typename OLD_STATE>
     static constexpr bool entry_shared_from =
-        (internal::annotation_changes<DERIVED, NEW_STATE, OLD_STATE>() ||
+        (internal::annotation_changes_v<DERIVED, NEW_STATE, OLD_STATE> ||
          !requires(DERIVED self) {
              self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
          } ||
          internal::idempotent_annotation_v<DERIVED, NEW_STATE> ||
          requires { requires DERIVED::renotify_safe; }) &&
-        setEntrySharedFrom<NEW_STATE, OLD_STATE>(internal::annotation_types_t<NEW_STATE>{});
+        mtl::all_of_v<internal::annotation_types_t<NEW_STATE>,
+                      element_entry_shared_from<NEW_STATE, OLD_STATE>::template pred>;
 };
 
 // Observer implementing the state-timeout semantics on top of a TIMER
@@ -992,16 +991,16 @@ struct deadlined {
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onEnterState(MACHINE& machine)
     {
-        if constexpr (internal::continuesDeadline<OLD_STATE, NEW_STATE>()) {
+        if constexpr (internal::continues_deadline_v<OLD_STATE, NEW_STATE>) {
             // the phase's clock keeps running
-        } else if constexpr (internal::activeDeadline<NEW_STATE>()) {
+        } else if constexpr (internal::active_deadline_v<NEW_STATE>) {
             constexpr auto duration =
                 std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::deadline);
             static_assert(duration.count() >= 0 &&
                               duration.count() <= std::numeric_limits<std::uint32_t>::max(),
                           "fsm::deadlined: deadline out of the 32-bit millisecond range");
             this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
-        } else if constexpr (internal::activeDeadline<OLD_STATE>()) {
+        } else if constexpr (internal::active_deadline_v<OLD_STATE>) {
             timer.stop(); // left the phase: unannotated or the target
         }
     }
@@ -1241,7 +1240,7 @@ struct deadline_state_bounded<STATE, MAP, 1>
 // Whether STATE is consistent with a deadline-range map (timed_by
 // entries): a state with an active deadline has exactly one entry
 // bounding it, every other state has none
-template<typename MAP, typename STATE, bool ACTIVE = internal::activeDeadline<STATE>()>
+template<typename MAP, typename STATE, bool ACTIVE = internal::active_deadline_v<STATE>>
 struct deadline_within_bounds : internal::deadline_state_bounded<STATE, MAP> {};
 
 template<typename MAP, typename STATE>
@@ -1678,12 +1677,12 @@ public:
     // per-source expansion otherwise emits one near-identical
     // transition body per state (measured kilobytes in a machine with a
     // handful of wildcard events). Shareability is proved per event at
-    // compile time (wildcardShareable below); anything unprovable falls
+    // compile time (wildcard_shareable below); anything unprovable falls
     // back to the exact per-source expansion
     template<typename EVENT>
     bool process(EVENT const& event)
     {
-        if constexpr (wildcardShareable<EVENT>()) {
+        if constexpr (wildcard_shareable<EVENT>) {
             bool const fired = internal::dispatch(
                 [this, &event](auto& state) -> bool {
                     using state_type = std::decay_t<decltype(state)>;
@@ -1752,47 +1751,51 @@ private:
     // shared path it gets fsm::any_state instead, which an observer
     // accepts by declaring `static constexpr bool source_agnostic = true`
     template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
-    static constexpr bool transitionHookSharesEdge()
-    {
-        return !requires(OBSERVER observer, state_machine& machine) {
+    static constexpr bool transition_hook_shares_edge =
+        !requires(OBSERVER observer, state_machine& machine) {
             observer.template onTransition<OLD_STATE, EVENT, NEW_STATE>(machine);
         } || requires { requires OBSERVER::source_agnostic; };
-    }
 
     // One observer's view of the shared edge into NEW_STATE from the
-    // unknowable OLD_STATE: the timed observer is handled by the
-    // unconditional stop, an observing one must prove its exit silent
-    // and its entry source-independent, and a raw per-edge hook (which
-    // would receive the real source state) blocks sharing entirely
+    // unknowable OLD_STATE: a raw per-edge hook (which would receive the
+    // real source state) blocks sharing entirely
     template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
-    static constexpr bool observerSharesEdge()
-    {
-        if constexpr (internal::is_timed_v<OBSERVER>) {
-            return true;
-        } else if constexpr (internal::grouped_observer<OBSERVER>) {
-            // judged by its members: the group's own forwarding hooks
-            // exist for every edge and would block sharing wholesale
-            return membersShareEdge<OLD_STATE, EVENT, NEW_STATE>(
-                internal::group_members_t<OBSERVER>{});
-        } else if constexpr (!transitionHookSharesEdge<OBSERVER, OLD_STATE, EVENT, NEW_STATE>()) {
-            return false;
-        } else if constexpr (std::derived_from<OBSERVER, observing<OBSERVER>>) {
-            return OBSERVER::template exit_silent<OLD_STATE, state_machine> &&
-                   OBSERVER::template entry_shared_from<NEW_STATE, OLD_STATE>;
-        } else {
-            return !requires(OBSERVER observer, state_machine& machine) {
-                observer.template onExitState<OLD_STATE, NEW_STATE>(machine);
-            } && !requires(OBSERVER observer, state_machine& machine) {
-                observer.template onEnterState<OLD_STATE, NEW_STATE>(machine);
-            };
-        }
-    }
+    struct observer_shares_edge
+        : std::bool_constant<transition_hook_shares_edge<OBSERVER, OLD_STATE, EVENT, NEW_STATE> &&
+                             !requires(OBSERVER observer, state_machine& machine) {
+                                 observer.template onExitState<OLD_STATE, NEW_STATE>(machine);
+                             } &&
+                             !requires(OBSERVER observer, state_machine& machine) {
+                                 observer.template onEnterState<OLD_STATE, NEW_STATE>(machine);
+                             }> {};
 
-    template<typename OLD_STATE, typename EVENT, typename NEW_STATE, typename... MEMBERs>
-    static constexpr bool membersShareEdge(mtl::typelist<MEMBERs...>)
-    {
-        return (observerSharesEdge<MEMBERs, OLD_STATE, EVENT, NEW_STATE>() && ...);
-    }
+    // the timed observer is handled by the unconditional stop
+    template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
+        requires internal::is_timed_v<OBSERVER>
+    struct observer_shares_edge<OBSERVER, OLD_STATE, EVENT, NEW_STATE> : std::true_type {};
+
+    // an observing one must prove its exit silent and its entry
+    // source-independent
+    template<typename OBSERVER, typename OLD_STATE, typename EVENT, typename NEW_STATE>
+        requires std::derived_from<OBSERVER, observing<OBSERVER>>
+    struct observer_shares_edge<OBSERVER, OLD_STATE, EVENT, NEW_STATE>
+        : std::bool_constant<transition_hook_shares_edge<OBSERVER, OLD_STATE, EVENT, NEW_STATE> &&
+                             OBSERVER::template exit_silent<OLD_STATE, state_machine> &&
+                             OBSERVER::template entry_shared_from<NEW_STATE, OLD_STATE>> {};
+
+    template<typename OLD_STATE, typename EVENT, typename NEW_STATE>
+    struct member_shares_edge {
+        template<typename MEMBER>
+        struct pred : observer_shares_edge<MEMBER, OLD_STATE, EVENT, NEW_STATE> {};
+    };
+
+    // a group is judged by its members: its own forwarding hooks exist
+    // for every edge and would block sharing wholesale
+    template<internal::grouped_observer OBSERVER, typename OLD_STATE, typename EVENT,
+             typename NEW_STATE>
+    struct observer_shares_edge<OBSERVER, OLD_STATE, EVENT, NEW_STATE>
+        : mtl::all_of<internal::group_members_t<OBSERVER>,
+                      member_shares_edge<OLD_STATE, EVENT, NEW_STATE>::template pred> {};
 
     // States without an exact group for EVENT: exactly those the
     // wildcard can fire from
@@ -1809,34 +1812,32 @@ private:
         template<typename STATE>
         struct pred
             : std::bool_constant<!requires(STATE state) { state.onExit(); } &&
-                                 (observerSharesEdge<OBSERVERs, STATE, EVENT, TO>() && ...)> {};
+                                 (observer_shares_edge<OBSERVERs, STATE, EVENT, TO>::value &&
+                                  ...)> {};
     };
 
-    template<typename EVENT, typename... WILDCARDs>
-    static constexpr bool wildcardsShareable(mtl::typelist<WILDCARDs...>)
-    {
+    // One wildcard transition's shareability: a real target, at most a
+    // stateless guard, and every possible source unobservable
+    template<typename EVENT>
+    struct wildcard_shareable_for {
         using exactless =
             mtl::filter_t<typename TRANSITIONS::states, exactless_for<EVENT>::template pred>;
-        return ((!internal::is_internal_v<WILDCARDs> &&
-                 (!internal::has_guard_v<WILDCARDs> ||
-                  requires {
-                      { WILDCARDs::guard::check() } -> std::convertible_to<bool>;
-                  }) &&
-                 mtl::all_of_v<exactless, wildcard_source_ok<typename WILDCARDs::to,
-                                                             EVENT>::template pred>) &&
-                ...);
-    }
+
+        template<typename WILDCARD>
+        struct pred
+            : std::bool_constant<!internal::is_internal_v<WILDCARD> &&
+                                 (!internal::has_guard_v<WILDCARD> ||
+                                  concepts::stateless_guard<typename WILDCARD::guard>) &&
+                                 mtl::all_of_v<exactless, wildcard_source_ok<typename WILDCARD::to,
+                                                                             EVENT>::template pred>> {};
+    };
 
     template<typename EVENT>
-    static constexpr bool wildcardShareable()
-    {
-        using wildcards = typename TRANSITIONS::template wildcard_transitions<EVENT>;
-        if constexpr (std::is_same_v<wildcards, mtl::typelist<>>) {
-            return false;
-        } else {
-            return wildcardsShareable<EVENT>(wildcards{});
-        }
-    }
+    static constexpr bool wildcard_shareable =
+        !std::is_same_v<typename TRANSITIONS::template wildcard_transitions<EVENT>,
+                        mtl::typelist<>> &&
+        mtl::all_of_v<typename TRANSITIONS::template wildcard_transitions<EVENT>,
+                      wildcard_shareable_for<EVENT>::template pred>;
 
     // Whether the active state has an exact group for EVENT - a refused
     // exact group shadows the wildcard, exactly like find_transitions.
