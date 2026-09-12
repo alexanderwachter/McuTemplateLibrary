@@ -1702,19 +1702,20 @@ public:
         auto const result = internal::dispatch(
             [this, &event](auto& state) -> outcome {
                 using state_type = std::decay_t<decltype(state)>;
-                // A state's own alternatives shadow the wildcard; an
-                // unshareable wildcard is expanded per source in
-                // transitions_for. Only states with neither reach the
-                // shared body below (the default outcome: these arms
-                // emit no code)
-                if constexpr (has_exact_transitions_v<TRANSITIONS, state_type, EVENT> ||
-                              !wildcard_shareable<EVENT>) {
+                if constexpr (has_exact_transitions_v<TRANSITIONS, state_type, EVENT>) {
+                    // the state's own alternatives shadow the wildcard,
+                    // also when every guard refuses
                     return this->template tryAlternatives<state_type>(
-                               transitions_for_t<TRANSITIONS, state_type, EVENT>{}, state, event)
-                               ? outcome::fired
-                               : outcome::none;
-                } else {
+                        exact_transitions_t<TRANSITIONS, state_type, EVENT>{}, state, event);
+                } else if constexpr (wildcard_shareable<EVENT>) {
+                    // the shared body below; the default outcome, so
+                    // these arms emit no code
                     return outcome::wildcard;
+                } else {
+                    // an unshareable wildcard fires per source with the
+                    // real state; an empty group is the ignored event
+                    return this->template tryAlternatives<state_type>(
+                        wildcard_transitions_t<TRANSITIONS, EVENT>{}, state, event);
                 }
             },
             current_);
@@ -1894,13 +1895,14 @@ private:
     // The fold short-circuits after a firing: the state reference is
     // dangling from that point on
     template<typename STATE, typename... ALTERNATIVEs, typename EVENT>
-    bool tryAlternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state, EVENT const& event)
+    internal::outcome tryAlternatives(mtl::typelist<ALTERNATIVEs...>, STATE& state,
+                                      EVENT const& event)
     {
         bool fired = false;
         static_cast<void>(((internal::allowed<ALTERNATIVEs>(state, event) &&
                             (fired = this->template fire<ALTERNATIVEs>(state, event), true)) ||
                            ...));
-        return fired;
+        return fired ? internal::outcome::fired : internal::outcome::none;
     }
 
     // Already instantiated per (transition, state, event): the only
