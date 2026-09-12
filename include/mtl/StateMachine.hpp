@@ -372,22 +372,30 @@ using transition_for_t = typename TABLE::template transition_for<FROM, EVENT>;
 
 namespace internal {
 
+// What process()'s visitor reports for the active state: the shared
+// wildcard body applies (no exact group - the value-initialized
+// default, so those states contribute no code to the fold), a
+// transition fired, or none did (no alternatives, or every guard
+// refused)
+enum class outcome { wildcard, fired, none };
+
 // Fold-based alternative to std::visit for process(): every visitor
 // instantiation is inlinable and no function-pointer table or
 // bad_variant_access path can be emitted. A valueless variant matches no
-// alternative and yields false (unreachable in process(): the states can
-// never make the variant valueless).
+// alternative and yields a value-initialized result (unreachable in
+// process(): the states can never make the variant valueless).
 // Measured GCC 15.2 x86-64 -Os (traffic_light.cpp): 32 bytes .text
 // larger than std::visit. Measured arm-zephyr-eabi GCC 14.3 -Os
 // (Cortex-M0+, 14-state/20-event machine): 3.7 kB smaller - std::visit
 // emits per-(event, state) invoke thunks and tables that dominate at
 // scale.
 template<typename VISITOR, typename... ALTERNATIVEs>
-    requires (std::predicate<VISITOR, ALTERNATIVEs&> && ...)
-constexpr bool visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
+    requires (std::invocable<VISITOR, ALTERNATIVEs&> && ...)
+constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 {
+    using result_type = std::common_type_t<std::invoke_result_t<VISITOR, ALTERNATIVEs&>...>;
     return [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
-        bool result = false;
+        result_type result{};
         ((variant.index() == INDEXs &&
           (result = visitor(*std::get_if<INDEXs>(&variant)), true)) || ...);
         return result;
@@ -403,8 +411,8 @@ constexpr bool visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 #endif
 
 template<typename VISITOR, typename... ALTERNATIVEs>
-    requires (std::predicate<VISITOR, ALTERNATIVEs&> && ...)
-constexpr bool dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
+    requires (std::invocable<VISITOR, ALTERNATIVEs&> && ...)
+constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 {
 #if MTL_FSM_FOLD_VISIT
     return internal::visit(std::forward<VISITOR>(visitor), variant);
@@ -1684,32 +1692,30 @@ public:
     template<typename EVENT>
     bool process(EVENT const& event)
     {
+        using internal::outcome;
+        auto const result = internal::dispatch(
+            [this, &event](auto& state) -> outcome {
+                using state_type = std::decay_t<decltype(state)>;
+                using exact      = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
+                // a refused exact group shadows the wildcard: only
+                // states without one reach the shared body below (the
+                // default outcome: these arms emit no code)
+                if constexpr (wildcard_shareable<EVENT> && std::is_same_v<exact, mtl::typelist<>>) {
+                    return outcome::wildcard;
+                } else {
+                    return this->template tryAlternatives<state_type>(
+                               transitions_for_t<TRANSITIONS, state_type, EVENT>{}, state, event)
+                               ? outcome::fired
+                               : outcome::none;
+                }
+            },
+            current_);
         if constexpr (wildcard_shareable<EVENT>) {
-            bool const fired = internal::dispatch(
-                [this, &event](auto& state) -> bool {
-                    using state_type = std::decay_t<decltype(state)>;
-                    using alternatives = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
-                    return this->template tryAlternatives<state_type>(alternatives{}, state,
-                                                                      event);
-                },
-                current_);
-            if (fired) {
-                return true;
+            if (result == outcome::wildcard) {
+                return this->fireWildcards(wildcard_transitions_t<TRANSITIONS, EVENT>{}, event);
             }
-            if (this->template exactAlternativesExist<EVENT>()) {
-                return false; // a refused exact group shadows the wildcard
-            }
-            return this->fireWildcards(wildcard_transitions_t<TRANSITIONS, EVENT>{}, event);
-        } else {
-            return internal::dispatch(
-                [this, &event](auto& state) -> bool {
-                    using state_type = std::decay_t<decltype(state)>;
-                    using alternatives = transitions_for_t<TRANSITIONS, state_type, EVENT>;
-                    return this->template tryAlternatives<state_type>(alternatives{}, state,
-                                                                      event);
-                },
-                current_);
         }
+        return result == outcome::fired;
     }
 
     // Is STATE the active state?
@@ -1835,22 +1841,6 @@ private:
         !std::is_same_v<wildcard_transitions_t<TRANSITIONS, EVENT>, mtl::typelist<>> &&
         mtl::all_of_v<wildcard_transitions_t<TRANSITIONS, EVENT>,
                       wildcard_shareable_for<EVENT>::template pred>;
-
-    // Whether the active state has an exact group for EVENT - a refused
-    // exact group shadows the wildcard, exactly like transitions_for.
-    // States without one contribute no code to the fold
-    template<typename EVENT>
-    bool exactAlternativesExist() const
-    {
-        return [this]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
-            return ((!std::is_same_v<exact_transitions_t<TRANSITIONS,
-                                                         std::variant_alternative_t<INDEXs, state_variant>,
-                                                         EVENT>,
-                                     mtl::typelist<>> &&
-                     current_.index() == INDEXs) ||
-                    ...);
-        }(std::make_index_sequence<std::variant_size_v<state_variant>>{});
-    }
 
     template<typename... WILDCARDs, typename EVENT>
     bool fireWildcards(mtl::typelist<WILDCARDs...>, EVENT const& event)
