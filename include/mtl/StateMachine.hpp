@@ -370,6 +370,12 @@ using transitions_for_t = typename TABLE::template transitions_for<FROM, EVENT>;
 template<concepts::transition_table TABLE, typename FROM, typename EVENT>
 using transition_for_t = typename TABLE::template transition_for<FROM, EVENT>;
 
+// Whether FROM has alternatives of its own for EVENT - they shadow
+// the wildcard, also when every guard refuses
+template<concepts::transition_table TABLE, typename FROM, typename EVENT>
+inline constexpr bool has_exact_transitions_v =
+    !std::is_same_v<exact_transitions_t<TABLE, FROM, EVENT>, mtl::typelist<>>;
+
 namespace internal {
 
 // What process()'s visitor reports for the active state: the shared
@@ -1696,17 +1702,19 @@ public:
         auto const result = internal::dispatch(
             [this, &event](auto& state) -> outcome {
                 using state_type = std::decay_t<decltype(state)>;
-                using exact      = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
-                // a refused exact group shadows the wildcard: only
-                // states without one reach the shared body below (the
-                // default outcome: these arms emit no code)
-                if constexpr (wildcard_shareable<EVENT> && std::is_same_v<exact, mtl::typelist<>>) {
-                    return outcome::wildcard;
-                } else {
+                // A state's own alternatives shadow the wildcard; an
+                // unshareable wildcard is expanded per source in
+                // transitions_for. Only states with neither reach the
+                // shared body below (the default outcome: these arms
+                // emit no code)
+                if constexpr (has_exact_transitions_v<TRANSITIONS, state_type, EVENT> ||
+                              !wildcard_shareable<EVENT>) {
                     return this->template tryAlternatives<state_type>(
                                transitions_for_t<TRANSITIONS, state_type, EVENT>{}, state, event)
                                ? outcome::fired
                                : outcome::none;
+                } else {
+                    return outcome::wildcard;
                 }
             },
             current_);
@@ -1808,7 +1816,7 @@ private:
     struct exactless_for {
         template<typename STATE>
         struct pred
-            : std::is_same<exact_transitions_t<TRANSITIONS, STATE, EVENT>, mtl::typelist<>> {};
+            : std::bool_constant<!has_exact_transitions_v<TRANSITIONS, STATE, EVENT>> {};
     };
 
     template<typename TO, typename EVENT>
