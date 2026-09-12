@@ -85,6 +85,8 @@ namespace TestRemoveAt {
 namespace TestFrontBackAtIndex {
     static_assert(std::is_same_v<front_t<first>, test1>);
     static_assert(std::is_same_v<front_t<all>, test1>);
+    static_assert(std::is_same_v<front_or_t<all, nil_type>, test1>);
+    static_assert(std::is_same_v<front_or_t<empty, nil_type>, nil_type>);
 
     static_assert(std::is_same_v<back_t<first>, test1>);
     static_assert(std::is_same_v<back_t<all>, test4>);

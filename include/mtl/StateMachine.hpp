@@ -434,7 +434,7 @@ struct timeout_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !has_timeout_v<STATE> ||
-        !std::is_same_v<typename TABLE::template find_transition<STATE, timeout>,
+        !std::is_same_v<typename TABLE::template transition_for<STATE, timeout>,
                         mtl::nil_type>> {};
 };
 
@@ -456,7 +456,7 @@ struct deadline_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !active_deadline_v<STATE> ||
-        !std::is_same_v<typename TABLE::template find_transition<STATE, deadline>,
+        !std::is_same_v<typename TABLE::template transition_for<STATE, deadline>,
                         mtl::nil_type>> {};
 };
 
@@ -1061,14 +1061,6 @@ private:
         using type = mtl::filter_t<transitions, pred>;
     };
 
-    template<typename FROM, typename EVENT>
-    using find_exact = mtl::find_if_t<typename from_group<FROM>::type,
-                                      internal::matches_event<EVENT>::template pred>;
-
-    template<typename FROM, typename EVENT>
-    using find_all_exact = mtl::filter_t<typename from_group<FROM>::type,
-                                         internal::matches_event<EVENT>::template pred>;
-
 public:
     // Deduplicated in order of first appearance: front is the initial state
     using states = mtl::unique_t<std::conditional_t<
@@ -1076,30 +1068,28 @@ public:
         endpoints,
         mtl::prepend_t<explicit_initial, endpoints>>>;
 
-    // Exact (FROM, EVENT) first, then the (any_state, EVENT) wildcard;
-    // mtl::nil_type if neither is in the table
+    // The exact (FROM, EVENT) group and the (any_state, EVENT) wildcard
+    // group, each in table order: the machine's shared wildcard path
+    // dispatches exact pairs per state and the wildcard group through
+    // one body per (event, target)
     template<typename FROM, typename EVENT>
-    using find_transition = std::conditional_t<
-        std::is_same_v<find_exact<FROM, EVENT>, mtl::nil_type>,
-        find_exact<any_state, EVENT>,
-        find_exact<FROM, EVENT>>;
-
-    // All alternatives for (FROM, EVENT) in table order; the wildcard
-    // group applies only when no exact pair exists
-    template<typename FROM, typename EVENT>
-    using find_transitions = std::conditional_t<
-        std::is_same_v<find_all_exact<FROM, EVENT>, mtl::typelist<>>,
-        find_all_exact<any_state, EVENT>,
-        find_all_exact<FROM, EVENT>>;
-
-    // The two halves of find_transitions, split: the machine's shared
-    // wildcard path dispatches exact pairs per state and the wildcard
-    // group through one body per (event, target)
-    template<typename FROM, typename EVENT>
-    using exact_transitions = find_all_exact<FROM, EVENT>;
+    using exact_transitions = mtl::filter_t<typename from_group<FROM>::type,
+                                            internal::matches_event<EVENT>::template pred>;
 
     template<typename EVENT>
-    using wildcard_transitions = find_all_exact<any_state, EVENT>;
+    using wildcard_transitions = exact_transitions<any_state, EVENT>;
+
+    // All alternatives for (FROM, EVENT): the wildcard group applies
+    // only when no exact pair exists
+    template<typename FROM, typename EVENT>
+    using transitions_for = std::conditional_t<
+        std::is_same_v<exact_transitions<FROM, EVENT>, mtl::typelist<>>,
+        wildcard_transitions<EVENT>,
+        exact_transitions<FROM, EVENT>>;
+
+    // The first alternative; mtl::nil_type if there is none
+    template<typename FROM, typename EVENT>
+    using transition_for = mtl::front_or_t<transitions_for<FROM, EVENT>, mtl::nil_type>;
 };
 
 // A range of acceptable timeouts, e.g. a specification's min/max pair.
@@ -1348,7 +1338,7 @@ inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::valu
 template<typename TABLE, typename STATE, typename EVENT>
 struct handles_event
     : std::bool_constant<!std::is_same_v<
-          typename TABLE::template find_transition<STATE, EVENT>, mtl::nil_type>> {};
+          typename TABLE::template transition_for<STATE, EVENT>, mtl::nil_type>> {};
 
 template<typename TABLE, typename STATE, typename EVENT>
 inline constexpr bool handles_event_v = handles_event<TABLE, STATE, EVENT>::value;
@@ -1705,7 +1695,7 @@ public:
                 [this, &event](auto& state) -> bool {
                     using state_type = std::decay_t<decltype(state)>;
                     using alternatives =
-                        typename TRANSITIONS::template find_transitions<state_type, EVENT>;
+                        typename TRANSITIONS::template transitions_for<state_type, EVENT>;
                     return this->template tryAlternatives<state_type>(alternatives{}, state,
                                                                       event);
                 },
@@ -1840,7 +1830,7 @@ private:
                       wildcard_shareable_for<EVENT>::template pred>;
 
     // Whether the active state has an exact group for EVENT - a refused
-    // exact group shadows the wildcard, exactly like find_transitions.
+    // exact group shadows the wildcard, exactly like transitions_for.
     // States without one contribute no code to the fold
     template<typename EVENT>
     bool exactAlternativesExist() const

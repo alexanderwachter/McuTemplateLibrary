@@ -122,11 +122,11 @@ namespace Table {
     // deduplicated, in order of first appearance -> off is the initial state
     static_assert(std::is_same_v<table::states, mtl::typelist<off, running, cooldown, locked>>);
 
-    static_assert(std::is_same_v<table::find_transition<off, button_press>::to, running>);
-    static_assert(std::is_same_v<table::find_transition<cooldown, fsm::timeout>::to, off>);
+    static_assert(std::is_same_v<table::transition_for<off, button_press>::to, running>);
+    static_assert(std::is_same_v<table::transition_for<cooldown, fsm::timeout>::to, off>);
     // pairs not in the table resolve to nil_type
-    static_assert(std::is_same_v<table::find_transition<running, lock_key>, mtl::nil_type>);
-    static_assert(std::is_same_v<table::find_transition<locked, button_press>, mtl::nil_type>);
+    static_assert(std::is_same_v<table::transition_for<running, lock_key>, mtl::nil_type>);
+    static_assert(std::is_same_v<table::transition_for<locked, button_press>, mtl::nil_type>);
 } // namespace Table
 
 namespace Concepts {
@@ -331,16 +331,16 @@ namespace Wildcard {
     // any_state is not a state of the machine
     static_assert(std::is_same_v<tbl::states, mtl::typelist<idle, stage1, stage2>>);
     // the wildcard matches states without an exact (state, event) pair
-    static_assert(std::is_same_v<tbl::find_transition<stage2, shutdown>::to, idle>);
-    static_assert(std::is_same_v<tbl::find_transition<stage1, advance>::to, stage2>);
+    static_assert(std::is_same_v<tbl::transition_for<stage2, shutdown>::to, idle>);
+    static_assert(std::is_same_v<tbl::transition_for<stage1, advance>::to, stage2>);
 
     // an exact pair takes precedence over the wildcard
     using with_override = fsm::transition_table<
         fsm::transition<fsm::from<idle>,           fsm::on<advance>,  fsm::to<stage1>>,
         fsm::transition<fsm::from<stage1>,         fsm::on<shutdown>, fsm::to<stage2>>,
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
-    static_assert(std::is_same_v<with_override::find_transition<stage1, shutdown>::to, stage2>);
-    static_assert(std::is_same_v<with_override::find_transition<stage2, shutdown>::to, idle>);
+    static_assert(std::is_same_v<with_override::transition_for<stage1, shutdown>::to, stage2>);
+    static_assert(std::is_same_v<with_override::transition_for<stage2, shutdown>::to, idle>);
 } // namespace Wildcard
 
 namespace Payload {
@@ -705,7 +705,7 @@ namespace SharedWildcard {
     };
 
     // b has an exact pair for kill whose guard refuses: the wildcard
-    // must stay shadowed there, exactly like find_transitions says
+    // must stay shadowed there, exactly like transitions_for says
     using shadow_tbl = fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
         fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,

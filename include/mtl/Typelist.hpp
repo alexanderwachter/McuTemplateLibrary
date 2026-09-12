@@ -204,6 +204,16 @@ struct front<typelist<FIRST, RESTs...>>
     using type = FIRST;
 };
 
+// The first type from the list, DEFAULT for an empty list
+template<concepts::typelist LIST, typename DEFAULT>
+struct front_or : std::type_identity<DEFAULT> {};
+
+template<typename FIRST, typename... RESTs, typename DEFAULT>
+struct front_or<typelist<FIRST, RESTs...>, DEFAULT> : std::type_identity<FIRST> {};
+
+template<concepts::typelist LIST, typename DEFAULT>
+using front_or_t = typename front_or<LIST, DEFAULT>::type;
+
 // Get the last type from the list
 template<concepts::typelist LIST>
 struct back;
