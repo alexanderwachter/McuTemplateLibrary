@@ -751,32 +751,22 @@ struct observing {
         this->template nonstaticEnter<NEW_STATE>(machine);
     }
 
-    // The one-state form: every value of the state notified
+    // The one-state form: no other state to compare against, which is the
+    // edge form against mtl::nil_type - every value counts as a change
     template<typename STATE, typename MACHINE>
     void onExit(MACHINE& machine)
     {
-        auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (requires { self.notifyExit(DERIVED::template annotation<STATE>()); }) {
-            self.notifyExit(DERIVED::template annotation<STATE>());
-        }
-        this->template setExit<STATE, mtl::nil_type>(internal::annotation_types_t<STATE>{});
-        this->template nonstaticExit<STATE>(machine);
+        this->template onExitFrom<STATE, mtl::nil_type>(machine);
     }
 
     template<typename STATE, typename MACHINE>
     void onEnter(MACHINE& machine)
     {
-        auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (requires { self.notifyEntry(DERIVED::template annotation<STATE>()); }) {
-            self.notifyEntry(DERIVED::template annotation<STATE>());
-        }
-        this->template setEnter<mtl::nil_type, STATE>(internal::annotation_types_t<STATE>{});
-        this->template nonstaticEnter<STATE>(machine);
+        this->template onEnterFrom<mtl::nil_type, STATE>(machine);
     }
 
 private:
-    // The set elements, each on its own change check (against nil_type:
-    // every element)
+    // The set elements, each on its own change check
     template<typename OLD_STATE, typename NEW_STATE, typename... Ts>
     void setExit(mtl::typelist<Ts...>)
     {
