@@ -10,7 +10,8 @@ its design.
 |---|---|
 | `include/mtl/Typelist.hpp`, `TypelistAlgorithms.hpp` | typelists and compile-time algorithms; everything else builds on them |
 | `include/mtl/TypeName.hpp` | compile-time type names (`short_name_of<T>` is the machine/state/event id everywhere) |
-| `include/mtl/StateMachine.hpp` | the `fsm` state machine: tables, machine, observers (`timed`, `observing`, `observer_group`), compile-time checks |
+| `include/mtl/StateMachine.hpp` | the `fsm` state machine: the contract comment, includes the parts below |
+| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups, guards), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `Observer.hpp` (hook forms, `observer_group`), `Traits.hpp` (reachability, features, coverage), `Core.hpp` (`state_machine`, dispatch) |
 | `include/mtl/StateMachineTrace.hpp` | `fsm::tracing` observer and the trace line grammar (target code) |
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |

@@ -65,7 +65,8 @@ the `_exact` forms accept 1, 8, 16, 32, 64 only.
 
 ## fsm - the state machine
 
-`include/mtl/StateMachine.hpp`. A machine is `fsm::state_machine<TABLE,
+`include/mtl/StateMachine.hpp` (the parts live in
+`include/mtl/statemachine/`). A machine is `fsm::state_machine<TABLE,
 OBSERVERs...>`; events go in through `process(event)`, which returns
 whether a transition fired.
 
