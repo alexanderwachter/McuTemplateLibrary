@@ -46,14 +46,14 @@ expecting the specific `static_assert` message - a class template's
 
 - Names: ALL_CAPS template parameters, packs ending in `s` (`TRANSITIONs`,
   `OBSERVERs`), `_t`/`_v` aliases for every trait, camelCase member
-  functions and hooks (`onEnterState`, `notifyEntry`, `getIf`).
+  functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`, `getIf`).
   Two layers of type names: the library (`include/mtl`) is snake_case
   like the standard library - `state_machine`, `timed`, `observing` -
   and so are all states, events, guards and tables everywhere
   (`reading`, `reading_done`, `sensor_table`); Zephyr glue and
   application classes are PascalCase - `TraceLogger`, `WorkqueueTimer`,
   a sample's `VirtualSensor`, `LedController`. Constexpr flags are
-  snake_case (`renotify_safe`, `source_agnostic`).
+  snake_case.
 - Concepts over SFINAE. Constrain template parameters with named concepts
   in a nested `concepts` namespace; detect optional members with
   requires-expressions and `if constexpr`. The one SFINAE idiom kept is
@@ -94,25 +94,28 @@ expecting the specific `static_assert` message - a class template's
   compose feature tables by hand from partial lists, and do not
   reimplement the filter in an application.
 - Transition bodies are instantiated per edge, not per event. Anything
-  that must know the event runs from `fire()`, which is already per
+  that must know the event runs from `doTransition()`, which is already per
   (transition, state, event) - do not push the event into the per-edge
-  bodies. The wildcard's shared body per (event, target) must stay
-  provably unobservable; a new hook needs its shareability rule in
-  `observer_shares_edge`, and `observer_group` is judged by its members
-  there (its forwarding hooks exist for every edge - checking them
-  blocked sharing wholesale and cost 2.7 kB in the USB-C firmware once).
+  bodies. A wildcard's state change is one shared body per (event,
+  target); its exit hooks run in the source's arm, its entry and
+  transition hooks after the change, once for a one-state hook and per
+  possible source (a switch on the saved index) for an edge hook. So a
+  new hook chooses its cost by its form: one state, or the edge
+  (expanding whole edges per source cost 2780 B on `pd_drp`, measured).
   Measure a library change on the firmware's `pd_drp` sample
-  (stm32g081b_eval, 57996 B at the time of writing) before and after.
+  (stm32g081b_eval, 57364 B at the time of writing) before and after.
 - `process()` instantiates the visitor for every state on purpose (the
   `return false` arms are the ignore semantics); do not "optimize" it.
 - Alternatives: first passing guard in table order fires, an unguarded
-  entry is last, a second unguarded one is a `static_assert`. A state's
-  own `(state, event)` group replaces the wildcard even when it refuses.
+  entry is last, a second unguarded one is a `static_assert`. The
+  wildcard is the last alternative after a state's own `(state, event)`
+  group: an unguarded own entry overrides it, a refused guarded one
+  falls through to it.
 - Observers are injected by reference and outlive the machine; the
   machine is neither copyable nor movable.
-- Construction enters the initial state with `OLD = mtl::nil_type`; the
-  shared wildcard path enters with `OLD = fsm::any_state`; `onTransition`
-  never fires on construction.
+- Construction enters the initial state with `FROM = mtl::nil_type` in
+  the edge forms (a one-state entry hook sees just the state); no
+  transition hook fires on construction.
 
 ## Contracts between C++ and the tools
 

@@ -341,6 +341,9 @@ namespace Wildcard {
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
     static_assert(std::is_same_v<fsm::transition_for_t<with_override, stage1, shutdown>::to, stage2>);
     static_assert(std::is_same_v<fsm::transition_for_t<with_override, stage2, shutdown>::to, idle>);
+    // the exact pair first, the wildcard behind it
+    static_assert(mtl::count_v<fsm::transitions_for_t<with_override, stage1, shutdown>> == 2);
+    static_assert(mtl::count_v<fsm::transitions_for_t<with_override, stage2, shutdown>> == 1);
 } // namespace Wildcard
 
 namespace Payload {
@@ -361,8 +364,8 @@ namespace Payload {
 
     // Driver observer: reads the payload delivered into the sending state
     struct tx_driver {
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterState(MACHINE& machine)
+        template<typename NEW_STATE, typename MACHINE>
+        void onEnter(MACHINE& machine)
         {
             if constexpr (std::is_same_v<NEW_STATE, sending>) {
                 transmitted.push_back(machine.template getIf<sending>()->msg.id);
@@ -470,13 +473,13 @@ namespace Internal {
     struct hook_counter {
         int enters = 0;
         int exits  = 0;
-        template<typename OLD_STATE, typename NEW_STATE, typename SM>
-        void onEnterState(SM&)
+        template<typename STATE, typename SM>
+        void onEnter(SM&)
         {
             ++enters;
         }
-        template<typename OLD_STATE, typename NEW_STATE, typename SM>
-        void onExitState(SM&)
+        template<typename STATE, typename SM>
+        void onExit(SM&)
         {
             ++exits;
         }
@@ -519,7 +522,6 @@ namespace AnnotationSets {
     };
     struct heat {
         bool on;
-        static constexpr bool idempotent = true; // re-notifying is harmless
         constexpr bool operator==(heat const&) const = default;
     };
 
@@ -563,17 +565,6 @@ namespace AnnotationSets {
         fsm::transition<fsm::from<lit>,  fsm::on<next>, fsm::to<bare>>,
         fsm::transition<fsm::from<bare>, fsm::on<next>, fsm::to<dark>>,
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
-
-    // shared wildcard facts per element: entering dead (heat only, an
-    // idempotent type) from an unknown source is fine for a heat
-    // observer, a level exit hook blocks sharing
-    struct heater : fsm::observing<heater> {
-        void notifyEntry(heat) {}
-    };
-    using machine_type = fsm::state_machine<tbl, heater>;
-    static_assert(heater::entry_shared_from<dead, lit>);
-    static_assert(heater::exit_silent<lit, machine_type>);
-    static_assert(!panel::exit_silent<lit, fsm::state_machine<tbl, panel>>);
 } // namespace AnnotationSets
 
 namespace Features {
@@ -652,10 +643,7 @@ namespace SharedWildcard {
         int code;
     };
 
-    // idempotent: re-notifying the unchanged value is declared
-    // harmless, so the wildcard may fire through the shared body
     struct mode_tag {
-        static constexpr bool idempotent = true;
         constexpr bool operator==(mode_tag const&) const = default;
     };
 
@@ -682,8 +670,8 @@ namespace SharedWildcard {
         void notifyEntry(mode_tag) { ++notified; }
     };
 
-    // an exit hook makes the wildcard unprovable: it must fall back to
-    // the per-source expansion and still deliver the exit value
+    // an exit hook: notified per source, so the value of the state
+    // left arrives on a wildcard edge too
     struct exit_watcher : fsm::observing<exit_watcher> {
         int exits = 0;
         template<typename STATE>
@@ -704,9 +692,16 @@ namespace SharedWildcard {
         static bool check(b const&) { return false; }
     };
 
-    // b has an exact pair for kill whose guard refuses: the wildcard
-    // must stay shadowed there, exactly like transitions_for says
-    using shadow_tbl = fsm::transition_table<
+    // a wildcard back into an annotated state: its entry has no edge to
+    // compare against
+    struct reset {};
+    using home_tbl = fsm::transition_table<
+        fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<reset>, fsm::to<a>>>;
+
+    // b has an own pair for kill whose guard refuses: the wildcard is
+    // the next alternative, exactly like transitions_for says
+    using guarded_tbl = fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
         fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,
         fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
@@ -970,31 +965,31 @@ void machineWithOnlyATimerObserver()
     check(tim.timer.armed); // running is a timed state
 }
 
-// --- optional onEntry()/onExit() hooks ------------------------------------
-namespace hooks {
+// --- entry is construction, exit is destruction -----------------------------
+namespace lifetime {
     int entries = 0;
     int exits   = 0;
 
     struct ping {};
-    struct plain { void onExit() { ++exits; } };    // no onEntry
-    struct hooked { void onEntry() { ++entries; } }; // no onExit
+    struct plain { ~plain() { ++exits; } };      // counts its exits
+    struct counted { counted() { ++entries; } }; // counts its entries
 
     using tbl = fsm::transition_table<
-        fsm::transition<fsm::from<plain>,  fsm::on<ping>, fsm::to<hooked>>,
-        fsm::transition<fsm::from<hooked>, fsm::on<ping>, fsm::to<plain>>>;
-} // namespace hooks
+        fsm::transition<fsm::from<plain>,   fsm::on<ping>, fsm::to<counted>>,
+        fsm::transition<fsm::from<counted>, fsm::on<ping>, fsm::to<plain>>>;
+} // namespace lifetime
 
-void entryAndExitHooks()
+void entryIsConstructionExitIsDestruction()
 {
-    using namespace hooks;
+    using namespace lifetime;
     fsm::state_machine<tbl> sm; // no timed states, no observers: nothing to inject
-    check(entries == 0 && exits == 0); // initial entry runs no exit, plain has no onEntry
+    check(entries == 0 && exits == 0); // the initial state is constructed in place, once
 
-    sm.process(ping{}); // plain -> hooked: plain::onExit, hooked::onEntry
+    sm.process(ping{}); // plain -> counted: ~plain(), counted()
     check(exits == 1);
     check(entries == 1);
 
-    sm.process(ping{}); // hooked -> plain: neither state has the other hook
+    sm.process(ping{}); // counted -> plain: neither counts this edge
     check(exits == 1);
     check(entries == 1);
 }
@@ -1047,11 +1042,11 @@ void guardBlocksAndAllows()
 // --- raw lifecycle hooks (observer without the fsm::observing base) ---------
 namespace raw_hooks {
     struct transition_counter {
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitState(MACHINE&) { ++exits; }
+        template<typename STATE, typename MACHINE>
+        void onExit(MACHINE&) { ++exits; }
 
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterState(MACHINE&) { ++enters; }
+        template<typename STATE, typename MACHINE>
+        void onEnter(MACHINE&) { ++enters; }
 
         int exits  = 0;
         int enters = 0;
@@ -1090,10 +1085,10 @@ namespace transition_hook {
         bool operator==(step const&) const = default;
     };
 
-    // wants the real source: the wildcard falls back to per-source bodies
+    // the edge form: pays one body per possible source on a wildcard
     struct recorder {
         template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
-        void onTransition(MACHINE&)
+        void onTransitionFrom(MACHINE&)
         {
             steps.push_back({mtl::short_name<FROM_STATE>(), mtl::short_name<EVENT>(),
                              mtl::short_name<TO_STATE>()});
@@ -1101,9 +1096,14 @@ namespace transition_hook {
         std::vector<step> steps;
     };
 
-    // accepts any_state as source: the wildcard stays shared
+    // the one-state form on top: on a wildcard the machine takes it, once,
+    // and the recorder writes any_state for the source it did not ask for
     struct agnostic_recorder : recorder {
-        static constexpr bool source_agnostic = true;
+        template<typename EVENT, typename TO_STATE, typename MACHINE>
+        void onTransition(MACHINE&)
+        {
+            steps.push_back({"any_state", mtl::short_name<EVENT>(), mtl::short_name<TO_STATE>()});
+        }
     };
 } // namespace transition_hook
 
@@ -1376,7 +1376,7 @@ void sharedWildcardFiresLikePerSource()
     check(!sm.process(go{}));     // no transition at all still reports false
 }
 
-void wildcardFallbackDeliversExitValues()
+void sharedWildcardDeliversExitValues()
 {
     using namespace SharedWildcard;
     exit_watcher watcher;
@@ -1384,24 +1384,47 @@ void wildcardFallbackDeliversExitValues()
 
     check(sm.process(go{}));  // a -> b: equal annotations, exit suppressed
     check(watcher.exits == 0);
-    check(sm.process(kill{3})); // per-source fallback: b's exit notified
+    check(sm.process(kill{3})); // wildcard from b: b's exit notified, the edge known there
     check(sm.is<dead>());
     check(watcher.exits == 1);
 }
 
-void refusedExactGroupShadowsWildcard()
+void wildcardEntryRenotifiesUnchangedValue()
+{
+    using namespace SharedWildcard;
+    mode_watcher watcher;
+    fsm::state_machine<home_tbl, mode_watcher> sm{watcher};
+
+    check(watcher.notified == 1); // initial entry into a
+    check(sm.process(go{}));      // a -> b: equal values, the edge suppresses
+    check(watcher.notified == 1);
+    check(sm.process(reset{}));   // wildcard into a: no edge, a's value notified again
+    check(sm.is<a>());
+    check(watcher.notified == 2);
+}
+
+void refusedOwnGroupFallsThroughToWildcard()
 {
     using namespace SharedWildcard;
     mode_watcher watcher;
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<shadow_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
+    fsm::state_machine<guarded_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
 
-    check(sm.process(go{}));     // a -> b
-    check(!sm.process(kill{1})); // b's exact pair refused: wildcard shadowed
-    check(sm.is<b>());
-    check(sm.process(go{}));     // b -> a
-    check(sm.process(kill{2}));  // a has no exact pair: the wildcard fires
-    check(sm.is<dead>() && sm.getIf<dead>()->code == 2);
+    check(sm.process(go{}));    // a -> b
+    check(sm.process(kill{1})); // b's own pair refused: the wildcard is next
+    check(sm.is<dead>() && sm.getIf<dead>()->code == 1);
+}
+
+void unguardedOwnEntryOverridesWildcard()
+{
+    using namespace Wildcard;
+    fsm::state_machine<with_override> sm;
+
+    check(sm.process(advance{}));  // idle -> stage1
+    check(sm.process(shutdown{})); // stage1's own pair always fires: not the wildcard
+    check(sm.is<stage2>());
+    check(sm.process(shutdown{})); // stage2 has no own pair: the wildcard
+    check(sm.is<idle>());
 }
 
 void deadlineSpansPhaseWithoutRearming()
@@ -1453,13 +1476,13 @@ void transitionHookSeesEdgeAndEvent()
     check(sm.process(go{})); // default-constructed target
     check(rec.steps.back() == step{"idle", "go", "busy"});
 
-    check(sm.process(kill{3})); // payload edge, per-source fallback: real source
+    check(sm.process(kill{3})); // payload edge, wildcard: the real source
     check(rec.steps.back() == step{"busy", "kill", "dead"});
     check(sm.getIf<dead>()->code == 3);
     check(rec.steps.size() == 3);
 }
 
-void sourceAgnosticHookKeepsWildcardShared()
+void sourceAgnosticHookSeesAnyState()
 {
     using namespace transition_hook;
     agnostic_recorder rec;
@@ -1483,13 +1506,12 @@ void observerGroupForwardsTransitionHook()
 
     check(sm.process(go{}));
     check(rec.steps == std::vector<step>{{"idle", "go", "busy"}});
-    check(sm.process(kill{1})); // the member wants the source: per-source fallback
+    check(sm.process(kill{1})); // the member is not agnostic: the real source
     check(rec.steps.back() == step{"busy", "kill", "dead"});
 }
 
-// A group is judged by its members: its own forwarding hooks exist for
-// every edge and must not block the shared wildcard body
-void observerGroupOfAgnosticMembersKeepsWildcardShared()
+// A group is source-agnostic when every member is
+void observerGroupOfAgnosticMembersIsAgnostic()
 {
     using namespace transition_hook;
     agnostic_recorder rec;
@@ -1529,7 +1551,7 @@ int statemachineTests()
     payloadReachesObserverThroughState();
     liveObservationDeliversInstanceValues();
     machineWithOnlyATimerObserver();
-    entryAndExitHooks();
+    entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
     rawHookObserverSeesEveryTransition();
     guardSeesTheEventPayload();
@@ -1543,12 +1565,14 @@ int statemachineTests()
     internalTransitionHandlesInPlace();
     timerInjectedByReference();
     transitionHookSeesEdgeAndEvent();
-    sourceAgnosticHookKeepsWildcardShared();
+    sourceAgnosticHookSeesAnyState();
     observerGroupForwardsTransitionHook();
-    observerGroupOfAgnosticMembersKeepsWildcardShared();
+    observerGroupOfAgnosticMembersIsAgnostic();
     sharedWildcardFiresLikePerSource();
-    wildcardFallbackDeliversExitValues();
-    refusedExactGroupShadowsWildcard();
+    sharedWildcardDeliversExitValues();
+    wildcardEntryRenotifiesUnchangedValue();
+    refusedOwnGroupFallsThroughToWildcard();
+    unguardedOwnEntryOverridesWildcard();
     deadlineSpansPhaseWithoutRearming();
     return failures;
 }

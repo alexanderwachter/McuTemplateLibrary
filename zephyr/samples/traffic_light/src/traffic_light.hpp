@@ -51,8 +51,7 @@ struct green {
     static constexpr auto timeout     = 6000ms; // full phase without a button press
     static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{false}, green_lamp{true});
 
-    int64_t entered = 0;
-    void onEntry() { entered = uptimeMs(); }
+    int64_t entered = uptimeMs(); // entry is construction
 };
 struct yellow {
     static constexpr auto timeout     = 1000ms;

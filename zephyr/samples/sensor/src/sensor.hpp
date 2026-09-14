@@ -46,14 +46,11 @@ struct calibrated {
 struct button {};
 
 // --- per-state annotations, observed by type: the LED pattern (the
-// LedController observer) and the sensor's power rail (PowerRail).
-// Re-switching the rail to its current level is harmless, so the type
-// says so - the button's any_state transition keeps its shared body
+// LedController observer) and the sensor's power rail (PowerRail)
 enum class led_pattern { off, on, blink };
 
 struct sensor_power {
     bool on;
-    static constexpr bool idempotent = true;
     constexpr bool operator==(sensor_power const&) const = default;
 };
 

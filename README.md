@@ -77,10 +77,12 @@ whether a transition fired.
   derived from the table. Give tables a name - `struct my_table :
   fsm::transition_table<...> {}` - and compose them from typelists
   (`mtl::concat_t`, `mtl::rebind_t`) to switch features in and out.
-- **States are plain classes.** Optional members are detected: `onEntry()`,
-  `onExit()`, `static constexpr timeout`, and any `static constexpr`
-  annotation an observer watches. The initial state is the first state
-  of the first transition unless `fsm::initial<S>` says otherwise.
+- **States are plain classes**, constructed on entry and destroyed on
+  exit: the constructor and the destructor are the entry and exit hooks.
+  Optional members are detected: `static constexpr timeout`, and any
+  `static constexpr` annotation an observer watches. The initial state
+  is the first state of the first transition unless `fsm::initial<S>`
+  says otherwise.
 - **Events carry payload.** A target state constructible from the event
   is constructed from it; otherwise it is default-constructed.
 - **Guards** gate a transition with `check(state, event)`, `check(state)`
@@ -104,9 +106,11 @@ whether a transition fired.
   included, so the table shrinks with the observers
   (`remove_features_t` for explicit tags).
 - **Observers** are the only extension point. Injected by reference,
-  they get `onExitState<OLD, NEW>`, `onEnterState<OLD, NEW>` and
-  `onTransition<FROM, EVENT, TO>` hooks (each optional) and a
-  compile-time `validate<TABLE>()`. Built on them: `fsm::timed<TIMER>`
+  they get `onExit<STATE>`, `onEnter<STATE>` and `onTransition<EVENT,
+  TO>` hooks - or the edge forms `onExitFrom<FROM, TO>`,
+  `onEnterFrom<FROM, TO>`, `onTransitionFrom<FROM, EVENT, TO>` when a
+  hook needs both states - each optional, and a compile-time
+  `validate<TABLE>()`. Built on them: `fsm::timed<TIMER>`
   (state timeouts through an injected timer policy), `fsm::observing`
   (value observers on state annotations, with compile-time change
   suppression: one named member via `observe_static`, or a state's
@@ -135,30 +139,29 @@ whether a transition fired.
   last of its `(state, event)` group; anything after it could never
   fire, so a second unguarded entry - a plain duplicate included - is a
   `static_assert`.
-- A state's own `(state, event)` group replaces the wildcard group
-  entirely, also when all its guards refuse: the result is false, not
-  the wildcard. An exact pair is therefore the way to exempt a state
-  from a wildcard. Wildcard entries form alternatives among themselves,
-  and the wildcard matches its own target too (a full self-transition).
+- The wildcard is the last alternative: a state's own `(state, event)`
+  group is tried first, then the wildcard group. An unguarded own entry
+  therefore overrides the wildcard - that is how a state is exempted
+  from one - while a guarded own entry that refuses falls through to
+  it. The wildcard matches its own target too (a full self-transition).
 - Internal transitions group with regular ones as alternatives, take a
   guard like any other, and do not support `from<any_state>`.
-- Order on a transition: observers' `onExitState` (old state alive),
-  the old state's `onExit()`, the new state is constructed, observers'
-  `onEnterState`, the new state's `onEntry()`, observers'
-  `onTransition`. Observers run in injection order: put `fsm::timed`
-  first so timers are armed before anything is notified, a tracer last
-  so its line follows the effects.
+- Order on a transition: observers' exit hooks (old state alive), the
+  old state is destroyed and the new one constructed, observers' entry
+  hooks, observers' transition hooks. Observers run in injection order:
+  put `fsm::timed` first so timers are armed before anything is
+  notified, a tracer last so its line follows the effects.
 - On construction the initial state is entered with
-  `OLD = mtl::nil_type`; no `onTransition` fires. On the shared wildcard
-  path the source is unknowable: hooks see `OLD = fsm::any_state`. A raw
-  `onExitState`/`onEnterState` hook, or an `onTransition` without
-  `static constexpr bool source_agnostic = true`, makes the machine fall
-  back to per-source bodies; a hook constrained to particular states
-  (`requires std::is_same_v<NEW_STATE, reading>`) does not.
+  `FROM = mtl::nil_type`; no transition hook fires. A wildcard changes
+  the state through one shared body for every source; a hook of one
+  state costs one body per state, a hook of the edge one per edge and,
+  on a wildcard, one per possible source - the author of an observer
+  decides between flash and exactness by the form of the hook.
 - `fsm::observing` notifies a value only when it changes between the two
-  states (decided at compile time for static annotations); an
-  annotation type declaring `idempotent`, or an observer declaring
-  `renotify_safe`, tolerates re-notification and keeps wildcards shared.
+  states, decided at compile time, wherever the edge is known: every
+  exact edge, and the exit side of a wildcard. A wildcard's entry has no
+  edge to compare against, so there every value of the state entered is
+  notified - the one place a driver may see the value it already holds.
 - Context types are default-constructible; context states need a
   constructor from `(context&)` and may add `(event const&, context&)`.
   Context is never reset by the machine - a state's constructor does it.

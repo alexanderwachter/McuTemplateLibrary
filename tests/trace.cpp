@@ -57,8 +57,6 @@ struct transition_tracer : fsm::tracing<transition_tracer> {
     int transitions = 0;
 };
 
-static_assert(fsm::tracing<line_tracer>::source_agnostic);
-
 int failures = 0;
 
 void check(bool condition, std::source_location location = std::source_location::current())
@@ -81,11 +79,10 @@ void tracerFormatsEveryKindOfChange()
     check(sm.process(go{}));
     check(tracer.lines.back() == "fsm[trace_table] idle -(go)-> busy");
 
-    // the wildcard fires through the shared body (the tracer is
-    // source-agnostic): one line, from any_state, no bogus initial line
+    // the wildcard: one line naming the real source, no bogus initial line
     check(sm.process(kill{7}));
     check(tracer.lines.size() == 4);
-    check(tracer.lines.back() == "fsm[trace_table] any_state -(kill)-> dead");
+    check(tracer.lines.back() == "fsm[trace_table] busy -(kill)-> dead");
     check(sm.getIf<dead>()->code == 7);
 }
 

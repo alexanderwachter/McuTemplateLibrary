@@ -59,7 +59,7 @@ public:
     // initial state: bind
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         requires std::is_same_v<OLD_STATE, mtl::nil_type>
-    void onEnterState(MACHINE& stateMachine)
+    void onEnterFrom(MACHINE& stateMachine)
     {
         stateMachine_ = &stateMachine;
         done_         = [](void* m, int value) {
@@ -68,12 +68,10 @@ public:
         failed_ = [](void* m) { static_cast<MACHINE*>(m)->process(sensor::reading_failed{}); };
     }
 
-    // transition to reading. Initial must be excluded, otherwise it is
-    // ambiguous with the function above
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        requires std::is_same_v<NEW_STATE, sensor::reading> &&
-                 (!std::is_same_v<OLD_STATE, mtl::nil_type>)
-    void onEnterState(MACHINE&)
+    // entering reading: a hook of one state, the edge does not matter
+    template<typename STATE, typename MACHINE>
+        requires std::is_same_v<STATE, sensor::reading>
+    void onEnter(MACHINE&)
     {
         k_work_reschedule(&work_, K_MSEC(300));
     }
@@ -110,9 +108,9 @@ public:
 
     // calibrating is the initial state: the construction-time entry is
     // the entry that starts the calibration, so one hook binds and starts
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        requires std::is_same_v<NEW_STATE, sensor::calibrating>
-    void onEnterState(MACHINE& stateMachine)
+    template<typename STATE, typename MACHINE>
+        requires std::is_same_v<STATE, sensor::calibrating>
+    void onEnter(MACHINE& stateMachine)
     {
         stateMachine_ = &stateMachine;
         done_         = [](void* m, int offset) {
@@ -177,10 +175,6 @@ struct LedDriver : fsm::observing<LedDriver> {
 // Picks the led_pattern element of each state's annotation set by the
 // overload's type alone
 struct LedController : fsm::observing<LedController> {
-    // re-notifying an unchanged pattern only restarts the same pattern:
-    // lets the button's any_state transition keep its shared body
-    static constexpr bool renotify_safe = true;
-
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
     // observers before the state machine they are injected into

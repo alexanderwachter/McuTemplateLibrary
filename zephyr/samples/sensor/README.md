@@ -18,7 +18,7 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Sub state machine as an observer | `LedController` picks the `led_pattern` element of each state's annotation set and runs the LED machine (led.hpp) |
 | Annotation sets, value observers with per-element change suppression | states carry `fsm::annotate(led_pattern, sensor_power)`; `LedController` and `PowerRail` consume one element each through their `notifyEntry` overloads (`reading -> retrying` changes the LED, not the rail); `LedDriver` observes the LED machine's `lit` member (`observe_static`) |
 | Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
-| Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's transition keeps its shared body (`renotify_safe`, constrained hooks) |
+| Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's `any_state` transition changes the state through one shared body; `fsm::timed`'s one-state hooks and the value observers' entries run once (a pattern or rail level is re-notified there), their exits and the tracer's line use the edge and pay one body per source |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
 
 The tables (`sensor_table<OBSERVERs...>`, filtered by the observers, and `led_table`) are

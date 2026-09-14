@@ -122,8 +122,8 @@ struct green {
     static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{false}, green_lamp{true});
     static constexpr auto timeout = 6000ms; // full phase without a button press
 
-    std::chrono::steady_clock::time_point entered;
-    void onEntry() { entered = std::chrono::steady_clock::now(); }
+    // entry is construction
+    std::chrono::steady_clock::time_point entered = std::chrono::steady_clock::now();
 };
 
 struct yellow {
