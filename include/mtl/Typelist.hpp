@@ -26,6 +26,9 @@ struct count;
 template<typename T>
 inline constexpr std::size_t count_v = count<T>::value;
 
+template<typename T>
+inline constexpr bool empty_v = count_v<T> == 0U;
+
 // A type that holds any number of types
 template<typename... T>
 struct typelist {};
