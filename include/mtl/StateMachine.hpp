@@ -1789,17 +1789,9 @@ private:
         using NEW_STATE = typename TRANSITION::to;
         source_         = current_.index();
         if constexpr (internal::payload_constructible_v<NEW_STATE, EVENT>) {
-            if constexpr (internal::context_holder<NEW_STATE>) {
-                current_.template emplace<NEW_STATE>(
-                    event, std::get<internal::context_of_t<NEW_STATE>>(contexts_));
-            } else {
-                current_.template emplace<NEW_STATE>(event);
-            }
-        } else if constexpr (internal::context_holder<NEW_STATE>) {
-            current_.template emplace<NEW_STATE>(
-                std::get<internal::context_of_t<NEW_STATE>>(contexts_));
+            this->template construct<NEW_STATE>(event);
         } else {
-            current_.template emplace<NEW_STATE>();
+            this->template construct<NEW_STATE>();
         }
         std::apply([&](auto&... observer) {
                        (this->template enterFromSource<NEW_STATE>(observer), ...);
@@ -1906,12 +1898,7 @@ private:
     void changeState(EVENT const& event)
     {
         this->template leave<OLD_STATE, NEW_STATE>();
-        if constexpr (internal::context_holder<NEW_STATE>) {
-            current_.template emplace<NEW_STATE>(
-                event, std::get<internal::context_of_t<NEW_STATE>>(contexts_));
-        } else {
-            current_.template emplace<NEW_STATE>(event);
-        }
+        this->template construct<NEW_STATE>(event);
         this->template enter<OLD_STATE, NEW_STATE>();
     }
 
@@ -1921,13 +1908,20 @@ private:
     void changeState()
     {
         this->template leave<OLD_STATE, NEW_STATE>();
+        this->template construct<NEW_STATE>();
+        this->template enter<OLD_STATE, NEW_STATE>();
+    }
+
+    // Constructs NEW_STATE in place, its context appended when it holds one
+    template<typename NEW_STATE, typename... ARGs>
+    void construct(ARGs const&... args)
+    {
         if constexpr (internal::context_holder<NEW_STATE>) {
             current_.template emplace<NEW_STATE>(
-                std::get<internal::context_of_t<NEW_STATE>>(contexts_));
+                args..., std::get<internal::context_of_t<NEW_STATE>>(contexts_));
         } else {
-            current_.template emplace<NEW_STATE>();
+            current_.template emplace<NEW_STATE>(args...);
         }
-        this->template enter<OLD_STATE, NEW_STATE>();
     }
 
     template<typename OLD_STATE, typename NEW_STATE>
