@@ -856,14 +856,6 @@ struct timed {
     template<typename STATE, typename MACHINE>
     void onEnter(MACHINE& machine)
     {
-        this->template startFor<STATE>(machine);
-    }
-
-private:
-
-    template<typename STATE, typename MACHINE>
-    void startFor(MACHINE& machine)
-    {
         if constexpr (internal::has_timeout_v<STATE>) {
             constexpr auto duration =
                 std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout);
@@ -874,6 +866,7 @@ private:
         }
     }
 
+private:
     // One body per machine, the duration passed as a 32-bit value:
     // materializing the 64-bit chrono constant in every per-state
     // start measured ~40 bytes each on Thumb-1 (-Os, GCC 14)
@@ -939,30 +932,18 @@ struct deadlined {
         if constexpr (internal::continues_deadline_v<OLD_STATE, NEW_STATE>) {
             // the phase's clock keeps running
         } else if constexpr (internal::active_deadline_v<NEW_STATE>) {
-            this->startTimer(deadlineMs<NEW_STATE>(), machine);
+            constexpr auto duration =
+                std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::deadline);
+            static_assert(duration.count() >= 0 &&
+                              duration.count() <= std::numeric_limits<std::uint32_t>::max(),
+                          "fsm::deadlined: deadline out of the 32-bit millisecond range");
+            this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
         } else if constexpr (internal::active_deadline_v<OLD_STATE>) {
             timer.stop(); // left the phase: unannotated or the target
         }
     }
 
 private:
-    // A state's deadline in milliseconds, 0 for none or the zero sentinel
-    template<typename STATE>
-    static constexpr std::uint32_t deadlineMs()
-    {
-        if constexpr (internal::active_deadline_v<STATE>) {
-            constexpr auto duration =
-                std::chrono::ceil<std::chrono::milliseconds>(STATE::deadline);
-            static_assert(duration.count() >= 0 &&
-                              duration.count() <= std::numeric_limits<std::uint32_t>::max(),
-                          "fsm::deadlined: deadline out of the 32-bit millisecond range");
-            return static_cast<std::uint32_t>(duration.count());
-        } else {
-            return 0;
-        }
-    }
-
-
     // One body per machine, the duration as a 32-bit value - same
     // measured rationale as fsm::timed::startTimer
     template<typename MACHINE>
@@ -1706,7 +1687,8 @@ public:
             current_);
         if constexpr (!mtl::empty_v<wildcards>) {
             if (outcome >= pending) {
-                return this->fireWildcard(outcome - pending, wildcards{}, event);
+                this->fireWildcard(outcome - pending, wildcards{}, event);
+                return true;
             }
         }
         return outcome == fired;
@@ -1770,14 +1752,13 @@ private:
 
     // After the dispatch: the chosen alternative's shared body
     template<typename... WILDCARDs, typename EVENT>
-    bool fireWildcard(std::size_t chosen, mtl::typelist<WILDCARDs...>, EVENT const& event)
+    void fireWildcard(std::size_t chosen, mtl::typelist<WILDCARDs...>, EVENT const& event)
     {
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(((chosen == INDEXs &&
                                 (this->template changeShared<WILDCARDs>(event), true)) ||
                                ...));
         }(std::index_sequence_for<WILDCARDs...>{});
-        return true;
     }
 
     // One shared body per (event, target): the change, then the entry and
