@@ -1074,25 +1074,35 @@ struct entries_for {
     struct pred : std::is_same<typename ENTRY::state, STATE> {};
 };
 
-// A range entry must contain the timeout, an exact duration must equal it
-template<typename STATE, typename ENTRY,
+// The duration a map bounds: a state's timeout, or its deadline
+template<typename STATE>
+struct timeout_of {
+    static constexpr auto value = STATE::timeout;
+};
+
+template<typename STATE>
+struct deadline_of {
+    static constexpr auto value = STATE::deadline;
+};
+
+// A range entry must contain the duration, an exact duration must equal it
+template<typename STATE, typename ENTRY, template<typename> typename DURATION,
          bool RANGE = concepts::timeout_range<std::remove_cvref_t<decltype(ENTRY::bound)>>>
-struct entry_bounds_timeout : std::bool_constant<ENTRY::bound.contains(STATE::timeout)> {};
+struct entry_bounds : std::bool_constant<ENTRY::bound.contains(DURATION<STATE>::value)> {};
 
-template<typename STATE, typename ENTRY>
-struct entry_bounds_timeout<STATE, ENTRY, false>
-    : std::bool_constant<STATE::timeout == ENTRY::bound> {};
+template<typename STATE, typename ENTRY, template<typename> typename DURATION>
+struct entry_bounds<STATE, ENTRY, DURATION, false>
+    : std::bool_constant<DURATION<STATE>::value == ENTRY::bound> {};
 
-// A timed state needs exactly one entry; the specialization keeps the
+// A bounded state needs exactly one entry; the specialization keeps the
 // entry's bound uninstantiated for any other count
-template<typename STATE, typename MAP,
+template<typename STATE, typename MAP, template<typename> typename DURATION,
          std::size_t ENTRIES = mtl::count_if_v<MAP, entries_for<STATE>::template pred>>
-struct timed_state_bounded : std::false_type {};
+struct state_bounded : std::false_type {};
 
-template<typename STATE, typename MAP>
-struct timed_state_bounded<STATE, MAP, 1>
-    : entry_bounds_timeout<STATE,
-                           mtl::find_if_t<MAP, entries_for<STATE>::template pred>> {};
+template<typename STATE, typename MAP, template<typename> typename DURATION>
+struct state_bounded<STATE, MAP, DURATION, 1>
+    : entry_bounds<STATE, mtl::find_if_t<MAP, entries_for<STATE>::template pred>, DURATION> {};
 
 template<typename TABLE>
 struct maps_a_state_of {
@@ -1107,7 +1117,7 @@ struct maps_a_state_of {
 // timeout_range contains its timeout (an exact duration must equal
 // it), an untimed state has none
 template<typename MAP, typename STATE, bool TIMED = internal::has_timeout_v<STATE>>
-struct timeout_within_bounds : internal::timed_state_bounded<STATE, MAP> {};
+struct timeout_within_bounds : internal::state_bounded<STATE, MAP, internal::timeout_of> {};
 
 template<typename MAP, typename STATE>
 struct timeout_within_bounds<MAP, STATE, false>
@@ -1119,10 +1129,11 @@ inline constexpr bool timeout_within_bounds_v = timeout_within_bounds<MAP, STATE
 
 namespace internal {
 
-template<typename MAP>
+// The per-state check of a map as a predicate over the table's states
+template<typename MAP, template<typename, typename> typename WITHIN_BOUNDS>
 struct bounded_in {
     template<typename STATE>
-    struct pred : timeout_within_bounds<MAP, STATE> {};
+    struct pred : WITHIN_BOUNDS<MAP, STATE> {};
 };
 
 } // namespace internal
@@ -1136,39 +1147,18 @@ template<typename TABLE, typename MAP>
 struct timeouts_within_bounds
     : std::bool_constant<
           mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred> &&
-          mtl::all_of_v<typename TABLE::states, internal::bounded_in<MAP>::template pred>> {};
+          mtl::all_of_v<typename TABLE::states,
+                        internal::bounded_in<MAP, timeout_within_bounds>::template pred>> {};
 
 template<typename TABLE, typename MAP>
 inline constexpr bool timeouts_within_bounds_v = timeouts_within_bounds<TABLE, MAP>::value;
 
-namespace internal {
-
-// The deadline mirror of the timeout bounds chain; maps reuse
-// timed_by entries. The zero sentinel counts as no deadline
-template<typename STATE, typename ENTRY,
-         bool RANGE = concepts::timeout_range<std::remove_cvref_t<decltype(ENTRY::bound)>>>
-struct entry_bounds_deadline : std::bool_constant<ENTRY::bound.contains(STATE::deadline)> {};
-
-template<typename STATE, typename ENTRY>
-struct entry_bounds_deadline<STATE, ENTRY, false>
-    : std::bool_constant<STATE::deadline == ENTRY::bound> {};
-
-template<typename STATE, typename MAP,
-         std::size_t ENTRIES = mtl::count_if_v<MAP, entries_for<STATE>::template pred>>
-struct deadline_state_bounded : std::false_type {};
-
-template<typename STATE, typename MAP>
-struct deadline_state_bounded<STATE, MAP, 1>
-    : entry_bounds_deadline<STATE,
-                            mtl::find_if_t<MAP, entries_for<STATE>::template pred>> {};
-
-} // namespace internal
-
 // Whether STATE is consistent with a deadline-range map (timed_by
 // entries): a state with an active deadline has exactly one entry
-// bounding it, every other state has none
+// bounding it, every other state has none. The zero sentinel counts as
+// no deadline
 template<typename MAP, typename STATE, bool ACTIVE = internal::active_deadline_v<STATE>>
-struct deadline_within_bounds : internal::deadline_state_bounded<STATE, MAP> {};
+struct deadline_within_bounds : internal::state_bounded<STATE, MAP, internal::deadline_of> {};
 
 template<typename MAP, typename STATE>
 struct deadline_within_bounds<MAP, STATE, false>
@@ -1178,16 +1168,6 @@ struct deadline_within_bounds<MAP, STATE, false>
 template<typename MAP, typename STATE>
 inline constexpr bool deadline_within_bounds_v = deadline_within_bounds<MAP, STATE>::value;
 
-namespace internal {
-
-template<typename MAP>
-struct deadline_bounded_in {
-    template<typename STATE>
-    struct pred : deadline_within_bounds<MAP, STATE> {};
-};
-
-} // namespace internal
-
 // Proves the table's states consistent with a deadline-range map,
 // both ways - the deadline counterpart of timeouts_within_bounds
 template<typename TABLE, typename MAP>
@@ -1195,7 +1175,7 @@ struct deadlines_within_bounds
     : std::bool_constant<
           mtl::all_of_v<MAP, internal::maps_a_state_of<TABLE>::template pred> &&
           mtl::all_of_v<typename TABLE::states,
-                        internal::deadline_bounded_in<MAP>::template pred>> {};
+                        internal::bounded_in<MAP, deadline_within_bounds>::template pred>> {};
 
 template<typename TABLE, typename MAP>
 inline constexpr bool deadlines_within_bounds_v = deadlines_within_bounds<TABLE, MAP>::value;
