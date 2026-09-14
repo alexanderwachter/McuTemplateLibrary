@@ -1793,14 +1793,11 @@ private:
         } else {
             this->template construct<NEW_STATE>();
         }
-        std::apply([&](auto&... observer) {
-                       (this->template enterFromSource<NEW_STATE>(observer), ...);
-                   },
-                   observers_);
-        std::apply([&](auto&... observer) {
-                       (this->template transitionFromSource<EVENT, NEW_STATE>(observer), ...);
-                   },
-                   observers_);
+        this->forEachObserver(
+            [&](auto& observer) { this->template enterFromSource<NEW_STATE>(observer); });
+        this->forEachObserver([&](auto& observer) {
+            this->template transitionFromSource<EVENT, NEW_STATE>(observer);
+        });
     }
 
     // The switch on the state left: f(std::type_identity<STATE>{}) for
@@ -1884,11 +1881,9 @@ private:
     template<typename FROM_STATE, typename EVENT, typename TO_STATE>
     void notifyTransition()
     {
-        std::apply(
-            [this](auto&... observer) {
-                (internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(observer, *this), ...);
-            },
-            observers_);
+        this->forEachObserver([this](auto& observer) {
+            internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(observer, *this);
+        });
     }
 
     // Leave OLD_STATE, construct NEW_STATE, enter it. With payload:
@@ -1927,19 +1922,22 @@ private:
     template<typename OLD_STATE, typename NEW_STATE>
     void leave()
     {
-        std::apply([this](auto&... observer) {
-                       (internal::exitHook<OLD_STATE, NEW_STATE>(observer, *this), ...);
-                   },
-                   observers_);
+        this->forEachObserver(
+            [this](auto& observer) { internal::exitHook<OLD_STATE, NEW_STATE>(observer, *this); });
     }
 
     template<typename OLD_STATE, typename NEW_STATE>
     void enter()
     {
-        std::apply([this](auto&... observer) {
-                       (internal::enterHook<OLD_STATE, NEW_STATE>(observer, *this), ...);
-                   },
-                   observers_);
+        this->forEachObserver(
+            [this](auto& observer) { internal::enterHook<OLD_STATE, NEW_STATE>(observer, *this); });
+    }
+
+    // Every observer in injection order
+    template<typename F>
+    void forEachObserver(F&& f)
+    {
+        std::apply([&](auto&... observer) { (f(observer), ...); }, observers_);
     }
 
     context_tuple contexts_{}; // one shared instance per distinct context type
