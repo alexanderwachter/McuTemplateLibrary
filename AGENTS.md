@@ -104,7 +104,10 @@ expecting the specific `static_assert` message - a class template's
   new hook chooses its cost by its form: one state, or the edge
   (expanding whole edges per source cost 2780 B on `pd_drp`, measured).
   Measure a library change on the firmware's `pd_drp` sample
-  (stm32g081b_eval, 57364 B at the time of writing) before and after.
+  (stm32g081b_eval, 58728 B at the time of writing) before and after,
+  with the firmware's own observers compiling against the library
+  version under test: a hook the machine does not detect (an old name)
+  vanishes silently and makes the number look better than it is.
 - `process()` instantiates the visitor for every state on purpose (the
   `return false` arms are the ignore semantics); do not "optimize" it.
 - Alternatives: first passing guard in table order fires, an unguarded
