@@ -288,7 +288,12 @@ private:
                           self.notifyExit(
                               DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
                       }) {
-            self.notifyExit(DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
+            // The machine is in STATE here, so getIf() cannot fail. The check
+            // is what stops GCC reporting a potential null dereference inside
+            // <variant> once this inlines at -Os.
+            if (auto* const state = machine.template getIf<STATE>(); state != nullptr) {
+                self.notifyExit(DERIVED::observe_nonstatic(*state));
+            }
         }
     }
 
@@ -300,7 +305,12 @@ private:
                           self.notifyEntry(
                               DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
                       }) {
-            self.notifyEntry(DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
+            // The machine is in STATE here, so getIf() cannot fail. The check
+            // is what stops GCC reporting a potential null dereference inside
+            // <variant> once this inlines at -Os.
+            if (auto* const state = machine.template getIf<STATE>(); state != nullptr) {
+                self.notifyEntry(DERIVED::observe_nonstatic(*state));
+            }
         }
     }
 };
