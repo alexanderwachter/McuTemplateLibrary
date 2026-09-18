@@ -119,7 +119,12 @@ whether a transition fired.
   elements reach the observer's `notifyEntry`/`notifyExit` overloads by
   type, each suppressed on its own), `fsm::tracing` (transition trace lines),
   `fsm::observer_group` (several observers as one). A state feature no
-  observer consumes is silently unobserved.
+  observer consumes is silently unobserved. Observers should watch
+  annotations, not states: an observer naming a state (`if constexpr
+  (std::is_same_v<STATE, reading>)`) is coupled to that table, while
+  one consuming `led_pattern` works with any table whose states carry
+  it - the table author decides what each state means, the observer
+  only what to do with it.
 - **Checked at compile time.** Malformed transitions, dead alternatives,
   an `initial<>` that is no state, timed states without a timeout
   transition (with `fsm::timed`), guards not matching their state,

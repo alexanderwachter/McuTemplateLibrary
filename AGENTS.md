@@ -64,6 +64,13 @@ expecting the specific `static_assert` message - a class template's
   register by writing overloads: a state's `fsm::annotate(a, b)` set is
   matched to `notifyEntry(A)`/`notifyExit(B)` by type; `observe_static`
   remains for a single named member.
+- Observers observe annotations, not states. A hook that names a state
+  (`if constexpr (std::is_same_v<STATE, reading>)`) couples the observer
+  to one table; an annotation type decouples them - the state says what
+  it means, the observer says what to do about it, and either side can
+  change without the other. Reserve state-naming hooks for glue that
+  is part of the table's own module (the samples' virtual sensor, the
+  firmware's port routers).
 - Traits that name an optional member (`STATE::annotations`,
   `STATE::feature`) are specializations constrained on a concept, never
   a `&&` of two instantiations: the second operand gets substituted for
