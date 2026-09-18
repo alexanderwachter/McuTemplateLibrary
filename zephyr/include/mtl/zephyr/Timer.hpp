@@ -1,15 +1,17 @@
 /*
  * Zephyr timer policies for fsm::timed.
  *
- * IsrTimer runs the expiry - and with it the machine's
- * process(fsm::timeout) - straight from k_timer's ISR context. Use it
- * only when every other event source of the machine is serialized with
- * that ISR (e.g. everything runs under irq_lock or from the same IRQ).
+ * WorkqueueTimer is the policy to use: it runs the expiry from a
+ * k_work_delayable on a workqueue (the system workqueue by default).
+ * Feeding the machine's other events from the same workqueue
+ * serializes everything without further locking.
  *
- * WorkqueueTimer runs the expiry from a k_work_delayable on a
- * workqueue (the system workqueue by default). Feeding the machine's
- * other events from the same workqueue serializes everything without
- * further locking - the intended setup.
+ * IsrTimer runs the expiry - and with it the machine's
+ * process(fsm::timeout), a state change with its constructors and
+ * hooks - straight from k_timer's ISR context. That is a race against
+ * every process() call from thread context, and interrupt latency
+ * proportional to the biggest state. Reserve it for machines whose
+ * every event source runs under the same lock or from the same IRQ.
  *
  * Both tolerate stop() on an unarmed timer and restart on start()
  * (policy contract). Cancelling does not wait for an in-flight
