@@ -179,7 +179,9 @@ public:
         bool changed = outcome == fired;
         if constexpr (!mtl::empty_v<wildcards>) {
             if (outcome >= pending) {
-                this->fireWildcard(outcome - pending, wildcards{}, event);
+                // the state left is still the current one: its index is
+                // the source the edge-form hooks may ask for
+                this->fireWildcard(outcome - pending, current_.index(), wildcards{}, event);
                 changed = true;
             }
         }
@@ -241,11 +243,12 @@ private:
 
     // After the dispatch: the chosen alternative's shared body
     template<typename... WILDCARDs, typename EVENT>
-    void fireWildcard(std::size_t chosen, mtl::typelist<WILDCARDs...>, EVENT const& event)
+    void fireWildcard(std::size_t chosen, std::size_t source, mtl::typelist<WILDCARDs...>,
+                      EVENT const& event)
     {
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(((chosen == INDEXs &&
-                                (this->template changeShared<WILDCARDs>(event), true)) ||
+                                (this->template changeShared<WILDCARDs>(source, event), true)) ||
                                ...));
         }(std::index_sequence_for<WILDCARDs...>{});
     }
@@ -254,26 +257,19 @@ private:
     // transition hooks - the one-state forms once, an edge form per
     // possible source through the switch on the state left
     template<typename TRANSITION, typename EVENT>
-    void changeShared(EVENT const& event)
+    void changeShared(std::size_t source, EVENT const& event)
     {
         using NEW_STATE = typename TRANSITION::to;
-        // the source is only kept for an observer without the one-state
-        // form of a hook delivered here: it may want the edge
-        if constexpr (((!internal::has_enter<OBSERVERs, NEW_STATE, state_machine> ||
-                        !internal::has_transition<OBSERVERs, EVENT, NEW_STATE, state_machine>) ||
-                       ...)) {
-            source_ = current_.index();
-        }
         if constexpr (internal::payload_constructible_v<NEW_STATE, EVENT>) {
             this->template construct<NEW_STATE>(event);
         } else {
             this->template construct<NEW_STATE>();
         }
         this->forEachObserver([&](auto& observer) {
-            this->template enterFromSource<EVENT, NEW_STATE>(observer);
+            this->template enterFromSource<EVENT, NEW_STATE>(observer, source);
         });
         this->forEachObserver([&](auto& observer) {
-            this->template transitionFromSource<EVENT, NEW_STATE>(observer);
+            this->template transitionFromSource<EVENT, NEW_STATE>(observer, source);
         });
     }
 
@@ -298,24 +294,24 @@ private:
     }
 
     template<typename EVENT, typename NEW_STATE, typename OBSERVER>
-    void enterFromSource(OBSERVER& observer)
+    void enterFromSource(OBSERVER& observer, [[maybe_unused]] std::size_t source)
     {
         if constexpr (internal::has_enter<OBSERVER, NEW_STATE, state_machine>) {
             observer.template onEnter<NEW_STATE>(*this);
         } else {
-            this->template withSource<EVENT>(source_, [&](auto tag) {
+            this->template withSource<EVENT>(source, [&](auto tag) {
                 internal::enterHook<typename decltype(tag)::type, NEW_STATE>(observer, *this);
             });
         }
     }
 
     template<typename EVENT, typename NEW_STATE, typename OBSERVER>
-    void transitionFromSource(OBSERVER& observer)
+    void transitionFromSource(OBSERVER& observer, [[maybe_unused]] std::size_t source)
     {
         if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, state_machine>) {
             observer.template onTransition<EVENT, NEW_STATE>(*this);
         } else {
-            this->template withSource<EVENT>(source_, [&](auto tag) {
+            this->template withSource<EVENT>(source, [&](auto tag) {
                 internal::transitionHook<typename decltype(tag)::type, EVENT, NEW_STATE>(observer,
                                                                                          *this);
             });
@@ -440,7 +436,6 @@ private:
 
     context_tuple contexts_{}; // one shared instance per distinct context type
     std::tuple<OBSERVERs&...> observers_;
-    std::size_t source_ = 0; // set by a wildcard's shared body before the change
 #if MTL_FSM_CHECKS
     bool processing_ = false;
 #endif

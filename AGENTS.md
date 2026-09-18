@@ -107,7 +107,8 @@ expecting the specific `static_assert` message - a class template's
   bodies. A wildcard's state change is one shared body per (event,
   target); its exit hooks run in the source's arm, its entry and
   transition hooks after the change, once for a one-state hook and per
-  possible source (a switch on the saved index) for an edge hook. So a
+  possible source (a switch on the variant index read before the
+  dispatch) for an edge hook. So a
   new hook chooses its cost by its form: one state, or the edge
   (expanding whole edges per source cost 2780 B on `pd_drp`, measured).
   Measure a library change on the firmware's `pd_drp` sample
