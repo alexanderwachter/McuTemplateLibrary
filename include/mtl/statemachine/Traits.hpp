@@ -270,4 +270,27 @@ template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<
 inline constexpr bool all_states_notified_v =
     all_states_notified<OBSERVER, TABLE, EXCEPTIONS>::value;
 
+namespace internal {
+
+template<typename T>
+struct carrying {
+    template<typename STATE>
+    struct pred : std::bool_constant<has_annotation_v<STATE, T>> {};
+};
+
+} // namespace internal
+
+// Whether any state of TABLE carries the annotation T. An observer that
+// watches an annotation no state carries is wired to nothing, and
+// silently so - the dispatch has no state to offer it. Assert it from
+// the observer's validate() hook for the annotations it handles:
+//   static_assert(fsm::annotation_in_table_v<TABLE, my_annotation>);
+template<typename TABLE, typename T>
+struct annotation_in_table
+    : std::bool_constant<
+          mtl::any_of_v<typename TABLE::states, internal::carrying<T>::template pred>> {};
+
+template<typename TABLE, typename T>
+inline constexpr bool annotation_in_table_v = annotation_in_table<TABLE, T>::value;
+
 } // namespace fsm
