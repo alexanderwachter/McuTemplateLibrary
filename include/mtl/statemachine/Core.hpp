@@ -14,12 +14,33 @@
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
 
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+// Debug checks on the machine's use: process() re-entered from a hook
+// (the contract forbids it: on the wildcard path the exit hooks have
+// run but the state has not changed yet), or a state constructor that
+// threw and left the machine without a state. On without NDEBUG;
+// define MTL_FSM_CHECKS to 0 or 1 to decide explicitly - the same
+// value in every translation unit, the flag is a member. The failing
+// check goes through MTL_FSM_ASSERT(condition, "message"), assert() by
+// default
+#ifndef MTL_FSM_CHECKS
+#  ifdef NDEBUG
+#    define MTL_FSM_CHECKS 0
+#  else
+#    define MTL_FSM_CHECKS 1
+#  endif
+#endif
+
+#ifndef MTL_FSM_ASSERT
+#  define MTL_FSM_ASSERT(condition, message) assert((condition) && message)
+#endif
 
 namespace fsm {
 
@@ -103,7 +124,9 @@ public:
           current_(std::make_from_tuple<state_variant>(
               internal::initialArgs<initial_state>(contexts_)))
     {
+        this->beginProcessing();
         this->template enter<mtl::nil_type, initial_state>();
+        this->endProcessing();
     }
 
     // Observer hooks receive *this and may retain the address beyond the
@@ -124,6 +147,7 @@ public:
     bool process(EVENT const& event)
     {
         using wildcards = wildcard_transitions_t<TRANSITIONS, EVENT>;
+        this->beginProcessing();
         std::size_t const outcome = internal::dispatch(
             [this, &event](auto& state) -> std::size_t {
                 using state_type = std::decay_t<decltype(state)>;
@@ -152,13 +176,15 @@ public:
                 }
             },
             current_);
+        bool changed = outcome == fired;
         if constexpr (!mtl::empty_v<wildcards>) {
             if (outcome >= pending) {
                 this->fireWildcard(outcome - pending, wildcards{}, event);
-                return true;
+                changed = true;
             }
         }
-        return outcome == fired;
+        this->endProcessing();
+        return changed;
     }
 
     // Is STATE the active state?
@@ -170,12 +196,8 @@ public:
 
     // Pointer to the active state object, nullptr if STATE is not active.
     // The next transition destroys the object: do not keep the pointer.
-    template<concepts::state STATE>
-    [[nodiscard]] STATE* getIf()
-    {
-        return std::get_if<STATE>(&current_);
-    }
-
+    // Read-only: every mutation goes through process() - a state changes
+    // itself in an internal transition
     template<concepts::state STATE>
     [[nodiscard]] STATE const* getIf() const
     {
@@ -235,7 +257,13 @@ private:
     void changeShared(EVENT const& event)
     {
         using NEW_STATE = typename TRANSITION::to;
-        source_         = current_.index();
+        // the source is only kept for an observer without the one-state
+        // form of a hook delivered here: it may want the edge
+        if constexpr (((!internal::has_enter<OBSERVERs, NEW_STATE, state_machine> ||
+                        !internal::has_transition<OBSERVERs, EVENT, NEW_STATE, state_machine>) ||
+                       ...)) {
+            source_ = current_.index();
+        }
         if constexpr (internal::payload_constructible_v<NEW_STATE, EVENT>) {
             this->template construct<NEW_STATE>(event);
         } else {
@@ -302,11 +330,9 @@ private:
     template<typename STATE, typename... GUARDEDs, typename EVENT>
     bool tryGuarded(mtl::typelist<GUARDEDs...>, STATE& state, EVENT const& event)
     {
-        bool fired = false;
-        static_cast<void>(((internal::checkGuard<typename GUARDEDs::guard>(state, event) &&
-                            (fired = this->template doTransition<GUARDEDs>(state, event), true)) ||
-                           ...));
-        return fired;
+        return ((internal::checkGuard<typename GUARDEDs::guard>(state, event) &&
+                 (this->template doTransition<GUARDEDs>(state, event), true)) ||
+                ...);
     }
 
     // Already instantiated per (transition, state, event): the only
@@ -314,7 +340,7 @@ private:
     // onTransition hook still learns the event. After the emplace the
     // state reference is dead - the hook only ever receives the machine
     template<typename TRANSITION, typename STATE, typename EVENT>
-    bool doTransition(STATE& state, EVENT const& event)
+    void doTransition(STATE& state, EVENT const& event)
     {
         using TO_STATE = typename TRANSITION::to;
         if constexpr (internal::is_internal_v<TRANSITION>) {
@@ -328,7 +354,6 @@ private:
             this->template changeState<STATE, TO_STATE>();
         }
         this->template notifyTransition<STATE, EVENT, TO_STATE>();
-        return true;
     }
 
     // Runs after the transition completed (new state constructed and
@@ -395,9 +420,30 @@ private:
         std::apply([&](auto&... observer) { (f(observer), ...); }, observers_);
     }
 
+    // The debug checks (MTL_FSM_CHECKS) around every run of hooks
+    void beginProcessing()
+    {
+#if MTL_FSM_CHECKS
+        MTL_FSM_ASSERT(!processing_, "fsm: process() re-entered from a hook");
+        MTL_FSM_ASSERT(!current_.valueless_by_exception(),
+                       "fsm: a state constructor threw, the machine has no state");
+        processing_ = true;
+#endif
+    }
+
+    void endProcessing()
+    {
+#if MTL_FSM_CHECKS
+        processing_ = false;
+#endif
+    }
+
     context_tuple contexts_{}; // one shared instance per distinct context type
     std::tuple<OBSERVERs&...> observers_;
     std::size_t source_ = 0; // set by a wildcard's shared body before the change
+#if MTL_FSM_CHECKS
+    bool processing_ = false;
+#endif
     state_variant current_; // constructed by the constructor via initialArgs()
 };
 

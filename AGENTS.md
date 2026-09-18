@@ -110,6 +110,13 @@ expecting the specific `static_assert` message - a class template's
   vanishes silently and makes the number look better than it is.
 - `process()` instantiates the visitor for every state on purpose (the
   `return false` arms are the ignore semantics); do not "optimize" it.
+- Debug checks (`MTL_FSM_CHECKS`: re-entered `process()`, valueless
+  variant) follow NDEBUG and report through `MTL_FSM_ASSERT`; the
+  library stays platform-agnostic, so a Zephyr build wires them itself -
+  the module's `zephyr/CMakeLists.txt` keys them on `CONFIG_ASSERT`, an
+  application including the headers directly must do the same (they
+  cost 1.6 kB on `pd_drp` when left on). `getIf()` is const-only: a
+  state changes itself in an internal transition.
 - Alternatives: first passing guard in table order fires, an unguarded
   entry is last, a second unguarded one is a `static_assert`. The
   wildcard is the last alternative after a state's own `(state, event)`

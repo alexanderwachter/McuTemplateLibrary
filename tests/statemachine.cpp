@@ -1011,8 +1011,10 @@ void entryIsConstructionExitIsDestruction()
 // --- guarded transitions ----------------------------------------------------
 namespace guards {
     struct push {};
+    struct unlock {};
     struct gate {
         bool open = false;
+        void handle(unlock const&) { open = true; }
     };
     struct passed {};
 
@@ -1027,6 +1029,7 @@ namespace guards {
     using tbl = fsm::transition_table<
         fsm::transition<fsm::from<gate>,   fsm::on<push>, fsm::to<passed>,
                         fsm::guard<gate_is_open>>,
+        fsm::internal_transition<fsm::from<gate>, fsm::on<unlock>>,
         fsm::transition<fsm::from<passed>, fsm::on<push>, fsm::to<gate>,
                         fsm::guard<return_allowed>>>;
 } // namespace guards
@@ -1039,8 +1042,8 @@ void guardBlocksAndAllows()
     check(!sm.process(push{})); // gate closed: guard blocks, nothing happens
     check(sm.is<gate>());
 
-    sm.getIf<gate>()->open = true;
-    check(sm.process(push{}));  // guard passes now
+    check(sm.process(unlock{})); // the state opens itself in place
+    check(sm.process(push{}));   // guard passes now
     check(sm.is<passed>());
 
     return_allowed::allow = false;
@@ -1347,7 +1350,7 @@ void internalTransitionHandlesInPlace()
     check(sm.is<waiting>());
 
     // with the guard failing, the fallback transition fires
-    sm.getIf<waiting>()->context.noted = 0;
+    check(sm.process(note{0})); // clears noted in place
     check(sm.process(tick{}));
     check(sm.is<done>());
     check(!tim.timer.armed);
