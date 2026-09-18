@@ -344,6 +344,20 @@ namespace Wildcard {
     // the exact pair first, the wildcard behind it
     static_assert(mtl::count_v<fsm::transitions_for_t<with_override, stage1, shutdown>> == 2);
     static_assert(mtl::count_v<fsm::transitions_for_t<with_override, stage2, shutdown>> == 1);
+
+    // An edge hook is delivered per possible source of a wildcard: stage1
+    // overrides the shutdown wildcard, so the edge stage1 -> idle can
+    // never fire and must not even be instantiated
+    struct edge_recorder {
+        template<typename FROM, typename TO, typename MACHINE>
+        void onEnterFrom(MACHINE&)
+        {
+            static_assert(!(std::is_same_v<FROM, stage1> && std::is_same_v<TO, idle>),
+                          "an impossible wildcard edge was instantiated");
+            ++entries;
+        }
+        int entries = 0;
+    };
 } // namespace Wildcard
 
 namespace Payload {
@@ -1418,13 +1432,16 @@ void refusedOwnGroupFallsThroughToWildcard()
 void unguardedOwnEntryOverridesWildcard()
 {
     using namespace Wildcard;
-    fsm::state_machine<with_override> sm;
+    edge_recorder edges;
+    fsm::state_machine<with_override, edge_recorder> sm{edges};
 
+    check(edges.entries == 1);     // construction
     check(sm.process(advance{}));  // idle -> stage1
     check(sm.process(shutdown{})); // stage1's own pair always fires: not the wildcard
     check(sm.is<stage2>());
     check(sm.process(shutdown{})); // stage2 has no own pair: the wildcard
     check(sm.is<idle>());
+    check(edges.entries == 4);     // the wildcard's entry delivered per source once
 }
 
 void deadlineSpansPhaseWithoutRearming()

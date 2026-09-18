@@ -241,34 +241,41 @@ private:
         } else {
             this->template construct<NEW_STATE>();
         }
-        this->forEachObserver(
-            [&](auto& observer) { this->template enterFromSource<NEW_STATE>(observer); });
+        this->forEachObserver([&](auto& observer) {
+            this->template enterFromSource<EVENT, NEW_STATE>(observer);
+        });
         this->forEachObserver([&](auto& observer) {
             this->template transitionFromSource<EVENT, NEW_STATE>(observer);
         });
     }
 
     // The switch on the state left: f(std::type_identity<STATE>{}) for
-    // the state at INDEX. Arms whose f is empty cost nothing
-    template<typename F>
+    // the state at INDEX. Only the states that can reach a wildcard for
+    // EVENT get an arm; arms whose f is empty cost nothing
+    template<typename EVENT, typename F>
     void withSource(std::size_t index, F&& f)
     {
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
-            static_cast<void>(
-                ((index == INDEXs &&
-                  (f(std::type_identity<std::variant_alternative_t<INDEXs, state_variant>>{}),
-                   true)) ||
-                 ...));
+            static_cast<void>(([&] {
+                using SOURCE = std::variant_alternative_t<INDEXs, state_variant>;
+                if constexpr (internal::wildcard_source_v<TRANSITIONS, SOURCE, EVENT>) {
+                    if (index == INDEXs) {
+                        f(std::type_identity<SOURCE>{});
+                        return true;
+                    }
+                }
+                return false;
+            }() || ...));
         }(std::make_index_sequence<std::variant_size_v<state_variant>>{});
     }
 
-    template<typename NEW_STATE, typename OBSERVER>
+    template<typename EVENT, typename NEW_STATE, typename OBSERVER>
     void enterFromSource(OBSERVER& observer)
     {
         if constexpr (internal::has_enter<OBSERVER, NEW_STATE, state_machine>) {
             observer.template onEnter<NEW_STATE>(*this);
         } else {
-            this->withSource(source_, [&](auto tag) {
+            this->template withSource<EVENT>(source_, [&](auto tag) {
                 internal::enterHook<typename decltype(tag)::type, NEW_STATE>(observer, *this);
             });
         }
@@ -280,7 +287,7 @@ private:
         if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, state_machine>) {
             observer.template onTransition<EVENT, NEW_STATE>(*this);
         } else {
-            this->withSource(source_, [&](auto tag) {
+            this->template withSource<EVENT>(source_, [&](auto tag) {
                 internal::transitionHook<typename decltype(tag)::type, EVENT, NEW_STATE>(observer,
                                                                                          *this);
             });

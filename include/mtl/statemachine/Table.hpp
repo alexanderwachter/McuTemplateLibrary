@@ -190,4 +190,14 @@ public:
     using transition_for = mtl::front_or_t<transitions_for<FROM, EVENT>, mtl::nil_type>;
 };
 
+namespace internal {
+
+// Whether STATE can reach a wildcard for EVENT: an unguarded own entry
+// always fires first and overrides it
+template<typename TABLE, typename STATE, typename EVENT>
+inline constexpr bool wildcard_source_v = std::is_same_v<
+    mtl::find_if_t<exact_transitions_t<TABLE, STATE, EVENT>, is_unguarded>, mtl::nil_type>;
+
+} // namespace internal
+
 } // namespace fsm
