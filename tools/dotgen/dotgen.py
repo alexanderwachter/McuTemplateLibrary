@@ -11,6 +11,11 @@ headers and calls fsm::writeDot for every table, builds it with the host
 C++ compiler against the library headers, runs it, and writes one
 <table>.dot per table - the graphs tools/fsmview loads.
 
+The headers the tables include are looked up in the scanned trees and
+the current directory, and the directories holding them are passed to
+the compiler, so -I is only needed for what lies outside both. Headers
+the compiler provides itself are left to it.
+
 The table headers must compile on the host: keep them free of target
 headers (put kernel calls behind a declared function, as
 zephyr/samples/traffic_light/src/traffic_light.hpp does). Templated
@@ -34,6 +39,9 @@ HEADER_SUFFIXES = {".hpp", ".h", ".hh", ".hxx"}
 
 COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"\n]+)[>"]', re.MULTILINE)
+# never worth walking when looking for include directories
+PRUNED_DIRS = {".git", ".west", "__pycache__", "node_modules", "dot"}
 # a struct/class head up to its opening brace, base clause included
 STRUCT_RE = re.compile(r"\b(struct|class)\s+(\w+)\s*(?:final\s*)?:\s*([^{;]*?)\{", re.DOTALL)
 NAMESPACE_RE = re.compile(r"\bnamespace\s+((?:\w+(?:::)?)+|(?=\{))\s*\{")
@@ -121,6 +129,128 @@ def scan(paths, say=lambda message: None):
     return tables, given
 
 
+def read_includes(header):
+    """The includes a header names, as (delimiter, spelling) pairs."""
+    try:
+        text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+    return INCLUDE_RE.findall(text)
+
+
+def default_search_roots(paths):
+    """Where to look for the headers the table headers include: the
+    scanned trees plus the current directory, because the includes
+    routinely live outside the tree holding the tables - a sibling
+    library checked out next to it."""
+    roots = []
+    for path in paths:
+        path = Path(path).resolve()
+        roots.append(path if path.is_dir() else path.parent)
+    roots.append(Path.cwd().resolve())
+    return list(dict.fromkeys(roots))
+
+
+def include_roots(search_roots, say=lambda message: None):
+    """Directories that can serve as an -I: each search root and every
+    include/ directory below it, shallowest first."""
+    roots = []
+    for search_root in search_roots:
+        if not search_root.is_dir():
+            continue
+        roots.append(search_root)
+        for current, subdirs, _ in os.walk(search_root):
+            subdirs[:] = sorted(name for name in subdirs
+                                if name not in PRUNED_DIRS and not name.startswith("build"))
+            if Path(current).name == "include":
+                roots.append(Path(current))
+    roots = sorted(dict.fromkeys(roots), key=lambda root: (len(root.parts), str(root)))
+    say(f"dotgen: {len(roots)} include root(s) to search under "
+        + ", ".join(str(root) for root in search_roots))
+    return roots
+
+
+def locate(spelling, directories):
+    """The first directory of the list that resolves the spelling."""
+    for directory in directories:
+        candidate = Path(directory) / spelling
+        if candidate.is_file():
+            return Path(directory), candidate.resolve()
+    return None, None
+
+
+def system_includes(cxx):
+    """The compiler's own search path, so that the standard library
+    headers are left to it rather than looked for in the source tree,
+    where a freestanding libc of the target would answer first."""
+    try:
+        result = subprocess.run([cxx, "-E", "-x", "c++", "-v", os.devnull],
+                                capture_output=True, text=True)
+    except OSError:
+        return []
+    directories = []
+    collecting = False
+    for line in result.stderr.splitlines():
+        if line.startswith("#include <...>"):
+            collecting = True
+        elif line.startswith("End of search list"):
+            break
+        elif collecting and line.startswith(" "):
+            directory = Path(line.strip())
+            if directory.is_dir():
+                directories.append(directory.resolve())
+    return directories
+
+
+def resolve_includes(headers, include_dirs, search_roots, system_dirs=(),
+                     say=lambda message: None):
+    """The extra -I directories the table headers need to compile.
+
+    Walks the include graph from the table headers: an include that
+    already resolves is followed, one the compiler provides itself is
+    left to it, and one that resolves nowhere is looked up under the
+    search roots, where the directory that resolves it becomes another
+    -I.
+    """
+    known = list(include_dirs)
+    extra = []
+    roots = None
+    unresolved = []
+    seen = set()
+    queue = list(headers)
+    while queue:
+        header = queue.pop(0)
+        if header in seen:
+            continue
+        seen.add(header)
+        for delimiter, spelling in read_includes(header):
+            target = None
+            if delimiter == '"':
+                beside = header.parent / spelling
+                if beside.is_file():
+                    target = beside.resolve()
+            if target is None:
+                _, target = locate(spelling, known)
+            if target is None:
+                if locate(spelling, system_dirs)[0] is not None:
+                    continue  # the compiler's own, and not ours to walk into
+                if roots is None:
+                    roots = include_roots(search_roots, say)
+                root, target = locate(spelling, roots)
+                if root is not None:
+                    say(f"dotgen: -I{root} for <{spelling}>")
+                    known.append(root)
+                    extra.append(root)
+            if target is None:
+                unresolved.append(spelling)
+            else:
+                queue.append(target)
+    if unresolved:
+        say("dotgen: found nowhere, left to the compiler: "
+            + ", ".join(f"<{spelling}>" for spelling in sorted(set(unresolved))))
+    return extra
+
+
 def generator_source(tables, out_dir, headers=()):
     lines = ["#include <mtl/StateMachineDot.hpp>"]
     included = {str(table.header) for table in tables if table.header}
@@ -189,6 +319,12 @@ def run(args, say=print, fail=sys.exit):
     include_dirs += sorted({header.parent for header in headers})
     if args.table and not headers:
         fail("dotgen: --table needs the header declaring the type: pass the header as PATH")
+    # the table headers include headers of their own, which -I has so far
+    # had to name by hand: find them and add where they live
+    include_dirs += resolve_includes(sorted(headers), include_dirs,
+                                     default_search_roots(args.paths),
+                                     system_includes(args.cxx), say)
+    include_dirs = list(dict.fromkeys(include_dirs))
 
     with tempfile.TemporaryDirectory(prefix="dotgen-") as temp:
         source = Path(args.keep and out_dir or temp) / "dotgen.cpp"

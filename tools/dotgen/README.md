@@ -22,8 +22,15 @@ west fsm_dotgen modules/mtl/zephyr/samples/traffic_light/src -o graphs
 
 - `PATH`: headers or directories to scan (default: the current directory).
   Tables in `.cpp` files are not found - move them into a header.
-- `-I DIR`: include directories the table headers need; the directories
-  of the scanned headers and the library's `include/` are added.
+- `-I DIR`: include directories the table headers need. Rarely needed:
+  besides the directories of the scanned headers and the library's
+  `include/`, the headers the tables include are looked for in the
+  scanned trees and the current directory, and wherever they turn up
+  becomes an include directory too. The search follows those headers
+  into their own includes, skips `build*` and `dot/` output directories,
+  and leaves the headers the host compiler already provides to it, so a
+  freestanding libc sitting in the tree cannot shadow the real
+  `<cstdint>`.
 - `-D MACRO[=VALUE]`: preprocessor definitions the table headers need.
 - `-o DIR`: output directory (default `dot/`), one `<table>.dot` per table;
   the file stem and graph title are the struct's name, which is also the

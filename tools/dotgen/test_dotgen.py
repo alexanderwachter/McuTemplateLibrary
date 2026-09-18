@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Checks for the table crawler of dotgen.py:
+"""Checks for the table crawler and the include search of dotgen.py:
 python3 -m unittest tools/dotgen/test_dotgen.py"""
 
 import contextlib
@@ -98,6 +98,56 @@ class Crawler(unittest.TestCase):
         tables, given = dotgen.scan([str(self.header)])
         self.assertEqual(len(tables), 3)
         self.assertEqual(given, [self.header.resolve()])
+
+
+class IncludeSearch(unittest.TestCase):
+    """The headers a table header includes are found in the tree and
+    where they live becomes an -I, so they need not be named by hand."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.write("project/tables.hpp",
+                   "#include <lib/Units.hpp>\n"
+                   '#include "local.hpp"\n'
+                   "#include <cstdint>\n"
+                   "// #include <commented/Out.hpp>\n")
+        self.write("project/local.hpp", "")
+        self.write("vendor/libfoo/include/lib/Units.hpp", "#include <deep/Deep.hpp>\n")
+        self.write("vendor/libbar/include/deep/Deep.hpp", "")
+        self.write("target_libc/include/cstdint", "")  # a freestanding libc must not win
+        self.write("build/include/lib/Units.hpp", "")  # build output, never searched
+        self.system = self.write("system/cstdint", "").parent
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write(self, relative, text):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def resolve(self):
+        return dotgen.resolve_includes([self.root / "project" / "tables.hpp"],
+                                       [self.root / "project"], [self.root], [self.system])
+
+    def test_angle_include_adds_where_the_header_lives(self):
+        self.assertIn(self.root / "vendor" / "libfoo" / "include", self.resolve())
+
+    def test_follows_the_found_header_into_its_own_includes(self):
+        self.assertIn(self.root / "vendor" / "libbar" / "include", self.resolve())
+
+    def test_headers_the_compiler_has_are_left_to_it(self):
+        self.assertNotIn(self.root / "target_libc" / "include", self.resolve())
+
+    def test_quoted_neighbour_and_comment_add_nothing(self):
+        self.assertEqual(len(self.resolve()), 2)
+
+    def test_build_directories_are_not_searched(self):
+        roots = dotgen.include_roots([self.root])
+        self.assertIn(self.root / "vendor" / "libfoo" / "include", roots)
+        self.assertNotIn(self.root / "build" / "include", roots)
 
 
 if __name__ == "__main__":
