@@ -43,8 +43,10 @@
  * group - an entry after it could never fire, so a second unguarded
  * entry for the pair (a plain duplicate included) is a static_assert.
  * When no alternative fires, process() returns false, no
- * exit/entry/hook runs, a running timeout timer keeps running, but a
- * blocked fsm::timeout transition does not re-arm the one-shot timer.
+ * exit/entry/hook runs, a running timeout timer keeps running. A
+ * refused fsm::timeout would leave a timed state without its one-shot
+ * timer, so fsm::timed's validate() requires an unguarded fsm::timeout
+ * alternative for every timed state (fsm::deadlined likewise).
  *
  * from<any_state> matches every state and is the last alternative: a
  * state's own (state, event) group is tried first, in table order, then

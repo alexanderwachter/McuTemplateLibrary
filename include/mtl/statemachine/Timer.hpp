@@ -47,14 +47,15 @@ struct timed {
         : timer(timer_ref)
     {
     }
-    // A timed state whose fsm::timeout the table ignores is a bug: the
-    // timer would fire into nothing
+    // A timed state whose fsm::timeout the table ignores, or may refuse,
+    // is a bug: the timer would fire into nothing, or the state would
+    // sit there without its one-shot timer
     template<concepts::transition_table TABLE>
     static constexpr void validate()
     {
         static_assert(mtl::all_of_v<typename TABLE::states,
                           internal::timeout_handled_in<TABLE>::template pred>,
-                      "fsm::timed: state has a timeout but no transition for fsm::timeout");
+                      "fsm::timed: a timed state needs an unguarded transition for fsm::timeout");
     }
 
     // Hooks of one state: leaving a timed state stops its timer, entering
@@ -73,9 +74,10 @@ struct timed {
         if constexpr (internal::has_timeout_v<STATE>) {
             constexpr auto duration =
                 std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout);
-            static_assert(duration.count() >= 0 &&
+            static_assert(duration.count() > 0 &&
                               duration.count() <= std::numeric_limits<std::uint32_t>::max(),
-                          "fsm::timed: timeout out of the 32-bit millisecond range");
+                          "fsm::timed: timeout must be positive and within the 32-bit "
+                          "millisecond range");
             this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
         }
     }
@@ -126,15 +128,16 @@ struct deadlined {
     {
     }
 
-    // A deadline the table ignores is a bug: the timer would fire into
-    // nothing (the zero sentinel is exempt - it never arms)
+    // A deadline the table ignores, or may refuse, is a bug: the timer
+    // would fire into nothing, or the phase would outlive its budget
+    // (the zero sentinel is exempt - it never arms)
     template<concepts::transition_table TABLE>
     static constexpr void validate()
     {
         static_assert(mtl::all_of_v<typename TABLE::states,
                           internal::deadline_handled_in<TABLE>::template pred>,
-                      "fsm::deadlined: state has a deadline but no transition for "
-                      "fsm::deadline");
+                      "fsm::deadlined: a state with a deadline needs an unguarded transition "
+                      "for fsm::deadline");
     }
 
     // Whether the phase continues is a property of the edge (the state
@@ -148,9 +151,10 @@ struct deadlined {
         } else if constexpr (internal::active_deadline_v<NEW_STATE>) {
             constexpr auto duration =
                 std::chrono::ceil<std::chrono::milliseconds>(NEW_STATE::deadline);
-            static_assert(duration.count() >= 0 &&
+            static_assert(duration.count() > 0 &&
                               duration.count() <= std::numeric_limits<std::uint32_t>::max(),
-                          "fsm::deadlined: deadline out of the 32-bit millisecond range");
+                          "fsm::deadlined: deadline must be positive and within the 32-bit "
+                          "millisecond range");
             this->startTimer(static_cast<std::uint32_t>(duration.count()), machine);
         } else if constexpr (internal::active_deadline_v<OLD_STATE>) {
             timer.stop(); // left the phase: unannotated or the target

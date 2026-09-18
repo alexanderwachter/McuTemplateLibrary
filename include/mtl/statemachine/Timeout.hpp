@@ -25,11 +25,14 @@ template<typename STATE>
 inline constexpr bool has_timeout_v = requires { STATE::timeout; };
 
 template<typename TABLE>
+// A timed state needs an unguarded fsm::timeout alternative (own or
+// wildcard): a refused timeout would leave the state without its
+// one-shot timer
 struct timeout_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !has_timeout_v<STATE> ||
-        !std::is_same_v<transition_for_t<TABLE, STATE, timeout>, mtl::nil_type>> {};
+        mtl::any_of_v<transitions_for_t<TABLE, STATE, timeout>, is_unguarded>> {};
 };
 
 // A zero deadline is the phase-target sentinel: it stops the clock
@@ -50,7 +53,7 @@ struct deadline_handled_in {
     template<typename STATE>
     struct pred : std::bool_constant<
         !active_deadline_v<STATE> ||
-        !std::is_same_v<transition_for_t<TABLE, STATE, deadline>, mtl::nil_type>> {};
+        mtl::any_of_v<transitions_for_t<TABLE, STATE, deadline>, is_unguarded>> {};
 };
 
 } // namespace internal

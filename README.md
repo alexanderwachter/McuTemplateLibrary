@@ -134,8 +134,10 @@ whether a transition fired.
 
 - `process()` returns false when the state has no entry for the event or
   every alternative's guard refuses. Nothing runs then: no exit, no
-  entry, no hook, and a running timeout keeps running - but a refused
-  `fsm::timeout` transition does not re-arm the one-shot timer.
+  entry, no hook, and a running timeout keeps running. A refused
+  `fsm::timeout` would leave a timed state without its one-shot timer,
+  so `fsm::timed` requires an unguarded `fsm::timeout` alternative for
+  every timed state (`fsm::deadlined` likewise for `fsm::deadline`).
 - Alternatives are tried in table order. An unguarded entry must be the
   last of its `(state, event)` group; anything after it could never
   fire, so a second unguarded entry - a plain duplicate included - is a
