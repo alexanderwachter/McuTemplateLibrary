@@ -125,7 +125,9 @@ whether a transition fired.
   transition (with `fsm::timed`), guards not matching their state,
   reachability and timeout bounds (`fsm::all_states_reachable_v`,
   `fsm::timeouts_within_bounds_v`), observer coverage
-  (`fsm::all_states_notified_v`).
+  (`fsm::all_states_notified_v`), and an observer's declared
+  annotations (`using observes = mtl::typelist<a, b>;`) being carried
+  by some state of every table it is injected into.
 - **Small.** Transition bodies are instantiated per edge, not per event;
   wildcard transitions fire through one shared body per target when no
   observer could tell the source apart; dispatch is a fold, no tables.

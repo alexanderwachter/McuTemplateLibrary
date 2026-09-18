@@ -173,8 +173,11 @@ struct LedDriver : fsm::observing<LedDriver> {
 #endif
 
 // Picks the led_pattern element of each state's annotation set by the
-// overload's type alone
+// overload's type alone; declaring the type makes the machine check
+// that some state carries it
 struct LedController : fsm::observing<LedController> {
+    using observes = mtl::typelist<sensor::led_pattern>;
+
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
     // observers before the state machine they are injected into
@@ -196,6 +199,8 @@ struct LedController : fsm::observing<LedController> {
 // reading -> retrying changes the LED but not the rail, so only the LED
 // is notified there
 struct PowerRail : fsm::observing<PowerRail> {
+    using observes = mtl::typelist<sensor::sensor_power>;
+
     void notifyEntry(sensor::sensor_power power)
     {
         LOG_INF("sensor power %s", power.on ? "on" : "off");

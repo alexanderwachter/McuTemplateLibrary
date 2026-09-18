@@ -146,6 +146,50 @@ template<typename OBSERVER, typename STATE>
 inline constexpr bool set_notified_v =
     mtl::any_of_v<annotation_types_t<STATE>, element_notified<OBSERVER, STATE>::template pred>;
 
+template<typename T>
+struct carrying {
+    template<typename STATE>
+    struct pred : std::bool_constant<has_annotation_v<STATE, T>> {};
+};
+
+} // namespace internal
+
+namespace concepts {
+
+// OBSERVER's static observation of STATE reaches a notify hook: the
+// annotation exists and a notifyEntry/notifyExit overload accepts it.
+// This is the observing dispatch's own requires-expression, so the
+// concept cannot drift from what actually runs on an edge
+template<typename OBSERVER, typename STATE>
+concept notified_of =
+    requires(OBSERVER observer) {
+        observer.notifyEntry(OBSERVER::template annotation<STATE>());
+    } ||
+    requires(OBSERVER observer) {
+        observer.notifyExit(OBSERVER::template annotation<STATE>());
+    } || internal::set_notified_v<OBSERVER, STATE>;
+
+} // namespace concepts
+
+// Whether any state of TABLE carries the annotation T: an observer
+// watching an annotation no state carries is wired to nothing (the
+// check fsm::observing runs for the types an observer declares)
+template<typename TABLE, typename T>
+struct annotation_in_table
+    : std::bool_constant<
+          mtl::any_of_v<typename TABLE::states, internal::carrying<T>::template pred>> {};
+
+template<typename TABLE, typename T>
+inline constexpr bool annotation_in_table_v = annotation_in_table<TABLE, T>::value;
+
+namespace internal {
+
+template<typename TABLE>
+struct carried_in {
+    template<typename T>
+    struct pred : annotation_in_table<TABLE, T> {};
+};
+
 } // namespace internal
 
 // Value observer base: the derived class names the watched member once and
@@ -198,7 +242,20 @@ inline constexpr bool set_notified_v =
 // not change between the two states, at compile time; the entry side
 // of a wildcard has no edge, so the machine takes the one-state form,
 // which notifies every value of the state entered - the one place a
-// value observer sees a re-notification
+// value observer sees a re-notification.
+//
+// An observer watching an annotation no state carries is wired to
+// nothing, silently (a renamed annotation, a typo in a type). An
+// observer naming the annotation types it handles,
+//
+//   using observes = mtl::typelist<led_pattern, power>;
+//
+// gets each of them checked by every machine it is injected into: a
+// listed type must be carried by a state of the table. Leave the
+// declaration out for an observer that is handed to machines where it
+// watches nothing by design. A derived class defining its own
+// validate() hides the check; call observing<DERIVED>::validate<TABLE>()
+// from it to keep it
 template<typename DERIVED>
 struct observing {
 
@@ -207,6 +264,17 @@ struct observing {
         requires requires { DERIVED::template observe_static<STATE>(); }
     {
         return DERIVED::template observe_static<STATE>();
+    }
+
+    template<typename TABLE>
+    static constexpr void validate()
+    {
+        if constexpr (requires { typename DERIVED::observes; }) {
+            static_assert(mtl::all_of_v<typename DERIVED::observes,
+                                        internal::carried_in<TABLE>::template pred>,
+                          "fsm::observing: an annotation the observer declares to observe "
+                          "is carried by no state of the table");
+        }
     }
 
     // The edge form. The static path is per edge (the change check needs

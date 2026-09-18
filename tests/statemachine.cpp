@@ -579,6 +579,19 @@ namespace AnnotationSets {
         fsm::transition<fsm::from<lit>,  fsm::on<next>, fsm::to<bare>>,
         fsm::transition<fsm::from<bare>, fsm::on<next>, fsm::to<dark>>,
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+
+    // Whether an annotation type is carried by any state: the trait
+    // behind fsm::observing's validate() for the types an observer
+    // declares (an observer naming sound would not instantiate)
+    struct sound {};
+    static_assert(fsm::annotation_in_table_v<tbl, heat>);
+    static_assert(!fsm::annotation_in_table_v<tbl, sound>);
+
+    struct heater : fsm::observing<heater> {
+        using observes = mtl::typelist<heat>;
+        void notifyEntry(heat) { ++heats; }
+        int heats = 0;
+    };
 } // namespace AnnotationSets
 
 namespace Features {
@@ -1197,6 +1210,19 @@ namespace ordering {
         fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>>;
 } // namespace ordering
 
+void declaredObservationsAreValidated()
+{
+    using namespace AnnotationSets;
+    heater watcher;
+    fsm::state_machine<tbl, heater> sm{watcher}; // validate(): heat is in the table
+
+    check(watcher.heats == 0);  // dark carries no heat
+    check(sm.process(next{}));  // lit: heat{true}
+    check(watcher.heats == 1);
+    check(sm.process(kill{}));  // dead: heat{false}
+    check(watcher.heats == 2);
+}
+
 void annotationSetElementsAreNotifiedIndependently()
 {
     using namespace AnnotationSets;
@@ -1593,6 +1619,7 @@ int statemachineTests()
     wildcardEntryRenotifiesUnchangedValue();
     refusedOwnGroupFallsThroughToWildcard();
     unguardedOwnEntryOverridesWildcard();
+    declaredObservationsAreValidated();
     deadlineSpansPhaseWithoutRearming();
     return failures;
 }

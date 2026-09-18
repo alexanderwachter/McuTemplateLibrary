@@ -210,23 +210,6 @@ using remove_features_t = mtl::remove_if_t<
 template<mtl::concepts::typelist LIST, typename TAG>
 using remove_feature_t = remove_features_t<LIST, mtl::typelist<TAG>>;
 
-namespace concepts {
-
-// OBSERVER's static observation of STATE reaches a notify hook: the
-// annotation exists and a notifyEntry/notifyExit overload accepts it.
-// This is the observing dispatch's own requires-expression, so the
-// concept cannot drift from what actually runs on an edge
-template<typename OBSERVER, typename STATE>
-concept notified_of =
-    requires(OBSERVER observer) {
-        observer.notifyEntry(OBSERVER::template annotation<STATE>());
-    } ||
-    requires(OBSERVER observer) {
-        observer.notifyExit(OBSERVER::template annotation<STATE>());
-    } || internal::set_notified_v<OBSERVER, STATE>;
-
-} // namespace concepts
-
 // Whether OBSERVER's static observation covers STATE at all - even
 // without a hook accepting the annotation; a state's annotation set
 // counts when one of its elements reaches a hook
@@ -269,28 +252,5 @@ struct all_states_notified
 template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<>>
 inline constexpr bool all_states_notified_v =
     all_states_notified<OBSERVER, TABLE, EXCEPTIONS>::value;
-
-namespace internal {
-
-template<typename T>
-struct carrying {
-    template<typename STATE>
-    struct pred : std::bool_constant<has_annotation_v<STATE, T>> {};
-};
-
-} // namespace internal
-
-// Whether any state of TABLE carries the annotation T. An observer that
-// watches an annotation no state carries is wired to nothing, and
-// silently so - the dispatch has no state to offer it. Assert it from
-// the observer's validate() hook for the annotations it handles:
-//   static_assert(fsm::annotation_in_table_v<TABLE, my_annotation>);
-template<typename TABLE, typename T>
-struct annotation_in_table
-    : std::bool_constant<
-          mtl::any_of_v<typename TABLE::states, internal::carrying<T>::template pred>> {};
-
-template<typename TABLE, typename T>
-inline constexpr bool annotation_in_table_v = annotation_in_table<TABLE, T>::value;
 
 } // namespace fsm
