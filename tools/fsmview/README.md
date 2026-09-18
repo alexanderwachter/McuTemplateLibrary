@@ -140,7 +140,7 @@ The page starts at the first step; use the same controls.
 
 ```
 fsmview.py [GRAPH...] [--tcp HOST:PORT | --listen PORT | --serial DEV[@BAUD] | --stdin | --replay FILE]
-           [--save FILE] [--http PORT] [--history N] [--map MACHINE=GRAPH]... [--dot PATH]
+           [--save FILE] [--http PORT] [--history N] [--map MACHINE=GRAPH]... [--graphviz PATH]
 ```
 
 - `GRAPH`: `.dot` files or directories of them, one graph per machine
@@ -156,7 +156,9 @@ fsmview.py [GRAPH...] [--tcp HOST:PORT | --listen PORT | --serial DEV[@BAUD] | -
   several graphs claim it - the id is the table's short type name without
   template arguments, so the variants of a templated table all read alike.
   A firmware runs one of them; map it, or load only its `.dot`.
-- `--dot PATH`: the Graphviz binary (default: `dot` from PATH or `$DOT`).
+- `--graphviz PATH`: the Graphviz binary (default: `dot` from PATH or
+  `$DOT`). The graphs to show are the positional `GRAPH` arguments, not
+  this option.
 
 ## Trace lines
 

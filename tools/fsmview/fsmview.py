@@ -34,7 +34,7 @@ Then open the printed link (http://localhost:8420/ by default).
 
 Usage:
   fsmview.py [GRAPH...] [--tcp HOST:PORT | --listen PORT | --serial DEV[@BAUD] | --stdin | --replay FILE]
-             [--save FILE] [--http PORT] [--history N] [--map MACHINE=GRAPH]... [--dot PATH]
+             [--save FILE] [--http PORT] [--history N] [--map MACHINE=GRAPH]... [--graphviz PATH]
 """
 
 import argparse
@@ -512,17 +512,20 @@ def build_parser(parser=None):
                         help="steps shown in fading colors (default 8)")
     parser.add_argument("--map", action="append", default=[], metavar="MACHINE=GRAPH",
                         help="graph (file stem) for a machine id when several graphs claim it")
-    parser.add_argument("--dot", metavar="PATH", default=shutil.which("dot") or os.environ.get("DOT"),
+    parser.add_argument("--graphviz", metavar="PATH",
+                        default=shutil.which("dot") or os.environ.get("DOT"),
                         help="Graphviz dot binary (default: from PATH or $DOT); without it "
-                             "the page renders the graphs with viz.js from jsDelivr")
+                             "the page renders the graphs with viz.js from jsDelivr. The graphs "
+                             "themselves are the positional GRAPH arguments")
     return parser
 
 
 def run(args):
     if not args.graphs:
         if not any(Path(DEFAULT_GRAPHS).glob("*.dot")):
-            sys.exit(f"fsmview: no GRAPH given and no .dot files in {DEFAULT_GRAPHS}/ "
-                     f"(write them with \"west build -t dot\" or tools/dotgen)")
+            sys.exit(f"fsmview: no GRAPH given and no .dot files in {DEFAULT_GRAPHS}/ - name the "
+                     f"file or its directory as an argument (fsmview.py dot/), and write the "
+                     f"graphs first with \"west build -t dot\" or tools/dotgen")
         args.graphs = [DEFAULT_GRAPHS]
     if not (args.tcp or args.listen or args.serial or args.stdin or args.replay):
         args.serial = DEFAULT_DEVICE
@@ -540,9 +543,9 @@ def run(args):
         mapping[machine] = stem
 
     graphs = load_graphs(args.graphs)
-    if args.dot:
-        print(f"fsmview: rendering with {args.dot}", file=sys.stderr)
-        render_graphs(graphs, args.dot)
+    if args.graphviz:
+        print(f"fsmview: rendering with {args.graphviz}", file=sys.stderr)
+        render_graphs(graphs, args.graphviz)
     else:
         print("fsmview: no dot binary, the page renders with viz.js (needs internet)",
               file=sys.stderr)
