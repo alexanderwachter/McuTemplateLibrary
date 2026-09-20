@@ -105,6 +105,9 @@
  *   Observer.hpp    the hook forms, their delivery, observer_group
  *   Traits.hpp      reachability, features as tags, observer coverage
  *   Core.hpp        the state machine and its dispatch
+ *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
+ *                   through a bounded FIFO + WORK policy; QueuedTimer
+ *                   latches expiries into the same serialized drain
  */
 
 #pragma once
@@ -112,6 +115,7 @@
 #include <mtl/statemachine/Core.hpp>
 #include <mtl/statemachine/Observer.hpp>
 #include <mtl/statemachine/Observing.hpp>
+#include <mtl/statemachine/Queued.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Timeout.hpp>
 #include <mtl/statemachine/Timer.hpp>

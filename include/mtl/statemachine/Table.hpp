@@ -58,6 +58,9 @@ struct matches_event {
 template<typename T>
 struct is_any_state : std::is_same<T, any_state> {};
 
+template<typename TRANSITION>
+struct event_of : std::type_identity<typename TRANSITION::event> {};
+
 // All from/to states of a transition list, in order of appearance
 template<mtl::concepts::typelist LIST>
 struct endpoints;
@@ -166,6 +169,10 @@ public:
         std::is_same_v<explicit_initial, mtl::nil_type>,
         endpoints,
         mtl::prepend_t<explicit_initial, endpoints>>>;
+
+    // Every event the table reacts to, deduplicated in table order:
+    // the alternatives of fsm::queued's event storage
+    using events = mtl::unique_t<mtl::transform_t<transitions, internal::event_of>>;
 
     // The exact (FROM, EVENT) group and the (any_state, EVENT) wildcard
     // group, each in table order: the machine's shared wildcard path

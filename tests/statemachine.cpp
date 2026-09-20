@@ -794,6 +794,120 @@ namespace Deadline {
                   mtl::typelist<fsm::timed_by<rearmed, phase_range>>, rearmed>);
 } // namespace Deadline
 
+// --- queued machine: run-to-completion delivery ------------------------------
+
+namespace Queued {
+
+struct go {};
+struct halt {};
+struct note {};
+
+struct idle {};
+struct armed {
+    static constexpr auto timeout = 50ms;
+    void handle(note const&) {}
+};
+struct done {};
+struct timed_out {};
+
+struct table : fsm::transition_table<
+    fsm::initial<idle>,
+    fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<armed>>,
+    fsm::transition<fsm::from<armed>, fsm::on<halt>, fsm::to<done>>,
+    fsm::transition<fsm::from<armed>, fsm::on<fsm::timeout>, fsm::to<timed_out>>,
+    fsm::internal_transition<fsm::from<armed>, fsm::on<note>>> {};
+
+// Drives the queue from inside a delivery: what a synchronous driver
+// report from an entry hook does in production. The post runs before
+// the expiry - the event "arrived" first
+struct sync_actor {
+    void* queue         = nullptr;
+    void (*post)(void*) = nullptr;
+    manual_timer* clock = nullptr;
+    std::vector<char> log;
+
+    template<typename STATE, typename MACHINE>
+    void onEnter(MACHINE&)
+    {
+        if constexpr (std::is_same_v<STATE, armed>) {
+            if (post != nullptr) {
+                post(queue);
+            }
+            if (clock != nullptr) {
+                clock->expire();
+            }
+        }
+        if constexpr (std::is_same_v<STATE, done>) {
+            log.push_back('d');
+        }
+        if constexpr (std::is_same_v<STATE, timed_out>) {
+            log.push_back('t');
+        }
+    }
+
+    template<typename EVENT, typename TO, typename MACHINE>
+    void onTransition(MACHINE&)
+    {
+        if constexpr (std::is_same_v<EVENT, note>) {
+            log.push_back('n');
+        }
+    }
+};
+
+using queued_timed = fsm::timed<fsm::QueuedTimer<manual_timer>&>;
+using machine =
+    fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock, queued_timed, sync_actor>;
+
+static_assert(fsm::concepts::timer<fsm::QueuedTimer<manual_timer>>);
+
+} // namespace Queued
+
+namespace QueuedDeadline {
+
+struct advance {};
+struct finish {};
+
+struct phase_a {
+    static constexpr auto deadline = 100ms;
+};
+struct phase_b {
+    static constexpr auto deadline = 100ms; // same budget: the phase continues
+};
+struct expired {};
+struct finished {};
+
+struct table : fsm::transition_table<
+    fsm::initial<phase_a>,
+    fsm::transition<fsm::from<phase_a>, fsm::on<advance>, fsm::to<phase_b>>,
+    fsm::transition<fsm::from<phase_a>, fsm::on<fsm::deadline>, fsm::to<expired>>,
+    fsm::transition<fsm::from<phase_b>, fsm::on<fsm::deadline>, fsm::to<expired>>,
+    fsm::transition<fsm::from<phase_b>, fsm::on<finish>, fsm::to<finished>>> {};
+
+struct sync_actor {
+    void* queue         = nullptr;
+    void (*post)(void*) = nullptr;
+    manual_timer* clock = nullptr;
+
+    template<typename STATE, typename MACHINE>
+    void onEnter(MACHINE&)
+    {
+        if constexpr (std::is_same_v<STATE, phase_b>) {
+            if (post != nullptr) {
+                post(queue); // queued first...
+            }
+            if (clock != nullptr) {
+                clock->expire(); // ...but the deadline gates progress
+            }
+        }
+    }
+};
+
+using queued_deadlined = fsm::deadlined<fsm::QueuedTimer<manual_timer>&>;
+using machine = fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock,
+                                   queued_deadlined, sync_actor>;
+
+} // namespace QueuedDeadline
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {
@@ -1586,6 +1700,88 @@ void timerInjectedByReference()
     check(sm.is<cooldown>());
 }
 
+// The regression all of these guard: a hook driving the queue used to
+// re-enter process() and trip the machine's assert - now it queues
+void queuedDeliversAfterTransitionCompletes()
+{
+    manual_timer clock;
+    fsm::QueuedTimer<manual_timer> channel{clock};
+    Queued::queued_timed tim{channel};
+    Queued::sync_actor actor;
+    Queued::machine sm{tim, actor};
+
+    actor.queue = &sm;
+    actor.post  = [](void* queue) {
+        static_cast<Queued::machine*>(queue)->process(Queued::halt{});
+    };
+    check(sm.process(Queued::go{})); // the armed entry hook processes halt
+    check(sm.is<Queued::done>());    // ...delivered after go's transition completed
+    check(sm.getIf<Queued::done>() != nullptr);
+    check(actor.log == std::vector<char>{'d'});
+}
+
+void queuedStaleTimeoutRetracted()
+{
+    manual_timer clock;
+    fsm::QueuedTimer<manual_timer> channel{clock};
+    Queued::queued_timed tim{channel};
+    Queued::sync_actor actor;
+    Queued::machine sm{tim, actor};
+
+    actor.queue = &sm;
+    actor.post  = [](void* queue) {
+        static_cast<Queued::machine*>(queue)->process(Queued::halt{});
+    };
+    actor.clock = &clock; // the expiry latches behind the queued halt
+
+    check(sm.process(Queued::go{}));
+    // halt arrived first: it wins, leaving armed stops the timer, and the
+    // stop retracts the latched expiry - no timeout fires on done
+    check(sm.is<Queued::done>());
+    check(actor.log == std::vector<char>{'d'});
+}
+
+void queuedTimeoutDeliveredInArrivalOrder()
+{
+    manual_timer clock;
+    fsm::QueuedTimer<manual_timer> channel{clock};
+    Queued::queued_timed tim{channel};
+    Queued::sync_actor actor;
+    Queued::machine sm{tim, actor};
+
+    actor.queue = &sm;
+    actor.post  = [](void* queue) {
+        static_cast<Queued::machine*>(queue)->process(Queued::note{});
+    };
+    actor.clock = &clock;
+
+    check(sm.process(Queued::go{}));
+    // the note is internal - armed survives it, so the latched expiry
+    // stays valid and is delivered right after the queued events
+    check(sm.is<Queued::timed_out>());
+    check(actor.log == (std::vector<char>{'n', 't'}));
+}
+
+void queuedDeadlineGatesQueuedEvents()
+{
+    manual_timer clock;
+    fsm::QueuedTimer<manual_timer> channel{clock};
+    QueuedDeadline::queued_deadlined ded{channel};
+    QueuedDeadline::sync_actor actor;
+    QueuedDeadline::machine sm{ded, actor};
+
+    actor.queue = &sm;
+    actor.post  = [](void* queue) {
+        static_cast<QueuedDeadline::machine*>(queue)->process(QueuedDeadline::finish{});
+    };
+    actor.clock = &clock;
+
+    check(sm.process(QueuedDeadline::advance{})); // continues the phase, hook fires
+    // finish was queued before the expiry, but a deadline gates progress:
+    // it is delivered first, and finish then lands in expired - ignored
+    check(sm.is<QueuedDeadline::expired>());
+}
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -1626,5 +1822,9 @@ int statemachineTests()
     unguardedOwnEntryOverridesWildcard();
     declaredObservationsAreValidated();
     deadlineSpansPhaseWithoutRearming();
+    queuedDeliversAfterTransitionCompletes();
+    queuedStaleTimeoutRetracted();
+    queuedTimeoutDeliveredInArrivalOrder();
+    queuedDeadlineGatesQueuedEvents();
     return failures;
 }
