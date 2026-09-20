@@ -53,22 +53,36 @@ inline constexpr bool annotation_changes_v = annotation_changes<OBSERVER, STATE,
 // notifyEntry(led_pattern) / notifyExit(power) overloads pick the
 // elements they consume, each with its own change suppression. The type
 // is the key, so the types of one set are distinct and meaningful (a
-// strong type per annotation, not int)
+// strong type per annotation, not int).
+//
+// The values of an instance - an event payload delivered into the
+// state, a computed report - form a set the same way, from a const
+// member function named values():
+//
+//   struct sending {
+//       auto values() const { return fsm::annotate_ref(message, orientation()); }
+//   };
+//
+// Delivered on every edge into or out of the state (per-instance values
+// cannot be change-suppressed), after the static set. annotate_ref
+// keeps lvalues by reference, so a message is not copied into the set;
+// a values() returning one value instead of a set counts as a
+// one-element set. Elements may be stored by reference: the key is
+// always the plain type
 template<typename... Ts>
 struct annotation_set {
-    static_assert(std::is_same_v<mtl::unique_t<mtl::typelist<Ts...>>, mtl::typelist<Ts...>>,
+    using types = mtl::typelist<std::remove_cvref_t<Ts>...>;
+    static_assert(std::is_same_v<mtl::unique_t<types>, types>,
                   "fsm::annotate: the annotation types of one state must be distinct");
 
-    using types = mtl::typelist<Ts...>;
-
     template<typename T>
-    static constexpr bool has = (std::is_same_v<T, Ts> || ...);
+    static constexpr bool has = mtl::has_a_v<types, std::remove_cvref_t<T>>;
 
     template<typename T>
         requires has<T>
-    constexpr T const& get() const
+    constexpr std::remove_cvref_t<T> const& get() const
     {
-        return std::get<T>(values);
+        return std::get<mtl::index_of_v<std::remove_cvref_t<T>, types>>(values);
     }
 
     std::tuple<Ts...> values;
@@ -76,6 +90,21 @@ struct annotation_set {
 
 template<typename... Ts>
 constexpr annotation_set<std::remove_cvref_t<Ts>...> annotate(Ts&&... values)
+{
+    return {{std::forward<Ts>(values)...}};
+}
+
+namespace internal {
+
+template<typename T>
+using ref_or_value_t = std::conditional_t<std::is_lvalue_reference_v<T>,
+                                          std::remove_reference_t<T> const&,
+                                          std::remove_cvref_t<T>>;
+
+} // namespace internal
+
+template<typename... Ts>
+constexpr annotation_set<internal::ref_or_value_t<Ts>...> annotate_ref(Ts&&... values)
 {
     return {{std::forward<Ts>(values)...}};
 }
@@ -93,6 +122,35 @@ concept annotated = requires {
     STATE::annotations;
     requires is_annotation_set<std::remove_cvref_t<decltype(STATE::annotations)>>::value;
 };
+
+// A state with per-instance values; values() may return a set or one
+// value, which instanceValues() wraps into a set (by reference when
+// values() returns a reference)
+template<typename STATE>
+concept valued = requires(STATE const& state) { state.values(); };
+
+template<valued STATE>
+constexpr auto instanceValues(STATE const& state)
+{
+    if constexpr (is_annotation_set<std::remove_cvref_t<decltype(state.values())>>::value) {
+        return state.values();
+    } else {
+        return annotate_ref(state.values());
+    }
+}
+
+template<typename STATE>
+struct instance_types : std::type_identity<mtl::typelist<>> {};
+
+template<valued STATE>
+struct instance_types<STATE>
+    : std::type_identity<typename decltype(instanceValues(std::declval<STATE const&>()))::types> {};
+
+template<typename STATE>
+using instance_types_t = typename instance_types<STATE>::type;
+
+template<typename STATE, typename T>
+inline constexpr bool has_value_v = mtl::has_a_v<instance_types_t<STATE>, std::remove_cvref_t<T>>;
 
 // The element types of a state's set, none for a state without one
 template<typename STATE>
@@ -146,20 +204,37 @@ template<typename OBSERVER, typename STATE>
 inline constexpr bool set_notified_v =
     mtl::any_of_v<annotation_types_t<STATE>, element_notified<OBSERVER, STATE>::template pred>;
 
+// Whether STATE's T value reaches one of OBSERVER's hooks
+template<typename OBSERVER, typename STATE>
+struct value_notified {
+    template<typename T>
+    struct pred : std::bool_constant<requires(OBSERVER observer, STATE const& state) {
+                      observer.notifyEntry(instanceValues(state).template get<T>());
+                  } || requires(OBSERVER observer, STATE const& state) {
+                      observer.notifyExit(instanceValues(state).template get<T>());
+                  }> {};
+};
+
+template<typename OBSERVER, typename STATE>
+inline constexpr bool values_notified_v =
+    mtl::any_of_v<instance_types_t<STATE>, value_notified<OBSERVER, STATE>::template pred>;
+
+// A state carrying T: as a static annotation or as an instance value
 template<typename T>
 struct carrying {
     template<typename STATE>
-    struct pred : std::bool_constant<has_annotation_v<STATE, T>> {};
+    struct pred : std::bool_constant<has_annotation_v<STATE, T> || has_value_v<STATE, T>> {};
 };
 
 } // namespace internal
 
 namespace concepts {
 
-// OBSERVER's static observation of STATE reaches a notify hook: the
-// annotation exists and a notifyEntry/notifyExit overload accepts it.
-// This is the observing dispatch's own requires-expression, so the
-// concept cannot drift from what actually runs on an edge
+// OBSERVER's observation of STATE reaches a notify hook: the annotation
+// (or set element, or instance value) exists and a notifyEntry/notifyExit
+// overload accepts it. These are the observing dispatch's own
+// requires-expressions, so the concept cannot drift from what actually
+// runs on an edge
 template<typename OBSERVER, typename STATE>
 concept notified_of =
     requires(OBSERVER observer) {
@@ -167,7 +242,7 @@ concept notified_of =
     } ||
     requires(OBSERVER observer) {
         observer.notifyExit(OBSERVER::template annotation<STATE>());
-    } || internal::set_notified_v<OBSERVER, STATE>;
+    } || internal::set_notified_v<OBSERVER, STATE> || internal::values_notified_v<OBSERVER, STATE>;
 
 } // namespace concepts
 
@@ -212,30 +287,22 @@ struct carried_in {
 // observe_static() is for static constexpr members: the value is read at
 // type level - states need not be constructible, and naming a non-static
 // member is a compile error rather than a silently wrong probe value.
-// Equal-value edges are elided at compile time. For a non-static member
-// (e.g. an event payload delivered into the state) provide
-// observe_nonstatic() instead: it reads the current state instance, and
-// the notify hooks run on every edge into/out of an observing state -
-// per-instance values cannot be change-suppressed:
+// Equal-value edges are elided at compile time.
+//
+// A state's annotation set (fsm::annotate above) and its instance
+// values (values(), fsm::annotate_ref) are observed without any observe
+// declaration: every element type with a notifyEntry / notifyExit
+// overload is delivered, in the set's order - the static set
+// change-suppressed per element, the instance values on every edge:
 //
 //   struct phy_driver : fsm::observing<phy_driver> {
-//       static constexpr auto observe_nonstatic(auto const& state)
-//           -> decltype((state.tx_message))
-//       {
-//           return state.tx_message;
-//       }
 //       void notifyEntry(message_t const& message); // hand to hardware
 //   };
 //
-// An observer may declare both; on the same edge the static hook is
-// guaranteed to run before the nonstatic one. This ordering is part of
-// the contract: a static annotation can prepare (e.g. reset) what the
-// nonstatic observation then consumes.
-//
-// A state's annotation set (fsm::annotate above) is observed without
-// any observe declaration: every element type with a notifyEntry /
-// notifyExit overload is delivered, change-suppressed per element, in
-// the set's order, between the static and the nonstatic hook.
+// On one edge the order is: observe_static, the static set, the
+// instance values. This ordering is part of the contract: a static
+// annotation can prepare (e.g. reset) what the instance value then
+// consumes.
 //
 // Both hook forms: where the edge is known (every exact edge, and the
 // exit side of a wildcard) the edge form suppresses a value that does
@@ -278,7 +345,7 @@ struct observing {
     }
 
     // The edge form. The static path is per edge (the change check needs
-    // both states); the nonstatic path delegates to one body per observed
+    // both states); the instance values delegate to one body per valued
     // state
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onExitFrom(MACHINE& machine)
@@ -290,7 +357,7 @@ struct observing {
             }
         }
         this->template setExit<OLD_STATE, NEW_STATE>(internal::annotation_types_t<OLD_STATE>{});
-        this->template nonstaticExit<OLD_STATE>(machine);
+        this->template valuesExit<OLD_STATE>(machine);
     }
 
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
@@ -303,7 +370,7 @@ struct observing {
             }
         }
         this->template setEnter<OLD_STATE, NEW_STATE>(internal::annotation_types_t<NEW_STATE>{});
-        this->template nonstaticEnter<NEW_STATE>(machine);
+        this->template valuesEnter<NEW_STATE>(machine);
     }
 
     // The one-state form: no other state to compare against, which is the
@@ -348,38 +415,50 @@ private:
         }(), ...);
     }
 
+    // The instance values, each element with a hook accepting it. The
+    // machine is in STATE here, so getIf() cannot fail; the check is what
+    // stops GCC reporting a potential null dereference inside <variant>
+    // once this inlines at -Os
     template<typename STATE, typename MACHINE>
-    void nonstaticExit(MACHINE& machine)
+    void valuesExit(MACHINE& machine)
     {
-        auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (requires {
-                          self.notifyExit(
-                              DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
-                      }) {
-            // The machine is in STATE here, so getIf() cannot fail. The check
-            // is what stops GCC reporting a potential null dereference inside
-            // <variant> once this inlines at -Os.
-            if (auto* const state = machine.template getIf<STATE>(); state != nullptr) {
-                self.notifyExit(DERIVED::observe_nonstatic(*state));
+        if constexpr (internal::values_notified_v<DERIVED, STATE>) {
+            if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
+                this->exitEach(internal::instanceValues(*state), internal::instance_types_t<STATE>{});
             }
         }
     }
 
     template<typename STATE, typename MACHINE>
-    void nonstaticEnter(MACHINE& machine)
+    void valuesEnter(MACHINE& machine)
     {
-        auto& self = static_cast<DERIVED&>(*this);
-        if constexpr (requires {
-                          self.notifyEntry(
-                              DERIVED::observe_nonstatic(*machine.template getIf<STATE>()));
-                      }) {
-            // The machine is in STATE here, so getIf() cannot fail. The check
-            // is what stops GCC reporting a potential null dereference inside
-            // <variant> once this inlines at -Os.
-            if (auto* const state = machine.template getIf<STATE>(); state != nullptr) {
-                self.notifyEntry(DERIVED::observe_nonstatic(*state));
+        if constexpr (internal::values_notified_v<DERIVED, STATE>) {
+            if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
+                this->enterEach(internal::instanceValues(*state), internal::instance_types_t<STATE>{});
             }
         }
+    }
+
+    template<typename SET, typename... Ts>
+    void exitEach(SET const& set, mtl::typelist<Ts...>)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
+        ([&] {
+            if constexpr (requires { self.notifyExit(set.template get<Ts>()); }) {
+                self.notifyExit(set.template get<Ts>());
+            }
+        }(), ...);
+    }
+
+    template<typename SET, typename... Ts>
+    void enterEach(SET const& set, mtl::typelist<Ts...>)
+    {
+        auto& self = static_cast<DERIVED&>(*this);
+        ([&] {
+            if constexpr (requires { self.notifyEntry(set.template get<Ts>()); }) {
+                self.notifyEntry(set.template get<Ts>());
+            }
+        }(), ...);
     }
 };
 

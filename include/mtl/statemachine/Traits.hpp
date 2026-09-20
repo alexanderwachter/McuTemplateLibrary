@@ -210,12 +210,13 @@ using remove_features_t = mtl::remove_if_t<
 template<mtl::concepts::typelist LIST, typename TAG>
 using remove_feature_t = remove_features_t<LIST, mtl::typelist<TAG>>;
 
-// Whether OBSERVER's static observation covers STATE at all - even
-// without a hook accepting the annotation; a state's annotation set
-// counts when one of its elements reaches a hook
+// Whether OBSERVER's observation covers STATE at all - a static
+// annotation even without a hook accepting it; a state's annotation set
+// or instance values count when one of their elements reaches a hook
 template<typename OBSERVER, typename STATE>
 struct is_observed : std::bool_constant<internal::observes_v<OBSERVER, STATE> ||
-                                        internal::set_notified_v<OBSERVER, STATE>> {};
+                                        internal::set_notified_v<OBSERVER, STATE> ||
+                                        internal::values_notified_v<OBSERVER, STATE>> {};
 
 template<typename OBSERVER, typename STATE>
 inline constexpr bool is_observed_v = is_observed<OBSERVER, STATE>::value;

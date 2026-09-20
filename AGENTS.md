@@ -62,8 +62,9 @@ expecting the specific `static_assert` message - a class template's
 - A missing optional member means "not wanted", never an error: hooks,
   annotations, sinks are all detected individually. Value observers
   register by writing overloads: a state's `fsm::annotate(a, b)` set is
-  matched to `notifyEntry(A)`/`notifyExit(B)` by type; `observe_static`
-  remains for a single named member.
+  matched to `notifyEntry(A)`/`notifyExit(B)` by type, and so is the
+  set an instance returns from `values()` (`fsm::annotate_ref`, or one
+  value); `observe_static` remains for a single named member.
 - Observers observe annotations, not states. A hook that names a state
   (`if constexpr (std::is_same_v<STATE, reading>)`) couples the observer
   to one table; an annotation type decouples them - the state says what

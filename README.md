@@ -117,7 +117,10 @@ whether a transition fired.
   suppression: one named member via `observe_static`, or a state's
   `static constexpr auto annotations = fsm::annotate(a, b, c)` whose
   elements reach the observer's `notifyEntry`/`notifyExit` overloads by
-  type, each suppressed on its own), `fsm::tracing` (transition trace lines),
+  type, each suppressed on its own; an instance's values - an event
+  payload, a computed report - the same way from `auto values() const {
+  return fsm::annotate_ref(message, report()); }`, delivered on every
+  edge), `fsm::tracing` (transition trace lines),
   `fsm::observer_group` (several observers as one). A state feature no
   observer consumes is silently unobserved. Observers should watch
   annotations, not states: an observer naming a state (`if constexpr

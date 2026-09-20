@@ -370,7 +370,13 @@ namespace Payload {
         sending() = default;
         explicit sending(send const& event) : msg(event.msg) {}
         message msg{};
+        // the instance's values as a set: the payload, by reference
+        auto values() const { return fsm::annotate_ref(msg); }
     };
+    static_assert(std::is_same_v<decltype(std::declval<sending const&>().values()),
+                                 fsm::annotation_set<message const&>>);
+    static_assert(std::is_same_v<decltype(std::declval<sending const&>().values())::types,
+                                 mtl::typelist<message>>);
 
     using tbl = fsm::transition_table<
         fsm::transition<fsm::from<idle>,    fsm::on<send>,   fsm::to<sending>>,
@@ -389,19 +395,21 @@ namespace Payload {
         std::vector<int> transmitted;
     };
 
-    // observing-based counterpart to tx_driver: names the watched member
-    // once, gets the live payload without getIf plumbing
+    // observing-based counterpart to tx_driver: consumes the state's
+    // instance value by type, no getIf plumbing, no accessor named
     struct live_driver : fsm::observing<live_driver> {
-        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.msg))
-        {
-            return state.msg;
-        }
+        using observes = mtl::typelist<message>;
+
         void notifyEntry(message const& msg) { entered.push_back(msg.id); }
         void notifyExit(message const& msg) { exited.push_back(msg.id); }
 
         std::vector<int> entered;
         std::vector<int> exited;
     };
+    // instance values count for coverage and for the declared-type check
+    static_assert(fsm::is_notified_of_v<live_driver, sending>);
+    static_assert(!fsm::is_notified_of_v<live_driver, idle>);
+    static_assert(fsm::annotation_in_table_v<tbl, message>);
 } // namespace Payload
 
 namespace Context {
@@ -1185,19 +1193,16 @@ namespace ordering {
         active() = default;
         explicit active(go const& event) : value(event.value) {}
         int value = 0;
+        int values() const { return value; } // one value: a one-element set
     };
 
-    // observes the static mode and the nonstatic value; the contract
+    // observes the static mode and the instance value; the contract
     // guarantees the static hook runs first on the same entry
     struct dual_observer : fsm::observing<dual_observer> {
         template<typename STATE>
         static constexpr auto observe_static() -> decltype(STATE::mode)
         {
             return STATE::mode;
-        }
-        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.value))
-        {
-            return state.value;
         }
         void notifyEntry(mode_t const&) { sequence.push_back('s'); }
         void notifyEntry(int value) { sequence.push_back('n'); last_value = value; }
