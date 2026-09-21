@@ -154,11 +154,13 @@ class ConfiguredStateMachine {
     static constexpr bool has_timeouts  = fsm::has_timed_states_v<TABLE>;
     static constexpr bool has_deadlines = fsm::has_deadlined_states_v<TABLE>;
 
-    using timers = mtl::concat_t<internal::observer_if_t<has_timeouts, timed_type>,
-                                 internal::observer_if_t<has_deadlines, deadlined_type>>;
+    using timers =
+        mtl::concat_t<internal::observer_if_t<ConfiguredStateMachine::has_timeouts, timed_type>,
+                      internal::observer_if_t<ConfiguredStateMachine::has_deadlines,
+                                              deadlined_type>>;
 
 public:
-    using table = TABLE;
+    using table_type = TABLE;
     using machine_type =
         typename internal::queued_machine<TABLE, CONFIG.event_buffer_capacity, timers,
                                           OBSERVERs...>::type;
@@ -232,11 +234,12 @@ private:
 
     auto timerObservers()
     {
-        if constexpr (has_timeouts && has_deadlines) {
+        if constexpr (ConfiguredStateMachine::has_timeouts &&
+                      ConfiguredStateMachine::has_deadlines) {
             return std::tie(timed_, deadlined_);
-        } else if constexpr (has_timeouts) {
+        } else if constexpr (ConfiguredStateMachine::has_timeouts) {
             return std::tie(timed_);
-        } else if constexpr (has_deadlines) {
+        } else if constexpr (ConfiguredStateMachine::has_deadlines) {
             return std::tie(deadlined_);
         } else {
             return std::tuple<>{};
@@ -247,8 +250,11 @@ private:
     // then the machine - whose construction already arms and notifies
     internal::queue_holder<QUEUE, CONFIG> queue_;
     Work work_;
-    [[no_unique_address]] std::conditional_t<has_timeouts, timed_type, mtl::nil_type> timed_{};
-    [[no_unique_address]] std::conditional_t<has_deadlines, deadlined_type, mtl::nil_type>
+    [[no_unique_address]] std::conditional_t<ConfiguredStateMachine::has_timeouts, timed_type,
+                                             mtl::nil_type>
+        timed_{};
+    [[no_unique_address]] std::conditional_t<ConfiguredStateMachine::has_deadlines,
+                                             deadlined_type, mtl::nil_type>
         deadlined_{};
     machine_type machine_;
 };

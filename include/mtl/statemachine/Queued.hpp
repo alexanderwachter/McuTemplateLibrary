@@ -351,7 +351,7 @@ private:
         }
         draining_ = true;
         while (true) {
-            if constexpr (has_deadline) {
+            if constexpr (QueuedMachine::has_deadline) {
                 if (deadline_->deliver()) {
                     continue;
                 }
@@ -370,7 +370,7 @@ private:
                     event);
                 continue;
             }
-            if constexpr (has_timeout) {
+            if constexpr (QueuedMachine::has_timeout) {
                 if (timeout_->deliver()) {
                     continue;
                 }

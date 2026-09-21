@@ -115,7 +115,8 @@ private:
     template<typename STATE>
     struct constructible_from_context
         : std::bool_constant<std::constructible_from<STATE, internal::context_of_t<STATE>&>> {};
-    static_assert(mtl::all_of_v<context_states, constructible_from_context>,
+    static_assert(mtl::all_of_v<context_states,
+                                state_machine::template constructible_from_context>,
                   "state_machine: a context state must be constructible from its context alone");
 
 public:
@@ -157,13 +158,13 @@ public:
                 // 1. the state's guarded alternatives in table order
                 if constexpr (!mtl::empty_v<guarded>) {
                     if (this->template tryGuarded<state_type>(guarded{}, state, event)) {
-                        return fired;
+                        return state_machine::fired;
                     }
                 }
                 // 2. its unguarded catch-all always fires
                 if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
                     this->template doTransition<unguarded>(state, event);
-                    return fired;
+                    return state_machine::fired;
                 }
                 // 3. the wildcards, behind the state's own alternatives:
                 //    the first whose guard passes is left here, fired below
@@ -172,16 +173,17 @@ public:
                 }
                 // 4. nothing: the event is ignored (these arms emit no code)
                 else {
-                    return ignored;
+                    return state_machine::ignored;
                 }
             },
             current_);
-        bool changed = outcome == fired;
+        bool changed = outcome == state_machine::fired;
         if constexpr (!mtl::empty_v<wildcards>) {
-            if (outcome >= pending) {
+            if (outcome >= state_machine::pending) {
                 // the state left is still the current one: its index is
                 // the source the edge-form hooks may ask for
-                this->fireWildcard(outcome - pending, current_.index(), wildcards{}, event);
+                this->fireWildcard(outcome - state_machine::pending, current_.index(),
+                                   wildcards{}, event);
                 changed = true;
             }
         }
@@ -230,12 +232,12 @@ private:
     template<typename STATE, typename... WILDCARDs, typename EVENT>
     std::size_t leaveForWildcard(mtl::typelist<WILDCARDs...>, STATE& state, EVENT const& event)
     {
-        std::size_t outcome = ignored;
+        std::size_t outcome = state_machine::ignored;
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((internal::allowed<WILDCARDs>(state, event) &&
-                  (this->template leave<STATE, typename WILDCARDs::to>(), outcome = pending + INDEXs,
-                   true)) ||
+                  (this->template leave<STATE, typename WILDCARDs::to>(),
+                   outcome = state_machine::pending + INDEXs, true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
         return outcome;
