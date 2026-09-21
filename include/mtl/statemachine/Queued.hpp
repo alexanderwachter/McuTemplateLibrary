@@ -179,6 +179,9 @@ namespace internal {
 template<typename TIMER>
 struct timer_holder {
     TIMER platform_timer{};
+
+protected:
+    timer_holder() = default;
 };
 
 } // namespace internal

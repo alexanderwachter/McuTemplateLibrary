@@ -51,6 +51,10 @@ struct line_tracer : fsm::tracing<line_tracer> {
     std::vector<std::string> lines;
 };
 
+// the base is a mixin: constructible only as part of its derived class
+static_assert(!std::is_default_constructible_v<fsm::tracing<line_tracer>>);
+static_assert(std::is_default_constructible_v<line_tracer>);
+
 // the initial sink is optional
 struct transition_tracer : fsm::tracing<transition_tracer> {
     void traceTransition(char const*, char const*, char const*, char const*) { ++transitions; }

@@ -387,6 +387,12 @@ struct observing {
         this->template onEnterFrom<mtl::nil_type, STATE>(machine);
     }
 
+protected:
+    // A mixin: only ever a base of DERIVED. The derived observer is
+    // therefore no aggregate for the outside - give it a constructor
+    // rather than initializing its members with braces
+    observing() = default;
+
 private:
     // The set elements, each on its own change check
     template<typename OLD_STATE, typename NEW_STATE, typename... Ts>

@@ -72,6 +72,11 @@ expecting the specific `static_assert` message - a class template's
   change without the other. Reserve state-naming hooks for glue that
   is part of the table's own module (the samples' virtual sensor, the
   firmware's port routers).
+- A CRTP base or mixin (`fsm::observing`, `fsm::tracing`,
+  `fsm::QueuedTimerBase`) has a protected constructor: it cannot be
+  instantiated on its own. The price: a class derived from one cannot
+  be aggregate-initialized from outside (`driver{.start = t}`), it needs
+  a constructor.
 - Traits that name an optional member (`STATE::annotations`,
   `STATE::feature`) are specializations constrained on a concept, never
   a `&&` of two instantiations: the second operand gets substituted for

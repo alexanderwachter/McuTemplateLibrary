@@ -281,6 +281,10 @@ namespace AnnotationCoverage {
         void notifyEntry(int);
     };
 
+    // the base is a mixin: constructible only as part of its derived class
+    static_assert(!std::is_default_constructible_v<fsm::observing<level_watcher>>);
+    static_assert(std::is_default_constructible_v<level_watcher>);
+
     static_assert(fsm::is_observed_v<level_watcher, annotated>);
     static_assert(!fsm::is_observed_v<level_watcher, bare>);
     static_assert(fsm::concepts::notified_of<level_watcher, annotated>);
@@ -866,6 +870,8 @@ using owning_machine =
     fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock, owning_timed, sync_actor>;
 
 static_assert(fsm::concepts::timer<fsm::OwningQueuedTimer<manual_timer>>);
+// the channel base is only ever part of a queued timer
+static_assert(!std::is_default_constructible_v<fsm::QueuedTimerBase>);
 
 // a WORK the caller owns and configures, handed over by reference
 struct counting_work {

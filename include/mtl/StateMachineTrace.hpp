@@ -80,6 +80,10 @@ struct tracing {
         }
     }
 
+protected:
+    // A mixin: only ever a base of DERIVED
+    tracing() = default;
+
 private:
     template<typename T>
     static constexpr char const* name()

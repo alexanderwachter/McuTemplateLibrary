@@ -76,6 +76,10 @@ struct green_lamp {
 };
 
 struct lamp_driver : fsm::observing<lamp_driver> {
+    // a constructor, not aggregate initialization: the observing base is
+    // a mixin only its derived class may construct
+    explicit lamp_driver(std::chrono::steady_clock::time_point start_time) : start(start_time) {}
+
     void notifyEntry(red_lamp lamp) { report("red", lamp.on); }
     void notifyEntry(yellow_lamp lamp) { report("yellow", lamp.on); }
     void notifyEntry(green_lamp lamp) { report("green", lamp.on); }
@@ -169,7 +173,7 @@ int main(int argc, char* argv[])
     };
 
     fsm::timed<polling_timer> timeouts;
-    lamp_driver driver{.start = start};
+    lamp_driver driver{start};
     trace_printer tracer;
     machine sm{timeouts, driver, tracer};
 
