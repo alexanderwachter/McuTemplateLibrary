@@ -201,6 +201,15 @@ struct queue_compatible<deadlined<TIMER>> : is_queued_timer<std::remove_referenc
 template<typename OBSERVER>
 inline constexpr bool queue_compatible_v = queue_compatible<OBSERVER>::value;
 
+// Timer events never travel through the FIFO - expiries live in the
+// channels' latches - so the ring's variant leaves them out: their
+// delivery arms would duplicate the heaviest per-event dispatch
+// (every timed state and its guards), which the latch path already
+// instantiates (measured ~2.4 kB on the pd_drp sample)
+template<typename EVENT>
+struct is_timer_event
+    : std::bool_constant<std::is_same_v<EVENT, timeout> || std::is_same_v<EVENT, deadline>> {};
+
 } // namespace internal
 
 // The queue-owning machine: TABLE and OBSERVERs as in
@@ -211,12 +220,16 @@ template<typename TABLE, std::size_t CAPACITY, concepts::work_queue WORK = inlin
          concepts::basic_lockable LOCK = no_lock, typename... OBSERVERs>
 class QueuedMachine {
 public:
-    using machine_type  = state_machine<TABLE, OBSERVERs...>;
-    using event_variant = mtl::rebind_t<mtl::prepend_t<std::monostate, typename TABLE::events>,
-                                        std::variant>;
+    using machine_type = state_machine<TABLE, OBSERVERs...>;
+    // fsm::timeout and fsm::deadline enter through the latches, never
+    // the ring: the variant leaves them out
+    using queueable_events =
+        mtl::remove_if_t<typename TABLE::events, internal::is_timer_event>;
+    using event_variant =
+        mtl::rebind_t<mtl::prepend_t<std::monostate, queueable_events>, std::variant>;
 
     static_assert(CAPACITY > 0, "QueuedMachine: CAPACITY must be at least 1");
-    static_assert(mtl::all_of_v<typename TABLE::events, std::is_copy_constructible>,
+    static_assert(mtl::all_of_v<queueable_events, std::is_copy_constructible>,
                   "QueuedMachine: every event of the table must be copy constructible");
     static_assert((internal::queue_compatible_v<OBSERVERs> && ...),
                   "QueuedMachine: timed/deadlined observers must run on fsm::QueuedTimer");
@@ -246,14 +259,10 @@ public:
     template<typename EVENT>
     bool process(EVENT const& event)
     {
-        if constexpr (!mtl::has_a_v<typename TABLE::events, EVENT>) {
+        if constexpr (!mtl::has_a_v<queueable_events, EVENT>) {
             return false;
         } else {
-            if (!this->enqueue(event)) {
-                return false;
-            }
-            work_.submit(&QueuedMachine::drainHook, this);
-            return true;
+            return this->enqueue(event);
         }
     }
 
@@ -289,6 +298,13 @@ private:
     // Deliver until nothing is pending; no-op while a drain is running
     // (a process() from a hook only enqueues - the running drain
     // delivers it after the current transition)
+    // Whether the observer pack brings the channel at all: without
+    // one, its delivery check drops out of the drain entirely
+    static constexpr bool has_timeout =
+        (internal::is_timed_observer<OBSERVERs>::value || ...);
+    static constexpr bool has_deadline =
+        (internal::is_deadlined_observer<OBSERVERs>::value || ...);
+
     void drain()
     {
         if (draining_) {
@@ -296,8 +312,10 @@ private:
         }
         draining_ = true;
         while (true) {
-            if (deadline_ != nullptr && deadline_->deliver()) {
-                continue;
+            if constexpr (has_deadline) {
+                if (deadline_->deliver()) {
+                    continue;
+                }
             }
             event_variant event{}; // copied out: a delivery may refill the slot
             if (this->popInto(event)) {
@@ -313,27 +331,47 @@ private:
                     event);
                 continue;
             }
-            if (timeout_ != nullptr && timeout_->deliver()) {
-                continue;
+            if constexpr (has_timeout) {
+                if (timeout_->deliver()) {
+                    continue;
+                }
             }
             break;
         }
         draining_ = false;
     }
 
+    // Split so the ring bookkeeping is one shared body: only the
+    // event's emplace stays with each per-event instantiation. The
+    // lock is held from a successful acquire until the commit
     template<typename EVENT>
     bool enqueue(EVENT const& event)
+    {
+        event_variant* const slot = this->acquireSlot();
+        if (slot == nullptr) {
+            return false;
+        }
+        slot->template emplace<EVENT>(event);
+        this->commitSlot();
+        return true;
+    }
+
+    event_variant* acquireSlot()
     {
         lock_.lock();
         if (count_ == CAPACITY) {
             lock_.unlock();
             MTL_FSM_ASSERT(false, "QueuedMachine: event queue overflow");
-            return false;
+            return nullptr;
         }
-        ring_[(read_ + count_) % CAPACITY].template emplace<EVENT>(event);
+        return &ring_[(read_ + count_) % CAPACITY];
+    }
+
+    void commitSlot()
+    {
         ++count_;
         lock_.unlock();
-        return true;
+        work_.submit(&QueuedMachine::drainHook, this);
     }
 
     bool popInto(event_variant& event)
