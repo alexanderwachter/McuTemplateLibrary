@@ -139,6 +139,17 @@ whether a transition fired.
 - **Small.** Transition bodies are instantiated per edge, not per event;
   wildcard transitions fire through one shared body per target when no
   observer could tell the source apart; dispatch is a fold, no tables.
+- **Queued when events come from everywhere.** `process()` is not
+  re-entrant and not thread-safe; `fsm::QueuedMachine<TABLE, CAPACITY,
+  WORK, LOCK, OBSERVERs...>` owns the machine and makes `process()` an
+  enqueue into a bounded FIFO, drained one completed transition at a
+  time by a WORK policy (inline by default, a real work queue with a
+  LOCK policy to be callable from ISRs). A hook that reports an event
+  gets ordered delivery instead of re-entrancy, and timers latch their
+  expiry (`fsm::timed<fsm::OwningQueuedTimer<TIMER>>`, one line), so a
+  stale timeout cannot reach the wrong state. Zephyr glue:
+  `mtl::zephyr::WorkQueue`, `WorkOn<queue>`, `SystemWork`, `SpinLock`,
+  `QueuedTimer`; both samples run this way.
 
 ### Rules and edge cases
 

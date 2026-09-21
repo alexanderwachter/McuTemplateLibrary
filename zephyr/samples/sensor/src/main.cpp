@@ -16,8 +16,14 @@
  *   LedDriver      - value observer of the LED machine writing led0
  *   TraceLogger     - both machines trace to the mtl_fsm log module
  *
- * The user button (alias sw0) is the emergency stop from any state and
- * resumes from emergency; everything runs on the system workqueue.
+ * Both machines are fsm::QueuedMachine: process() only queues, the
+ * drain runs on a workqueue of their own (mtl::zephyr::WorkQueue,
+ * WorkOn), the FIFO is guarded by mtl::zephyr::SpinLock. Every event
+ * source may therefore process() from where it is - the button from its
+ * ISR, the timeouts from k_timer's ISR (mtl::zephyr::QueuedTimer: they
+ * only latch), the sensor's work items from the system workqueue, and
+ * the LED controller from inside the sensor machine's hook. The user button (alias sw0) is the emergency
+ * stop from any state and resumes from emergency.
  *
  *   west build -t dot        (sensor_table as configured, led_table)
  *   west fsm_liveview        (reads /dev/ttyACM0, graphs from build/)
@@ -34,6 +40,7 @@
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/zephyr/Timer.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
+#include <mtl/zephyr/Work.hpp>
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
@@ -45,30 +52,21 @@ LOG_MODULE_REGISTER(sensor_sample, LOG_LEVEL_INF);
 
 namespace {
 
+// The queued machine is the one way in: a hook only ever sees the raw
+// machine, for reading it. What the observers below have to report
+// goes through these, defined next to the machine further down
+void reportReading(int value);
+void reportReadingFailed();
+void reportCalibrated(int offset);
+
 // --- virtual sensor ---------------------------------------------------------
-// Two constrained hooks: the construction-time entry (OLD = nil_type)
-// binds the machine once - its address never changes - and every entry
-// into reading starts a conversion. Constrained this way the hooks run
-// on no other edge, so the button's any_state transition keeps its
-// shared body. The constraints must exclude each other: an ambiguous
-// overload would make the machine's detection treat the hook as absent
+// Entering reading starts a conversion: a hook of one state, the edge
+// does not matter. Glue of this table's own module, so naming the state
+// is fine here
 class VirtualSensor {
 public:
     VirtualSensor() { k_work_init_delayable(&work_, &VirtualSensor::finish); }
 
-    // initial state: bind
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        requires std::is_same_v<OLD_STATE, mtl::nil_type>
-    void onEnterFrom(MACHINE& stateMachine)
-    {
-        stateMachine_ = &stateMachine;
-        done_         = [](void* m, int value) {
-            static_cast<MACHINE*>(m)->process(sensor::reading_done{value});
-        };
-        failed_ = [](void* m) { static_cast<MACHINE*>(m)->process(sensor::reading_failed{}); };
-    }
-
-    // entering reading: a hook of one state, the edge does not matter
     template<typename STATE, typename MACHINE>
         requires std::is_same_v<STATE, sensor::reading>
     void onEnter(MACHINE&)
@@ -82,20 +80,17 @@ private:
         auto* self = CONTAINER_OF(k_work_delayable_from_work(work), VirtualSensor, work_);
         if (++self->conversions_ % 4 == 0) { // every fourth conversion fails
             LOG_INF("sensor: conversion failed");
-            self->failed_(self->stateMachine_);
+            reportReadingFailed();
             return;
         }
         self->value_ = 35 + (self->value_ + 13) % 60; // a wandering value, 35..94
         LOG_INF("sensor: %d", self->value_);
-        self->done_(self->stateMachine_, self->value_);
+        reportReading(self->value_);
     }
 
     k_work_delayable work_;
-    void* stateMachine_       = nullptr;
-    void (*done_)(void*, int) = nullptr;
-    void (*failed_)(void*)    = nullptr;
-    int conversions_          = 0;
-    int value_                = 0;
+    int conversions_ = 0;
+    int value_       = 0;
 };
 
 // --- calibration feature ----------------------------------------------------
@@ -107,30 +102,29 @@ public:
     Calibrator() { k_work_init_delayable(&work_, &Calibrator::finish); }
 
     // calibrating is the initial state: the construction-time entry is
-    // the entry that starts the calibration, so one hook binds and starts
+    // the entry that starts the calibration
     template<typename STATE, typename MACHINE>
         requires std::is_same_v<STATE, sensor::calibrating>
-    void onEnter(MACHINE& stateMachine)
+    void onEnter(MACHINE&)
     {
-        stateMachine_ = &stateMachine;
-        done_         = [](void* m, int offset) {
-            static_cast<MACHINE*>(m)->process(sensor::calibrated{offset});
-        };
         k_work_reschedule(&work_, K_MSEC(1500));
     }
 
 private:
-    static void finish(k_work* work)
+    static void finish(k_work*)
     {
-        auto* self = CONTAINER_OF(k_work_delayable_from_work(work), Calibrator, work_);
         LOG_INF("calibrated: offset 3");
-        self->done_(self->stateMachine_, 3);
+        reportCalibrated(3);
     }
 
     k_work_delayable work_;
-    void* stateMachine_       = nullptr;
-    void (*done_)(void*, int) = nullptr;
 };
+
+// Both machines drain on a workqueue of their own rather than the
+// system workqueue: its thread is theirs alone. Declared before the
+// machines - the constructor starts the thread
+mtl::zephyr::WorkQueue<2048, 5> fsm_queue{"sensor_fsm"};
+using Work = mtl::zephyr::WorkOn<fsm_queue>;
 
 // --- LED: a driver observer on the LED machine, the machine inside the
 // observer of the sensor machine ---------------------------------------------
@@ -178,19 +172,21 @@ struct LedDriver : fsm::observing<LedDriver> {
 struct LedController : fsm::observing<LedController> {
     using observes = mtl::typelist<sensor::led_pattern>;
 
+    // Called from inside the sensor machine's hook: the LED machine's
+    // process() only queues, its own drain follows on the workqueue
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
     // observers before the state machine they are injected into
-    fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
+    fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
     mtl::zephyr::TraceLogger tracer;
 #if SAMPLE_HAS_LED
     LedDriver driver;
-    fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>, LedDriver,
-                       mtl::zephyr::TraceLogger>
+    fsm::QueuedMachine<led::led_table, 4, Work, mtl::zephyr::SpinLock,
+                       fsm::timed<mtl::zephyr::QueuedTimer>, LedDriver, mtl::zephyr::TraceLogger>
         stateMachine{timeouts, driver, tracer};
 #else
-    fsm::state_machine<led::led_table, fsm::timed<mtl::zephyr::WorkqueueTimer>,
-                       mtl::zephyr::TraceLogger>
+    fsm::QueuedMachine<led::led_table, 4, Work, mtl::zephyr::SpinLock,
+                       fsm::timed<mtl::zephyr::QueuedTimer>, mtl::zephyr::TraceLogger>
         stateMachine{timeouts, tracer};
 #endif
 };
@@ -209,13 +205,14 @@ struct PowerRail : fsm::observing<PowerRail> {
 
 // --- the sensor state machine: its table is filtered by the injected observers
 template<typename... OBSERVERs>
-using SensorStateMachine = fsm::state_machine<sensor::sensor_table<OBSERVERs...>,
-                                              fsm::timed<mtl::zephyr::WorkqueueTimer>, OBSERVERs...>;
+using SensorStateMachine =
+    fsm::QueuedMachine<sensor::sensor_table<OBSERVERs...>, 4, Work, mtl::zephyr::SpinLock,
+                       fsm::timed<mtl::zephyr::QueuedTimer>, OBSERVERs...>;
 
-// Static: work items and machine addresses must stay put. Order: timer
-// first (armed before anything is notified), the tracer last (its line
-// follows the effects)
-fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
+// Static: kernel objects and machine addresses must stay put. Order:
+// timer first (armed before anything is notified), the tracer last (its
+// line follows the effects)
+fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
 VirtualSensor sensor;
 LedController leds;
 PowerRail rail;
@@ -229,20 +226,31 @@ SensorStateMachine<VirtualSensor, LedController, PowerRail, mtl::zephyr::TraceLo
     monitor{timeouts, sensor, leds, rail, tracer};
 #endif
 
+// What the observers report, through the queue
+void reportReading(int value)
+{
+    monitor.process(sensor::reading_done{value});
+}
+
+void reportReadingFailed()
+{
+    monitor.process(sensor::reading_failed{});
+}
+
+// without the calibration feature the table has no such event: ignored
+void reportCalibrated(int offset)
+{
+    monitor.process(sensor::calibrated{offset});
+}
+
 // --- emergency button -------------------------------------------------------
+// The ISR processes the event itself: process() only queues it
 #if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(sw0))
 
 constexpr int64_t debounce_ms = 200;
 gpio_dt_spec const button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 gpio_callback button_callback;
-k_work button_work;
 int64_t last_press = -debounce_ms;
-
-void pressButton(k_work*)
-{
-    LOG_INF("button pressed");
-    monitor.process(sensor::button{});
-}
 
 void buttonIsr(device const*, gpio_callback*, uint32_t)
 {
@@ -251,7 +259,7 @@ void buttonIsr(device const*, gpio_callback*, uint32_t)
         return;
     }
     last_press = now;
-    k_work_submit(&button_work);
+    monitor.process(sensor::button{});
 }
 
 int initButton()
@@ -260,7 +268,6 @@ int initButton()
         LOG_ERR("button port not ready");
         return -ENODEV;
     }
-    k_work_init(&button_work, pressButton);
     int error = gpio_pin_configure_dt(&button, GPIO_INPUT);
     if (error == 0) {
         error = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);

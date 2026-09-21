@@ -11,12 +11,12 @@ its design.
 | `include/mtl/Typelist.hpp`, `TypelistAlgorithms.hpp` | typelists and compile-time algorithms; everything else builds on them |
 | `include/mtl/TypeName.hpp` | compile-time type names (`short_name_of<T>` is the machine/state/event id everywhere) |
 | `include/mtl/StateMachine.hpp` | the `fsm` state machine: the contract comment, includes the parts below |
-| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups, guards), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `Observer.hpp` (hook forms, `observer_group`), `Traits.hpp` (reachability, features, coverage), `Core.hpp` (`state_machine`, dispatch) |
+| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups, guards), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `Observer.hpp` (hook forms, `observer_group`), `Traits.hpp` (reachability, features, coverage), `Core.hpp` (`state_machine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
 | `include/mtl/StateMachineTrace.hpp` | `fsm::tracing` observer and the trace line grammar (target code) |
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |
 | `examples/statemachine/traffic_light.cpp` | host demo, also the host feed for the viewer (`--dot`, trace lines on stdout) |
-| `zephyr/` | Zephyr module: `module.yml`, `Kconfig`, `CMakeLists.txt`, glue in `include/mtl/zephyr/` (`Timer.hpp`, `TraceLogger.hpp`), `src/TraceLogger.cpp`, `samples/traffic_light`, `samples/sensor`, `scripts/west-commands.yml` |
+| `zephyr/` | Zephyr module: `module.yml`, `Kconfig`, `CMakeLists.txt`, glue in `include/mtl/zephyr/` (`Timer.hpp`: timer policies and the one-line `QueuedTimer`; `Work.hpp`: `WorkQueue`, `WorkOn<queue>`, `SystemWork`, `SpinLock` for `fsm::QueuedMachine`; `TraceLogger.hpp`), `src/TraceLogger.cpp`, `samples/traffic_light`, `samples/sensor`, `scripts/west-commands.yml` |
 | `tools/dotgen` | crawls headers for tables, builds a host generator, writes `.dot` files; `west fsm_dotgen` |
 | `tools/fsmview` | live/replay viewer, Python + one HTML page; `west fsm_liveview` |
 

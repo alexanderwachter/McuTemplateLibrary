@@ -1,9 +1,12 @@
 /*
- * Traffic light on Zephyr: the state timeouts run on the system
- * workqueue (mtl::zephyr::WorkqueueTimer), the board's user button
- * (alias sw0) is the pedestrian button shortening the green phase after
- * a minimum green time, and every transition is logged by
- * mtl::zephyr::TraceLogger on the mtl_fsm module. Watch it live:
+ * Traffic light on Zephyr, as a queued machine: fsm::QueuedMachine
+ * drains its events on the system workqueue (mtl::zephyr::SystemWork),
+ * so both event sources stay in their ISRs - the state timeouts
+ * (mtl::zephyr::QueuedTimer: the k_timer expiry only latches) and the
+ * board's user button (alias sw0), the pedestrian
+ * button shortening the green phase after a minimum green time. Every
+ * transition is logged by mtl::zephyr::TraceLogger on the mtl_fsm
+ * module. Watch it live:
  *
  *   west build -t dot                           (writes build/traffic_light_table.dot)
  *   stty -F /dev/ttyACM0 115200 raw -echo -icrnl && cat /dev/ttyACM0 | fsmview.py build/traffic_light_table.dot --stdin
@@ -20,6 +23,7 @@
 
 #include <mtl/zephyr/Timer.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
+#include <mtl/zephyr/Work.hpp>
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
@@ -80,35 +84,30 @@ struct LampDriver : fsm::observing<LampDriver> {
     bool green = false;
 };
 
-using StateMachine = fsm::state_machine<traffic_light_table,
-                                        fsm::timed<mtl::zephyr::WorkqueueTimer>, LampDriver,
-                                        mtl::zephyr::TraceLogger>;
+// The queue holds the button presses of one burst; timer expiries live
+// in the timer's latch, not in the queue
+using StateMachine =
+    fsm::QueuedMachine<traffic_light_table, 4, mtl::zephyr::SystemWork, mtl::zephyr::SpinLock,
+                       fsm::timed<mtl::zephyr::QueuedTimer>, LampDriver, mtl::zephyr::TraceLogger>;
 
-// Static: the timer's work item and the machine's address must stay put
-fsm::timed<mtl::zephyr::WorkqueueTimer> timeouts;
+// Static: the kernel objects and the machine's address must stay put
+fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
 LampDriver lamps;
 mtl::zephyr::TraceLogger trace_logger;
 StateMachine light{timeouts, lamps, trace_logger};
 
 // --- pedestrian button ------------------------------------------------------
-// The ISR only queues work: the machine runs on the system workqueue,
-// which serializes the button with the timeouts. A press within the
-// debounce time of the previous one is contact bounce
+// The ISR processes the event itself: process() only queues it, the
+// machine runs on the system workqueue, serialized with the timeouts.
+// A press within the debounce time of the previous one is contact
+// bounce; a press the table ignores (not green, or the minimum green
+// time not elapsed) simply fires nothing
 #if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(sw0))
 
 constexpr int64_t debounce_ms = 200;
 gpio_dt_spec const button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 gpio_callback button_callback;
-k_work button_work;
 int64_t last_press = -debounce_ms;
-
-void pressButton(k_work*)
-{
-    LOG_INF("pedestrian button pressed");
-    if (!light.process(pedestrian_button{})) {
-        LOG_INF("ignored (not green, or minimum green time not elapsed)");
-    }
-}
 
 void buttonIsr(device const*, gpio_callback*, uint32_t)
 {
@@ -117,7 +116,7 @@ void buttonIsr(device const*, gpio_callback*, uint32_t)
         return;
     }
     last_press = now;
-    k_work_submit(&button_work);
+    light.process(pedestrian_button{});
 }
 
 int initButton()
@@ -126,7 +125,6 @@ int initButton()
         LOG_ERR("button port not ready");
         return -ENODEV;
     }
-    k_work_init(&button_work, pressButton);
     int error = gpio_pin_configure_dt(&button, GPIO_INPUT);
     if (error == 0) {
         error = gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
@@ -154,7 +152,8 @@ int initButton()
 int main()
 {
     // Construction already logged the initial state, reported the lamps
-    // and armed red's timeout; everything else runs on the system workqueue
+    // and armed red's timeout; everything else is drained on the system
+    // workqueue
     lamps.attach();
     initButton();
     k_sleep(K_FOREVER);

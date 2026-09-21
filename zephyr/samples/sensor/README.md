@@ -20,6 +20,7 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's `any_state` transition changes the state through one shared body; `fsm::timed`'s one-state hooks and the value observers' entries run once (a pattern or rail level is re-notified there), their exits and the tracer's line use the edge and pay one body per source |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
+| Queued machines on a workqueue of their own | both machines are `fsm::QueuedMachine` draining on `mtl::zephyr::WorkQueue<2048, 5> fsm_queue` (`WorkOn<fsm_queue>`, FIFO under `mtl::zephyr::SpinLock`): the button ISR, the `k_timer` expiries (`fsm::timed<mtl::zephyr::QueuedTimer>`, one line), the sensor's work items on the system workqueue and `LedController` from inside the sensor machine's hook all just `process()` - the observers report through `reportReading()` and friends instead of holding a machine pointer |
 
 The tables (`sensor_table<OBSERVERs...>`, filtered by the observers, and `led_table`) are
 Zephyr-free headers, so the graph generator builds them on the host.

@@ -1,11 +1,14 @@
 # Traffic light on Zephyr
 
-The traffic light of `examples/statemachine` running on a Zephyr board:
-state timeouts through `mtl::zephyr::WorkqueueTimer` on the system
-workqueue, the board's user button (devicetree alias `sw0`) as the
-pedestrian button - it shortens the green phase once the minimum green
-time has elapsed, its ISR only queues work so the machine stays on the
-workqueue - and every transition logged by `mtl::zephyr::TraceLogger` on
+The traffic light of `examples/statemachine` running on a Zephyr board,
+as a queued machine: `fsm::QueuedMachine` drains its events on the
+system workqueue (`mtl::zephyr::SystemWork`, the FIFO guarded by
+`mtl::zephyr::SpinLock`), so both event sources stay in their ISRs. The
+state timeouts are one line, `fsm::timed<mtl::zephyr::QueuedTimer>` - a
+`k_timer` whose expiry only latches - and the board's user button
+(devicetree alias `sw0`), the pedestrian button shortening the green
+phase once the minimum green time has elapsed, calls `process()` straight
+from its ISR. Every transition is logged by `mtl::zephyr::TraceLogger` on
 the `mtl_fsm` log module in the line grammar of `tools/fsmview`. The
 three lamps are an annotation set on every state
 (`fsm::annotate(red_lamp{..}, yellow_lamp{..}, green_lamp{..})`), and one

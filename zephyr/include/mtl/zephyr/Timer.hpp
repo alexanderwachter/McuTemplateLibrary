@@ -103,4 +103,11 @@ private:
 };
 static_assert(fsm::concepts::timer<WorkqueueTimer>);
 
+// The timer of a fsm::QueuedMachine, one line per observer:
+//   fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
+// An IsrTimer behind the queue's latch: the expiry only sets a flag
+// and submits the drain, which is all an ISR should do, so none of
+// IsrTimer's caveats apply here
+using QueuedTimer = fsm::OwningQueuedTimer<IsrTimer>;
+
 } // namespace mtl::zephyr
