@@ -14,6 +14,33 @@ config MTL
 
 if MTL
 
+config MTL_FSM_WORKQUEUE_STACK_SIZE
+	int "Stack size of a state machine's own workqueue"
+	default 2048
+	help
+	  mtl::zephyr::StateMachine drains its events on a workqueue thread
+	  of its own unless it is given a shared mtl::zephyr::WorkQueue.
+	  The stack runs every hook of the machine's observers, their
+	  logging included.
+
+config MTL_FSM_WORKQUEUE_PRIORITY
+	int "Priority of a state machine's own workqueue"
+	default 5
+	help
+	  Thread priority of the workqueue an mtl::zephyr::StateMachine
+	  owns; negative priorities are cooperative.
+
+config MTL_FSM_EVENT_BUFFER_CAPACITY
+	int "Capacity of a state machine's event buffer"
+	default 4
+	range 1 255
+	help
+	  Events an mtl::zephyr::StateMachine holds until its workqueue
+	  delivers them: size it for the worst burst of events
+	  arriving before the workqueue gets to run. Timer expiries do not
+	  take a slot. An event arriving on a full FIFO is lost and
+	  process() returns false.
+
 config MTL_FSM_TRACE
 	bool "Trace state machine transitions"
 	depends on LOG

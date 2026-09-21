@@ -1,9 +1,9 @@
 /*
- * Traffic light on Zephyr, as a queued machine: fsm::QueuedMachine
- * drains its events on the system workqueue (mtl::zephyr::SystemWork),
- * so both event sources stay in their ISRs - the state timeouts
- * (mtl::zephyr::QueuedTimer: the k_timer expiry only latches) and the
- * board's user button (alias sw0), the pedestrian
+ * Traffic light on Zephyr: mtl::zephyr::StateMachine is the machine in
+ * one declaration - a queued machine with its timeout timer and a
+ * workqueue of its own, so both event sources stay in their ISRs: the
+ * state timeouts (the k_timer expiry only latches) and the board's
+ * user button (alias sw0), the pedestrian
  * button shortening the green phase after a minimum green time. Every
  * transition is logged by mtl::zephyr::TraceLogger on the mtl_fsm
  * module. Watch it live:
@@ -21,9 +21,8 @@
 
 #include "traffic_light.hpp"
 
-#include <mtl/zephyr/Timer.hpp>
+#include <mtl/zephyr/StateMachine.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
-#include <mtl/zephyr/Work.hpp>
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
@@ -84,17 +83,13 @@ struct LampDriver : fsm::observing<LampDriver> {
     bool green = false;
 };
 
-// The queue holds the button presses of one burst; timer expiries live
-// in the timer's latch, not in the queue
-using StateMachine =
-    fsm::QueuedMachine<traffic_light_table, 4, mtl::zephyr::SystemWork, mtl::zephyr::SpinLock,
-                       fsm::timed<mtl::zephyr::QueuedTimer>, LampDriver, mtl::zephyr::TraceLogger>;
-
+// The whole machine in one declaration: the table has timed states, so
+// it brings its timeout timer; it drains on a workqueue thread of its
+// own, named after the table; the observers' types are deduced.
 // Static: the kernel objects and the machine's address must stay put
-fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
 LampDriver lamps;
 mtl::zephyr::TraceLogger trace_logger;
-StateMachine light{timeouts, lamps, trace_logger};
+mtl::zephyr::StateMachine light{mtl::zephyr::table<traffic_light_table>, lamps, trace_logger};
 
 // --- pedestrian button ------------------------------------------------------
 // The ISR processes the event itself: process() only queues it, the

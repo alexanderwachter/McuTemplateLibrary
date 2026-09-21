@@ -16,7 +16,7 @@ its design.
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |
 | `examples/statemachine/traffic_light.cpp` | host demo, also the host feed for the viewer (`--dot`, trace lines on stdout) |
-| `zephyr/` | Zephyr module: `module.yml`, `Kconfig`, `CMakeLists.txt`, glue in `include/mtl/zephyr/` (`Timer.hpp`: timer policies and the one-line `QueuedTimer`; `Work.hpp`: `WorkQueue`, `WorkOn<queue>`, `SystemWork`, `SpinLock` for `fsm::QueuedMachine`; `TraceLogger.hpp`), `src/TraceLogger.cpp`, `samples/traffic_light`, `samples/sensor`, `scripts/west-commands.yml` |
+| `zephyr/` | Zephyr module: `module.yml`, `Kconfig`, `CMakeLists.txt`, glue in `include/mtl/zephyr/` (`Timer.hpp`: timer policies and the one-line `QueuedTimer`; `Work.hpp`: `WorkQueue`, `Work`, `SpinLock` for `fsm::QueuedMachine`; `StateMachine.hpp`: the facade - a queued machine with its timers and workqueue in one deduced declaration; `TraceLogger.hpp`), `src/TraceLogger.cpp`, `samples/traffic_light`, `samples/sensor`, `scripts/west-commands.yml` |
 | `tools/dotgen` | crawls headers for tables, builds a host generator, writes `.dot` files; `west fsm_dotgen` |
 | `tools/fsmview` | live/replay viewer, Python + one HTML page; `west fsm_liveview` |
 

@@ -147,9 +147,13 @@ whether a transition fired.
   LOCK policy to be callable from ISRs). A hook that reports an event
   gets ordered delivery instead of re-entrancy, and timers latch their
   expiry (`fsm::timed<fsm::OwningQueuedTimer<TIMER>>`, one line), so a
-  stale timeout cannot reach the wrong state. Zephyr glue:
-  `mtl::zephyr::WorkQueue`, `WorkOn<queue>`, `SystemWork`, `SpinLock`,
-  `QueuedTimer`; both samples run this way.
+  stale timeout cannot reach the wrong state. On Zephyr
+  `mtl::zephyr::StateMachine machine{mtl::zephyr::table<my_table>,
+  observers...};` is all of it in one declaration: the timers the table
+  needs, a workqueue of its own (or a shared `mtl::zephyr::WorkQueue`),
+  the event buffer under a spinlock, observer types deduced, sizes from
+  Kconfig or `mtl::zephyr::config<machine_config{...}>`. Both samples
+  run this way.
 
 ### Rules and edge cases
 

@@ -16,14 +16,15 @@
  *   LedDriver      - value observer of the LED machine writing led0
  *   TraceLogger     - both machines trace to the mtl_fsm log module
  *
- * Both machines are fsm::QueuedMachine: process() only queues, the
- * drain runs on a workqueue of their own (mtl::zephyr::WorkQueue,
- * WorkOn), the FIFO is guarded by mtl::zephyr::SpinLock. Every event
- * source may therefore process() from where it is - the button from its
- * ISR, the timeouts from k_timer's ISR (mtl::zephyr::QueuedTimer: they
- * only latch), the sensor's work items from the system workqueue, and
- * the LED controller from inside the sensor machine's hook. The user button (alias sw0) is the emergency
- * stop from any state and resumes from emergency.
+ * Both machines are mtl::zephyr::StateMachine, each one declaration:
+ * a queued machine with its own timeout timer, process() only queues,
+ * and both drain on one shared workqueue (mtl::zephyr::WorkQueue).
+ * Every event source may therefore process() from where it is - the
+ * button from its ISR, the timeouts from k_timer's ISR (they only
+ * latch), the sensor's work items from the system workqueue, and the
+ * LED controller from inside the sensor machine's hook. The user
+ * button (alias sw0) is the emergency stop from any state and resumes
+ * from emergency.
  *
  *   west build -t dot        (sensor_table as configured, led_table)
  *   west fsm_liveview        (reads /dev/ttyACM0, graphs from build/)
@@ -38,9 +39,8 @@
 
 #include <mtl/Typelist.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
-#include <mtl/zephyr/Timer.hpp>
+#include <mtl/zephyr/StateMachine.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
-#include <mtl/zephyr/Work.hpp>
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
@@ -120,11 +120,10 @@ private:
     k_work_delayable work_;
 };
 
-// Both machines drain on a workqueue of their own rather than the
-// system workqueue: its thread is theirs alone. Declared before the
-// machines - the constructor starts the thread
+// One workqueue thread for both machines, rather than one each (what
+// mtl::zephyr::StateMachine owns when it is given none). Declared
+// before the machines - the constructor starts the thread
 mtl::zephyr::WorkQueue<2048, 5> fsm_queue{"sensor_fsm"};
-using Work = mtl::zephyr::WorkOn<fsm_queue>;
 
 // --- LED: a driver observer on the LED machine, the machine inside the
 // observer of the sensor machine ---------------------------------------------
@@ -176,18 +175,18 @@ struct LedController : fsm::observing<LedController> {
     // process() only queues, its own drain follows on the workqueue
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
-    // observers before the state machine they are injected into
-    fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
+    // observers before the state machine they are injected into. A
+    // class member cannot deduce its template arguments, hence the alias
+    // naming them; the machine brings its own timeout timer
     mtl::zephyr::TraceLogger tracer;
 #if SAMPLE_HAS_LED
     LedDriver driver;
-    fsm::QueuedMachine<led::led_table, 4, Work, mtl::zephyr::SpinLock,
-                       fsm::timed<mtl::zephyr::QueuedTimer>, LedDriver, mtl::zephyr::TraceLogger>
-        stateMachine{timeouts, driver, tracer};
+    mtl::zephyr::StateMachineOnSharedWorkqueue<led::led_table, LedDriver,
+                                               mtl::zephyr::TraceLogger>
+        stateMachine{mtl::zephyr::table<led::led_table>, fsm_queue, driver, tracer};
 #else
-    fsm::QueuedMachine<led::led_table, 4, Work, mtl::zephyr::SpinLock,
-                       fsm::timed<mtl::zephyr::QueuedTimer>, mtl::zephyr::TraceLogger>
-        stateMachine{timeouts, tracer};
+    mtl::zephyr::StateMachineOnSharedWorkqueue<led::led_table, mtl::zephyr::TraceLogger>
+        stateMachine{mtl::zephyr::table<led::led_table>, fsm_queue, tracer};
 #endif
 };
 
@@ -203,27 +202,23 @@ struct PowerRail : fsm::observing<PowerRail> {
     }
 };
 
-// --- the sensor state machine: its table is filtered by the injected observers
-template<typename... OBSERVERs>
-using SensorStateMachine =
-    fsm::QueuedMachine<sensor::sensor_table<OBSERVERs...>, 4, Work, mtl::zephyr::SpinLock,
-                       fsm::timed<mtl::zephyr::QueuedTimer>, OBSERVERs...>;
-
-// Static: kernel objects and machine addresses must stay put. Order:
-// timer first (armed before anything is notified), the tracer last (its
-// line follows the effects)
-fsm::timed<mtl::zephyr::QueuedTimer> timeouts;
+// --- the sensor state machine -----------------------------------------------
+// sensor_table is a template over the observers - it keeps only the
+// features they enable - so it is named by table_for and instantiated
+// with the deduced observers. The machine brings its timeout timer and
+// puts it first; the tracer goes last (its line follows the effects).
+// Static: kernel objects and machine addresses must stay put
 VirtualSensor sensor;
 LedController leds;
 PowerRail rail;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-SensorStateMachine<VirtualSensor, Calibrator, LedController, PowerRail, mtl::zephyr::TraceLogger>
-    monitor{timeouts, sensor, cal, leds, rail, tracer};
+mtl::zephyr::StateMachine monitor{
+    mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, cal, leds, rail, tracer};
 #else
-SensorStateMachine<VirtualSensor, LedController, PowerRail, mtl::zephyr::TraceLogger>
-    monitor{timeouts, sensor, leds, rail, tracer};
+mtl::zephyr::StateMachine monitor{
+    mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, leds, rail, tracer};
 #endif
 
 // What the observers report, through the queue
