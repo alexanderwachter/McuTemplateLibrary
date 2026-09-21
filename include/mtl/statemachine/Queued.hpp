@@ -23,8 +23,10 @@
  * machine must run on one (statically checked; at most one of each -
  * states carry a single timeout and a single deadline annotation).
  * The expiry callback (any context, ISRs included) only latches the
- * channel's pending flag and triggers WORK - the drain delivers it,
- * so timed and deadlined work unchanged on top. The latch, not the
+ * channel's pending flag and triggers WORK - the drain finds the flag
+ * and processes the channel's event itself, fsm::timeout for the timed
+ * observer's and fsm::deadline for the deadlined one's, so timed and
+ * deadlined work unchanged on top. The latch, not the
  * FIFO, carries expiries: stop() and start() clear it, which retracts
  * a stale expiry exactly when the arming that produced it is gone (a
  * queued event that leaves a timed state stops the timer before the
@@ -96,9 +98,8 @@ struct no_lock {
     void unlock() {}
 };
 
-// One timer channel: the latch and the armed delivery, free of the
-// TIMER type. bind()/deliver() are the QueuedMachine's wiring, not
-// for users
+// One timer channel: the latch, free of the TIMER type. bind() and
+// consume() are the QueuedMachine's wiring, not for users
 class QueuedTimerBase {
 public:
     void bind(void* queue, work_callback notify)
@@ -107,19 +108,18 @@ public:
         notify_ = notify;
     }
 
-    // Consume the latch: run the armed delivery if an expiry is
-    // pending. Serialized context only - the machine runs in here.
-    // Load and clear, not an exchange: a new expiry needs a re-arm,
-    // which happens in this same context - nothing can set the latch
-    // between the two (and Cortex-M0-class cores inline atomic loads
-    // and stores but need a library call for read-modify-write)
-    bool deliver()
+    // Consume the latch: true once per pending expiry, which the
+    // machine owning the channel then delivers as its event. Serialized
+    // context only. Load and clear, not an exchange: a new expiry needs
+    // a re-arm, which happens in this same context - nothing can set
+    // the latch between the two (and Cortex-M0-class cores inline atomic
+    // loads and stores but need a library call for read-modify-write)
+    bool consume()
     {
         if (!pending_.load(std::memory_order_acquire)) {
             return false;
         }
         pending_.store(false, std::memory_order_relaxed);
-        callback_(context_);
         return true;
     }
 
@@ -129,10 +129,8 @@ public:
 protected:
     QueuedTimerBase() = default;
 
-    void* queue_             = nullptr;
-    work_callback notify_    = nullptr;
-    timer_callback callback_ = nullptr;
-    void* context_           = nullptr;
+    void* queue_          = nullptr;
+    work_callback notify_ = nullptr;
     std::atomic<bool> pending_{false};
 };
 
@@ -145,12 +143,13 @@ class QueuedTimer : public QueuedTimerBase {
 public:
     explicit QueuedTimer(TIMER& timer) : timer_(timer) {}
 
-    void start(std::chrono::milliseconds duration, timer_callback callback, void* context)
+    // The callback and context the observer arms with are not kept:
+    // behind a queue the expiry is delivered by the machine owning the
+    // channel, as its fsm::timeout or fsm::deadline
+    void start(std::chrono::milliseconds duration, timer_callback, void*)
     {
         timer_.stop(); // an expiry of the previous arming must not leak into this one
         pending_.store(false, std::memory_order_relaxed);
-        callback_ = callback;
-        context_  = context;
         timer_.start(duration, &QueuedTimer::expired, this);
     }
 
@@ -352,7 +351,8 @@ private:
         draining_ = true;
         while (true) {
             if constexpr (QueuedMachine::has_deadline) {
-                if (deadline_->deliver()) {
+                if (deadline_->consume()) {
+                    machine_.process(deadline{});
                     continue;
                 }
             }
@@ -371,7 +371,8 @@ private:
                 continue;
             }
             if constexpr (QueuedMachine::has_timeout) {
-                if (timeout_->deliver()) {
+                if (timeout_->consume()) {
+                    machine_.process(timeout{});
                     continue;
                 }
             }
