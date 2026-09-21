@@ -860,6 +860,13 @@ using machine =
 
 static_assert(fsm::concepts::timer<fsm::QueuedTimer<manual_timer>>);
 
+// the owning form: the observer declared in one line, no timer to wire
+using owning_timed = fsm::timed<fsm::OwningQueuedTimer<manual_timer>>;
+using owning_machine =
+    fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock, owning_timed, sync_actor>;
+
+static_assert(fsm::concepts::timer<fsm::OwningQueuedTimer<manual_timer>>);
+
 } // namespace Queued
 
 namespace QueuedDeadline {
@@ -1720,6 +1727,20 @@ void queuedDeliversAfterTransitionCompletes()
     check(actor.log == std::vector<char>{'d'});
 }
 
+void queuedOwningTimerIsOneLine()
+{
+    Queued::owning_timed tim; // owns the platform timer and the queued channel
+    Queued::sync_actor actor;
+    Queued::owning_machine sm{tim, actor};
+
+    check(sm.process(Queued::go{}));
+    check(sm.is<Queued::armed>());
+    check(tim.timer.platformTimer().armed);
+    tim.timer.platformTimer().expire(); // latches, the inline work drains
+    check(sm.is<Queued::timed_out>());
+    check(actor.log == std::vector<char>{'t'});
+}
+
 void queuedStaleTimeoutRetracted()
 {
     manual_timer clock;
@@ -1823,6 +1844,7 @@ int statemachineTests()
     declaredObservationsAreValidated();
     deadlineSpansPhaseWithoutRearming();
     queuedDeliversAfterTransitionCompletes();
+    queuedOwningTimerIsOneLine();
     queuedStaleTimeoutRetracted();
     queuedTimeoutDeliveredInArrivalOrder();
     queuedDeadlineGatesQueuedEvents();

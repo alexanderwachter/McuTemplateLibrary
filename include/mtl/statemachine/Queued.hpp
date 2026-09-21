@@ -59,6 +59,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -173,6 +174,30 @@ private:
 
 namespace internal {
 
+// Base-from-member: the owned timer exists before the QueuedTimer
+// referring to it
+template<typename TIMER>
+struct timer_holder {
+    TIMER platform_timer{};
+};
+
+} // namespace internal
+
+// A QueuedTimer owning its platform timer: default-constructible, so
+// the observer is declared in one line, as on the raw machine -
+//   fsm::timed<fsm::OwningQueuedTimer<my_timer>> timeouts;
+// QueuedTimer<TIMER> remains for a timer the caller owns or configures
+template<concepts::timer TIMER>
+    requires std::default_initializable<TIMER>
+class OwningQueuedTimer : private internal::timer_holder<TIMER>, public QueuedTimer<TIMER> {
+public:
+    OwningQueuedTimer() : QueuedTimer<TIMER>(internal::timer_holder<TIMER>::platform_timer) {}
+
+    TIMER& platformTimer() { return internal::timer_holder<TIMER>::platform_timer; }
+};
+
+namespace internal {
+
 template<typename OBSERVER>
 struct is_timed_observer : std::false_type {};
 template<typename TIMER>
@@ -183,10 +208,9 @@ struct is_deadlined_observer : std::false_type {};
 template<typename TIMER>
 struct is_deadlined_observer<deadlined<TIMER>> : std::true_type {};
 
+// QueuedTimer<TIMER> or a class built on one (OwningQueuedTimer)
 template<typename T>
-struct is_queued_timer : std::false_type {};
-template<typename TIMER>
-struct is_queued_timer<QueuedTimer<TIMER>> : std::true_type {};
+struct is_queued_timer : std::is_base_of<QueuedTimerBase, T> {};
 
 // A timed/deadlined observer in a queued machine must run on a
 // QueuedTimer - a raw platform timer would fire straight into the
