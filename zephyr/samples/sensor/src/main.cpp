@@ -16,9 +16,10 @@
  *   LedDriver      - value observer of the LED machine writing led0
  *   TraceLogger     - both machines trace to the mtl_fsm log module
  *
- * Both machines are mtl::zephyr::StateMachine, each one declaration:
- * a queued machine with its own timeout timer, process() only queues,
- * and both drain on one shared workqueue (mtl::zephyr::WorkQueue).
+ * Both machines are mtl::zephyr::StateMachineOnSharedWorkqueue, each
+ * one declaration: a queued machine with its own timeout timer,
+ * process() only queues, and both drain on one mtl::zephyr::WorkQueue
+ * (the plain mtl::zephyr::StateMachine owns a workqueue thread instead).
  * Every event source may therefore process() from where it is - the
  * button from its ISR, the timeouts from k_timer's ISR (they only
  * latch), the sensor's work items from the system workqueue, and the
@@ -121,8 +122,8 @@ private:
 };
 
 // One workqueue thread for both machines, rather than one each (what
-// mtl::zephyr::StateMachine owns when it is given none). Declared
-// before the machines - the constructor starts the thread
+// the plain mtl::zephyr::StateMachine owns). Declared before the
+// machines - the constructor starts the thread
 mtl::zephyr::WorkQueue<2048, 5> fsm_queue{"sensor_fsm"};
 
 // --- LED: a driver observer on the LED machine, the machine inside the
@@ -176,8 +177,8 @@ struct LedController : fsm::observing<LedController> {
     void notifyEntry(sensor::led_pattern kind) { stateMachine.process(led::pattern{kind}); }
 
     // observers before the state machine they are injected into. A
-    // class member cannot deduce its template arguments, hence the alias
-    // naming them; the machine brings its own timeout timer
+    // class member cannot deduce its template arguments, so they are
+    // named; the machine brings its own timeout timer
     mtl::zephyr::TraceLogger tracer;
 #if SAMPLE_HAS_LED
     LedDriver driver;
@@ -214,10 +215,10 @@ PowerRail rail;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-mtl::zephyr::StateMachine monitor{
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{
     mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, cal, leds, rail, tracer};
 #else
-mtl::zephyr::StateMachine monitor{
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{
     mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, leds, rail, tracer};
 #endif
 

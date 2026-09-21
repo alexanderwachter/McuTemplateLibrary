@@ -150,10 +150,12 @@ whether a transition fired.
   stale timeout cannot reach the wrong state. On Zephyr
   `mtl::zephyr::StateMachine machine{mtl::zephyr::table<my_table>,
   observers...};` is all of it in one declaration: the timers the table
-  needs, a workqueue of its own (or a shared `mtl::zephyr::WorkQueue`),
-  the event buffer under a spinlock, observer types deduced, sizes from
-  Kconfig or `mtl::zephyr::config<machine_config{...}>`. Both samples
-  run this way.
+  needs, a workqueue of its own, the event buffer under a spinlock,
+  observer types deduced, sizes from Kconfig.
+  `StateMachineOnSharedWorkqueue` drains on a `mtl::zephyr::WorkQueue`
+  several machines share; `ConfiguredStateMachine` takes
+  `mtl::zephyr::config<machine_config{...}>` to override the sizes.
+  Both samples run this way.
 
 ### Rules and edge cases
 

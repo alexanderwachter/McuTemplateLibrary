@@ -21,24 +21,25 @@
  *
  *   mtl::zephyr::StateMachine monitor{mtl::zephyr::table_for<sensor_table>, leds, rail};
  *
- * and a WorkQueue after the tag shares that queue instead of owning one:
+ * StateMachineOnSharedWorkqueue takes a WorkQueue after the table and
+ * drains on that instead of owning a thread:
  *
  *   mtl::zephyr::WorkQueue<2048, 5> queue{"fsm"};
- *   mtl::zephyr::StateMachine a{mtl::zephyr::table<table_a>, queue, observer};
- *   mtl::zephyr::StateMachine b{mtl::zephyr::table<table_b>, queue};
+ *   mtl::zephyr::StateMachineOnSharedWorkqueue a{mtl::zephyr::table<table_a>, queue, observer};
+ *   mtl::zephyr::StateMachineOnSharedWorkqueue b{mtl::zephyr::table<table_b>, queue};
  *
  * The event buffer's capacity, and an owned workqueue's stack size and
  * priority, default to Kconfig (MTL_FSM_EVENT_BUFFER_CAPACITY,
- * MTL_FSM_WORKQUEUE_*); a machine overrides them by name, after the
- * table:
+ * MTL_FSM_WORKQUEUE_*). ConfiguredStateMachine overrides them by name,
+ * after the table (and takes a WorkQueue after that, to share one):
  *
  *   using mtl::zephyr::machine_config;
- *   mtl::zephyr::StateMachine big{mtl::zephyr::table<big_table>,
- *                                 mtl::zephyr::config<machine_config{.event_buffer_capacity = 8}>,
- *                                 observer};
+ *   mtl::zephyr::ConfiguredStateMachine big{
+ *       mtl::zephyr::table<big_table>,
+ *       mtl::zephyr::config<machine_config{.event_buffer_capacity = 8}>, observer};
  *
- * Deduction is not available for a class member; spell it with
- * StateMachineWithOwnWorkqueue<TABLE, OBSERVERs...> or
+ * Deduction is not available for a class member; name the types there:
+ * StateMachine<TABLE, OBSERVERs...>,
  * StateMachineOnSharedWorkqueue<TABLE, OBSERVERs...>.
  *
  * The timers come first in the machine's observer order, so they are
@@ -143,8 +144,10 @@ struct queued_machine<TABLE, CAPACITY, mtl::typelist<TIMERs...>, OBSERVERs...> {
 
 } // namespace internal
 
+// The machine with everything spelled out; StateMachine and
+// StateMachineOnSharedWorkqueue below are the two everyday forms
 template<typename TABLE, typename QUEUE, machine_config CONFIG, typename... OBSERVERs>
-class StateMachine {
+class ConfiguredStateMachine {
     using timed_type     = fsm::timed<QueuedTimer>;
     using deadlined_type = fsm::deadlined<QueuedTimer>;
 
@@ -163,7 +166,7 @@ public:
     // The tags only carry the table and the configuration into the
     // deduction guides below
     template<typename TAG>
-    explicit StateMachine(TAG, OBSERVERs&... observers)
+    explicit ConfiguredStateMachine(TAG, OBSERVERs&... observers)
         requires std::same_as<QUEUE, own_workqueue>
         : queue_(mtl::short_name_of<TABLE>), work_(queue_.handle()),
           machine_(this->construct(observers...))
@@ -171,24 +174,24 @@ public:
     }
 
     template<typename TAG>
-    StateMachine(TAG, config_tag<CONFIG>, OBSERVERs&... observers)
+    ConfiguredStateMachine(TAG, config_tag<CONFIG>, OBSERVERs&... observers)
         requires std::same_as<QUEUE, own_workqueue>
-        : StateMachine(TAG{}, observers...)
+        : ConfiguredStateMachine(TAG{}, observers...)
     {
     }
 
     template<typename TAG, std::size_t STACK_SIZE, int PRIORITY>
-    StateMachine(TAG, WorkQueue<STACK_SIZE, PRIORITY>& queue, OBSERVERs&... observers)
+    ConfiguredStateMachine(TAG, WorkQueue<STACK_SIZE, PRIORITY>& queue, OBSERVERs&... observers)
         requires std::same_as<QUEUE, shared_workqueue>
         : queue_(queue.handle()), work_(queue_.handle()), machine_(this->construct(observers...))
     {
     }
 
     template<typename TAG, std::size_t STACK_SIZE, int PRIORITY>
-    StateMachine(TAG, config_tag<CONFIG>, WorkQueue<STACK_SIZE, PRIORITY>& queue,
+    ConfiguredStateMachine(TAG, config_tag<CONFIG>, WorkQueue<STACK_SIZE, PRIORITY>& queue,
                  OBSERVERs&... observers)
         requires std::same_as<QUEUE, shared_workqueue>
-        : StateMachine(TAG{}, queue, observers...)
+        : ConfiguredStateMachine(TAG{}, queue, observers...)
     {
     }
 
@@ -250,32 +253,44 @@ private:
     machine_type machine_;
 };
 
-template<typename MAKER, typename... OBSERVERs>
-StateMachine(table_tag<MAKER>, OBSERVERs&...)
-    -> StateMachine<typename MAKER::template type<OBSERVERs...>, own_workqueue, machine_config{},
-                    OBSERVERs...>;
-
 template<typename MAKER, machine_config CONFIG, typename... OBSERVERs>
-StateMachine(table_tag<MAKER>, config_tag<CONFIG>, OBSERVERs&...)
-    -> StateMachine<typename MAKER::template type<OBSERVERs...>, own_workqueue, CONFIG, OBSERVERs...>;
-
-template<typename MAKER, std::size_t STACK_SIZE, int PRIORITY, typename... OBSERVERs>
-StateMachine(table_tag<MAKER>, WorkQueue<STACK_SIZE, PRIORITY>&, OBSERVERs&...)
-    -> StateMachine<typename MAKER::template type<OBSERVERs...>, shared_workqueue, machine_config{},
-                    OBSERVERs...>;
+ConfiguredStateMachine(table_tag<MAKER>, config_tag<CONFIG>, OBSERVERs&...)
+    -> ConfiguredStateMachine<typename MAKER::template type<OBSERVERs...>, own_workqueue, CONFIG,
+                              OBSERVERs...>;
 
 template<typename MAKER, machine_config CONFIG, std::size_t STACK_SIZE, int PRIORITY,
          typename... OBSERVERs>
-StateMachine(table_tag<MAKER>, config_tag<CONFIG>, WorkQueue<STACK_SIZE, PRIORITY>&,
-             OBSERVERs&...)
-    -> StateMachine<typename MAKER::template type<OBSERVERs...>, shared_workqueue, CONFIG,
-                    OBSERVERs...>;
+ConfiguredStateMachine(table_tag<MAKER>, config_tag<CONFIG>, WorkQueue<STACK_SIZE, PRIORITY>&,
+                       OBSERVERs&...)
+    -> ConfiguredStateMachine<typename MAKER::template type<OBSERVERs...>, shared_workqueue,
+                              CONFIG, OBSERVERs...>;
 
-// Where deduction is not available (a machine as a class member)
+// The default: a workqueue of its own, sizes from Kconfig
 template<typename TABLE, typename... OBSERVERs>
-using StateMachineWithOwnWorkqueue = StateMachine<TABLE, own_workqueue, machine_config{}, OBSERVERs...>;
+class StateMachine
+    : public ConfiguredStateMachine<TABLE, own_workqueue, machine_config{}, OBSERVERs...> {
+    using base = ConfiguredStateMachine<TABLE, own_workqueue, machine_config{}, OBSERVERs...>;
 
+public:
+    using base::base;
+};
+
+template<typename MAKER, typename... OBSERVERs>
+StateMachine(table_tag<MAKER>, OBSERVERs&...)
+    -> StateMachine<typename MAKER::template type<OBSERVERs...>, OBSERVERs...>;
+
+// On a workqueue several machines share, handed over after the table
 template<typename TABLE, typename... OBSERVERs>
-using StateMachineOnSharedWorkqueue = StateMachine<TABLE, shared_workqueue, machine_config{}, OBSERVERs...>;
+class StateMachineOnSharedWorkqueue
+    : public ConfiguredStateMachine<TABLE, shared_workqueue, machine_config{}, OBSERVERs...> {
+    using base = ConfiguredStateMachine<TABLE, shared_workqueue, machine_config{}, OBSERVERs...>;
+
+public:
+    using base::base;
+};
+
+template<typename MAKER, std::size_t STACK_SIZE, int PRIORITY, typename... OBSERVERs>
+StateMachineOnSharedWorkqueue(table_tag<MAKER>, WorkQueue<STACK_SIZE, PRIORITY>&, OBSERVERs&...)
+    -> StateMachineOnSharedWorkqueue<typename MAKER::template type<OBSERVERs...>, OBSERVERs...>;
 
 } // namespace mtl::zephyr
