@@ -268,7 +268,19 @@ public:
     // already process events - they are drained before this returns.
     // Construct from the serialized context, before event sources run
     explicit QueuedMachine(OBSERVERs&... observers) // channels bind before the
+        requires(!std::is_reference_v<WORK>)
         : machine_((this->bindChannels(observers), observers)...) // initial state can arm
+    {
+        draining_ = false;
+        this->drain();
+    }
+
+    // QueuedMachine<TABLE, N, WORK&, ...> runs on a caller-owned WORK,
+    // for policies that need configuration (the queue to run on) -
+    // the fsm::timed<POLICY&> convention
+    explicit QueuedMachine(WORK work, OBSERVERs&... observers)
+        requires std::is_reference_v<WORK>
+        : work_(work), machine_((this->bindChannels(observers), observers)...)
     {
         draining_ = false;
         this->drain();
@@ -432,7 +444,7 @@ private:
     // Declared before machine_: the initial state's hooks may already
     // enqueue events or trigger the work queue
     [[no_unique_address]] LOCK lock_{};
-    [[no_unique_address]] WORK work_{};
+    [[no_unique_address]] WORK work_{}; // a WORK& is bound by its constructor instead
     std::array<event_variant, CAPACITY> ring_{};
     std::size_t read_           = 0;
     std::size_t count_          = 0;

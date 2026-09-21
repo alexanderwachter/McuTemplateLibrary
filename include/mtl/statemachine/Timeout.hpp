@@ -56,7 +56,23 @@ struct deadline_handled_in {
         mtl::any_of_v<transitions_for_t<TABLE, STATE, deadline>, is_unguarded>> {};
 };
 
+template<typename STATE>
+struct is_timed_state : std::bool_constant<has_timeout_v<STATE>> {};
+
+template<typename STATE>
+struct is_deadlined_state : std::bool_constant<active_deadline_v<STATE>> {};
+
 } // namespace internal
+
+// Whether any state of TABLE carries a timeout / an active deadline:
+// what a facade asks to decide which timers a machine needs at all
+template<typename TABLE>
+inline constexpr bool has_timed_states_v =
+    mtl::any_of_v<typename TABLE::states, internal::is_timed_state>;
+
+template<typename TABLE>
+inline constexpr bool has_deadlined_states_v =
+    mtl::any_of_v<typename TABLE::states, internal::is_deadlined_state>;
 
 // A range of acceptable timeouts, e.g. a specification's min/max pair.
 // Microsecond resolution: spec bounds may be fractions of a millisecond

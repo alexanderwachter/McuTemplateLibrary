@@ -867,6 +867,22 @@ using owning_machine =
 
 static_assert(fsm::concepts::timer<fsm::OwningQueuedTimer<manual_timer>>);
 
+// a WORK the caller owns and configures, handed over by reference
+struct counting_work {
+    int submits = 0;
+    void submit(fsm::work_callback callback, void* context)
+    {
+        ++submits;
+        callback(context);
+    }
+};
+using shared_work_machine =
+    fsm::QueuedMachine<table, 4, counting_work&, fsm::no_lock, owning_timed, sync_actor>;
+
+// which timers a table needs at all
+static_assert(fsm::has_timed_states_v<table>);
+static_assert(!fsm::has_deadlined_states_v<table>);
+
 } // namespace Queued
 
 namespace QueuedDeadline {
@@ -1741,6 +1757,19 @@ void queuedOwningTimerIsOneLine()
     check(actor.log == std::vector<char>{'t'});
 }
 
+void queuedRunsOnCallerOwnedWork()
+{
+    Queued::counting_work work;
+    Queued::owning_timed tim;
+    Queued::sync_actor actor;
+    Queued::shared_work_machine sm{work, tim, actor};
+
+    check(work.submits == 0); // construction drains on its own
+    check(sm.process(Queued::go{}));
+    check(work.submits == 1);
+    check(sm.is<Queued::armed>());
+}
+
 void queuedStaleTimeoutRetracted()
 {
     manual_timer clock;
@@ -1845,6 +1874,7 @@ int statemachineTests()
     deadlineSpansPhaseWithoutRearming();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();
+    queuedRunsOnCallerOwnedWork();
     queuedStaleTimeoutRetracted();
     queuedTimeoutDeliveredInArrivalOrder();
     queuedDeadlineGatesQueuedEvents();
