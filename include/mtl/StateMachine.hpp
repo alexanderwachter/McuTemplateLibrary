@@ -102,7 +102,7 @@
  *   Timeout.hpp     timeout/deadline annotations, timer-range maps
  *   Timer.hpp       the timer policy contract, fsm::timed, fsm::deadlined
  *   Observing.hpp   annotation sets, fsm::observing
- *   Observer.hpp    the hook forms, their delivery, observer_group
+ *   Observer.hpp    the hook forms, their delivery, ObserverGroup
  *   Traits.hpp      reachability, features as tags, observer coverage
  *   Core.hpp        the state machine and its dispatch
  *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery

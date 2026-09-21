@@ -92,7 +92,7 @@ constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& varian
 } // namespace internal
 
 template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
-class state_machine {
+class StateMachine {
     using TRANSITIONS = TRANSITION_TABLE;
 
     // Observers get a chance to reject the table at compile time
@@ -110,17 +110,17 @@ private:
     using context_tuple = mtl::rebind_t<context_types, std::tuple>;
 
     static_assert(mtl::all_of_v<context_types, std::is_default_constructible>,
-                  "state_machine: context types must be default constructible");
+                  "StateMachine: context types must be default constructible");
 
     template<typename STATE>
     struct constructible_from_context
         : std::bool_constant<std::constructible_from<STATE, internal::context_of_t<STATE>&>> {};
     static_assert(mtl::all_of_v<context_states,
-                                state_machine::template constructible_from_context>,
-                  "state_machine: a context state must be constructible from its context alone");
+                                StateMachine::template constructible_from_context>,
+                  "StateMachine: a context state must be constructible from its context alone");
 
 public:
-    explicit state_machine(OBSERVERs&... observers)
+    explicit StateMachine(OBSERVERs&... observers)
         : observers_(observers...),
           current_(std::make_from_tuple<state_variant>(
               internal::initialArgs<initial_state>(contexts_)))
@@ -132,8 +132,8 @@ public:
 
     // Observer hooks receive *this and may retain the address beyond the
     // hook: the machine must stay at one address for its lifetime
-    state_machine(state_machine const&)            = delete;
-    state_machine& operator=(state_machine const&) = delete;
+    StateMachine(StateMachine const&)            = delete;
+    StateMachine& operator=(StateMachine const&) = delete;
 
     // Returns true if a transition fired (false: no matching transition, or
     // every alternative's guard said no).
@@ -158,13 +158,13 @@ public:
                 // 1. the state's guarded alternatives in table order
                 if constexpr (!mtl::empty_v<guarded>) {
                     if (this->template tryGuarded<state_type>(guarded{}, state, event)) {
-                        return state_machine::fired;
+                        return StateMachine::fired;
                     }
                 }
                 // 2. its unguarded catch-all always fires
                 if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
                     this->template doTransition<unguarded>(state, event);
-                    return state_machine::fired;
+                    return StateMachine::fired;
                 }
                 // 3. the wildcards, behind the state's own alternatives:
                 //    the first whose guard passes is left here, fired below
@@ -173,16 +173,16 @@ public:
                 }
                 // 4. nothing: the event is ignored (these arms emit no code)
                 else {
-                    return state_machine::ignored;
+                    return StateMachine::ignored;
                 }
             },
             current_);
-        bool changed = outcome == state_machine::fired;
+        bool changed = outcome == StateMachine::fired;
         if constexpr (!mtl::empty_v<wildcards>) {
-            if (outcome >= state_machine::pending) {
+            if (outcome >= StateMachine::pending) {
                 // the state left is still the current one: its index is
                 // the source the edge-form hooks may ask for
-                this->fireWildcard(outcome - state_machine::pending, current_.index(),
+                this->fireWildcard(outcome - StateMachine::pending, current_.index(),
                                    wildcards{}, event);
                 changed = true;
             }
@@ -232,12 +232,12 @@ private:
     template<typename STATE, typename... WILDCARDs, typename EVENT>
     std::size_t leaveForWildcard(mtl::typelist<WILDCARDs...>, STATE& state, EVENT const& event)
     {
-        std::size_t outcome = state_machine::ignored;
+        std::size_t outcome = StateMachine::ignored;
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((internal::allowed<WILDCARDs>(state, event) &&
                   (this->template leave<STATE, typename WILDCARDs::to>(),
-                   outcome = state_machine::pending + INDEXs, true)) ||
+                   outcome = StateMachine::pending + INDEXs, true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
         return outcome;
@@ -298,7 +298,7 @@ private:
     template<typename EVENT, typename NEW_STATE, typename OBSERVER>
     void enterFromSource(OBSERVER& observer, [[maybe_unused]] std::size_t source)
     {
-        if constexpr (internal::has_enter<OBSERVER, NEW_STATE, state_machine>) {
+        if constexpr (internal::has_enter<OBSERVER, NEW_STATE, StateMachine>) {
             observer.template onEnter<NEW_STATE>(*this);
         } else {
             this->template withSource<EVENT>(source, [&](auto tag) {
@@ -310,7 +310,7 @@ private:
     template<typename EVENT, typename NEW_STATE, typename OBSERVER>
     void transitionFromSource(OBSERVER& observer, [[maybe_unused]] std::size_t source)
     {
-        if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, state_machine>) {
+        if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, StateMachine>) {
             observer.template onTransition<EVENT, NEW_STATE>(*this);
         } else {
             this->template withSource<EVENT>(source, [&](auto tag) {

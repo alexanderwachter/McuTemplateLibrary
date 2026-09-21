@@ -66,7 +66,7 @@ the `_exact` forms accept 1, 8, 16, 32, 64 only.
 ## fsm - the state machine
 
 `include/mtl/StateMachine.hpp` (the parts live in
-`include/mtl/statemachine/`). A machine is `fsm::state_machine<TABLE,
+`include/mtl/statemachine/`). A machine is `fsm::StateMachine<TABLE,
 OBSERVERs...>`; events go in through `process(event)`, which returns
 whether a transition fired.
 
@@ -121,7 +121,7 @@ whether a transition fired.
   payload, a computed report - the same way from `auto values() const {
   return fsm::annotate_ref(message, report()); }`, delivered on every
   edge), `fsm::tracing` (transition trace lines),
-  `fsm::observer_group` (several observers as one). A state feature no
+  `fsm::ObserverGroup` (several observers as one). A state feature no
   observer consumes is silently unobserved. Observers should watch
   annotations, not states: an observer naming a state (`if constexpr
   (std::is_same_v<STATE, reading>)`) is coupled to that table, while

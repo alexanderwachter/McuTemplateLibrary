@@ -1,6 +1,6 @@
 /*
  * fsm: the observer hooks - detection of the two forms of each hook,
- * their delivery, and the observer_group composite
+ * their delivery, and the ObserverGroup composite
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -98,9 +98,9 @@ void transitionHook(OBSERVER& observer, MACHINE& machine)
 // observers so they can be injected into the machine as one, letting a
 // library predefine a cohesive set behind a single reference
 template<typename... OBSERVERs>
-class observer_group {
+class ObserverGroup {
 public:
-    explicit observer_group(OBSERVERs&... members) : members_(members...) {}
+    explicit ObserverGroup(OBSERVERs&... members) : members_(members...) {}
 
     template<typename TABLE>
     static constexpr void validate()

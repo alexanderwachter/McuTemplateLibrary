@@ -154,7 +154,7 @@ struct traffic_light_table : fsm::transition_table<
     fsm::transition<fsm::from<green>,      fsm::on<pedestrian_button>, fsm::to<yellow>,
                     fsm::guard<minimum_green_elapsed>>> {};
 
-using machine = fsm::state_machine<traffic_light_table, fsm::timed<polling_timer>, lamp_driver,
+using machine = fsm::StateMachine<traffic_light_table, fsm::timed<polling_timer>, lamp_driver,
                                    trace_printer>;
 
 } // namespace

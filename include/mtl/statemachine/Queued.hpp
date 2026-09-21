@@ -240,14 +240,14 @@ struct is_timer_event
 } // namespace internal
 
 // The queue-owning machine: TABLE and OBSERVERs as in
-// fsm::state_machine, CAPACITY bounds the FIFO (expiries live in the
+// fsm::StateMachine, CAPACITY bounds the FIFO (expiries live in the
 // timer channels' latches and cannot overflow it), WORK runs the
 // drain, LOCK guards the FIFO against foreign-context process() calls
 template<typename TABLE, std::size_t CAPACITY, concepts::work_queue WORK = inline_work,
          concepts::basic_lockable LOCK = no_lock, typename... OBSERVERs>
 class QueuedMachine {
 public:
-    using machine_type = state_machine<TABLE, OBSERVERs...>;
+    using machine_type = StateMachine<TABLE, OBSERVERs...>;
     // fsm::timeout and fsm::deadline enter through the latches, never
     // the ring: the variant leaves them out
     using queueable_events =
@@ -305,7 +305,7 @@ public:
         }
     }
 
-    // Read-only views of the machine, as on fsm::state_machine
+    // Read-only views of the machine, as on fsm::StateMachine
     template<typename STATE>
     [[nodiscard]] bool is() const
     {

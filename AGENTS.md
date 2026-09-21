@@ -11,7 +11,7 @@ its design.
 | `include/mtl/Typelist.hpp`, `TypelistAlgorithms.hpp` | typelists and compile-time algorithms; everything else builds on them |
 | `include/mtl/TypeName.hpp` | compile-time type names (`short_name_of<T>` is the machine/state/event id everywhere) |
 | `include/mtl/StateMachine.hpp` | the `fsm` state machine: the contract comment, includes the parts below |
-| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups, guards), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `Observer.hpp` (hook forms, `observer_group`), `Traits.hpp` (reachability, features, coverage), `Core.hpp` (`state_machine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
+| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups, guards), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `Observer.hpp` (hook forms, `ObserverGroup`), `Traits.hpp` (reachability, features, coverage), `Core.hpp` (`StateMachine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
 | `include/mtl/StateMachineTrace.hpp` | `fsm::tracing` observer and the trace line grammar (target code) |
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |
@@ -48,13 +48,15 @@ expecting the specific `static_assert` message - a class template's
 - Names: ALL_CAPS template parameters, packs ending in `s` (`TRANSITIONs`,
   `OBSERVERs`), `_t`/`_v` aliases for every trait, camelCase member
   functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`, `getIf`).
-  Two layers of type names: the library (`include/mtl`) is snake_case
-  like the standard library - `state_machine`, `timed`, `observing` -
-  and so are all states, events, guards and tables everywhere
-  (`reading`, `reading_done`, `sensor_table`); Zephyr glue and
-  application classes are PascalCase - `TraceLogger`, `WorkqueueTimer`,
-  a sample's `VirtualSensor`, `LedController`. Constexpr flags are
-  snake_case.
+  Two layers of type names: the library's vocabulary (`include/mtl`)
+  is snake_case like the standard library - `transition`, `from`,
+  `timed`, `observing`, every trait - and so are all states, events,
+  guards and tables everywhere (`reading`, `reading_done`,
+  `sensor_table`); the classes that are the machinery itself are
+  PascalCase - `fsm::StateMachine`, `fsm::ObserverGroup`,
+  `fsm::QueuedMachine`, `fsm::QueuedTimer` - as are Zephyr glue and
+  application classes: `TraceLogger`, `WorkqueueTimer`, a sample's
+  `VirtualSensor`, `LedController`. Constexpr flags are snake_case.
 - Concepts over SFINAE. Constrain template parameters with named concepts
   in a nested `concepts` namespace; detect optional members with
   requires-expressions and `if constexpr`. The one SFINAE idiom kept is
@@ -100,7 +102,7 @@ expecting the specific `static_assert` message - a class template's
   is the initial state unless `fsm::initial<S>` says otherwise.
 - The machine core knows nothing about timers, annotations, tracing or
   targets. Observers are its only extension point; new behavior goes into
-  an observer, not into `state_machine`.
+  an observer, not into `StateMachine`.
 - Optional features are tags: states declare `using feature = TAG;`,
   observers `using enables = TAG;`, and the table is one full entry
   list filtered with `fsm::remove_disabled_features_t` (or `remove_features_t`)

@@ -74,7 +74,7 @@ void check(bool condition, std::source_location location = std::source_location:
 void tracerFormatsEveryKindOfChange()
 {
     line_tracer tracer;
-    fsm::state_machine<trace_table, line_tracer> sm{tracer};
+    fsm::StateMachine<trace_table, line_tracer> sm{tracer};
 
     check(tracer.lines == std::vector<std::string>{"fsm[trace_table] -> idle"});
 
@@ -93,7 +93,7 @@ void tracerFormatsEveryKindOfChange()
 void tracerWithoutInitialSink()
 {
     transition_tracer tracer;
-    fsm::state_machine<trace_table, transition_tracer> sm{tracer};
+    fsm::StateMachine<trace_table, transition_tracer> sm{tracer};
 
     check(tracer.transitions == 0);
     check(sm.process(go{}));

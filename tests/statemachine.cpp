@@ -99,7 +99,7 @@ using table = fsm::transition_table<
     fsm::transition<fsm::from<off>,      fsm::on<lock_key>,     fsm::to<locked>>,
     fsm::transition<fsm::from<locked>,   fsm::on<lock_key>,     fsm::to<off>>>;
 
-using machine = fsm::state_machine<table, fsm::timed<manual_timer>, output_controller>;
+using machine = fsm::StateMachine<table, fsm::timed<manual_timer>, output_controller>;
 
 } // namespace
 
@@ -153,7 +153,7 @@ namespace ExplicitInitial {
 
     // the chosen state moves to the front and becomes the initial state
     static_assert(std::is_same_v<lock_first::states, mtl::typelist<locked, off>>);
-    static_assert(std::is_same_v<fsm::state_machine<lock_first>::initial_state, locked>);
+    static_assert(std::is_same_v<fsm::StateMachine<lock_first>::initial_state, locked>);
 
     // initial<> may appear anywhere in the table
     using reordered = fsm::transition_table<
@@ -1065,7 +1065,7 @@ void getIfAccessesCurrentState()
 
 void explicitInitialState()
 {
-    fsm::state_machine<ExplicitInitial::lock_first> sm;
+    fsm::StateMachine<ExplicitInitial::lock_first> sm;
 
     check(sm.is<locked>());
     check(sm.process(lock_key{})); // locked -> off
@@ -1075,7 +1075,7 @@ void explicitInitialState()
 void anyStateReachesTargetFromEverywhere()
 {
     using namespace Wildcard;
-    fsm::state_machine<tbl> sm;
+    fsm::StateMachine<tbl> sm;
 
     check(sm.process(shutdown{})); // wildcard also matches the target state itself
     check(sm.is<idle>());
@@ -1090,7 +1090,7 @@ void anyStateReachesTargetFromEverywhere()
 void eventPayloadConstructsTargetState()
 {
     using namespace Payload;
-    fsm::state_machine<tbl> sm;
+    fsm::StateMachine<tbl> sm;
 
     check(sm.process(send{.msg = {.id = 42}}));
     check(sm.is<sending>());
@@ -1105,7 +1105,7 @@ void liveObservationDeliversInstanceValues()
     using namespace Payload;
 
     live_driver driver;
-    fsm::state_machine<tbl, live_driver> sm{driver};
+    fsm::StateMachine<tbl, live_driver> sm{driver};
 
     check(sm.process(send{.msg = {.id = 7}}));
     check(driver.entered.size() == 1 && driver.entered.back() == 7);
@@ -1123,7 +1123,7 @@ void payloadReachesObserverThroughState()
 {
     using namespace Payload;
     tx_driver driver;
-    fsm::state_machine<tbl, tx_driver> sm{driver};
+    fsm::StateMachine<tbl, tx_driver> sm{driver};
 
     sm.process(send{.msg = {.id = 7}});
     sm.process(cancel{});
@@ -1136,7 +1136,7 @@ void payloadReachesObserverThroughState()
 void machineWithOnlyATimerObserver()
 {
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<table, fsm::timed<manual_timer>> sm{tim};
+    fsm::StateMachine<table, fsm::timed<manual_timer>> sm{tim};
 
     check(sm.process(button_press{}));
     check(sm.is<running>());
@@ -1160,7 +1160,7 @@ namespace lifetime {
 void entryIsConstructionExitIsDestruction()
 {
     using namespace lifetime;
-    fsm::state_machine<tbl> sm; // no timed states, no observers: nothing to inject
+    fsm::StateMachine<tbl> sm; // no timed states, no observers: nothing to inject
     check(entries == 0 && exits == 0); // the initial state is constructed in place, once
 
     sm.process(ping{}); // plain -> counted: ~plain(), counted()
@@ -1201,7 +1201,7 @@ namespace guards {
 void guardBlocksAndAllows()
 {
     using namespace guards;
-    fsm::state_machine<tbl> sm;
+    fsm::StateMachine<tbl> sm;
 
     check(!sm.process(push{})); // gate closed: guard blocks, nothing happens
     check(sm.is<gate>());
@@ -1310,7 +1310,7 @@ namespace event_guard {
 void guardSeesTheEventPayload()
 {
     using namespace event_guard;
-    fsm::state_machine<tbl> sm;
+    fsm::StateMachine<tbl> sm;
 
     check(!sm.process(reading{.value = 5})); // below: guard blocks
     check(sm.is<closed>());
@@ -1362,7 +1362,7 @@ void declaredObservationsAreValidated()
 {
     using namespace AnnotationSets;
     heater watcher;
-    fsm::state_machine<tbl, heater> sm{watcher}; // validate(): heat is in the table
+    fsm::StateMachine<tbl, heater> sm{watcher}; // validate(): heat is in the table
 
     check(watcher.heats == 0);  // dark carries no heat
     check(sm.process(next{}));  // lit: heat{true}
@@ -1375,7 +1375,7 @@ void annotationSetElementsAreNotifiedIndependently()
 {
     using namespace AnnotationSets;
     panel p;
-    fsm::state_machine<tbl, panel> sm{p};
+    fsm::StateMachine<tbl, panel> sm{p};
 
     // construction: every consumed element of dark
     check(p.lights == std::vector<light>{light::off});
@@ -1402,7 +1402,7 @@ void annotationSetElementsAreNotifiedIndependently()
 void staticHookRunsBeforeNonstaticHook()
 {
     ordering::dual_observer observer;
-    fsm::state_machine<ordering::tbl, ordering::dual_observer> sm{observer};
+    fsm::StateMachine<ordering::tbl, ordering::dual_observer> sm{observer};
 
     check(observer.sequence == std::vector{'s'}); // initial entry: static only
 
@@ -1416,10 +1416,10 @@ void observerGroupForwardsHooksInMemberOrder()
     fsm::timed<manual_timer> tim;
     output_controller ctrl;
     raw_hooks::transition_counter counter;
-    fsm::observer_group<fsm::timed<manual_timer>, output_controller,
+    fsm::ObserverGroup<fsm::timed<manual_timer>, output_controller,
                         raw_hooks::transition_counter>
         group{tim, ctrl, counter};
-    fsm::state_machine<table, decltype(group)> sm{group}; // one reference, three observers
+    fsm::StateMachine<table, decltype(group)> sm{group}; // one reference, three observers
 
     check(counter.enters == 1 && counter.exits == 0);
     check(ctrl.log.size() == 1); // initial off outputs
@@ -1437,7 +1437,7 @@ void rawHookObserverSeesEveryTransition()
 {
     raw_hooks::transition_counter counter;
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<table, fsm::timed<manual_timer>, raw_hooks::transition_counter> sm{tim, counter};
+    fsm::StateMachine<table, fsm::timed<manual_timer>, raw_hooks::transition_counter> sm{tim, counter};
 
     check(counter.enters == 1); // initial entry, no exit
     check(counter.exits == 0);
@@ -1454,7 +1454,7 @@ void rawHookObserverSeesEveryTransition()
 void contextIsMachineOwnedAndShared()
 {
     using namespace Context;
-    fsm::state_machine<tbl> sm; // timeout in trying stays unobserved: no timer injected
+    fsm::StateMachine<tbl> sm; // timeout in trying stays unobserved: no timer injected
 
     check(sm.process(start{.payload = 7}));
     auto const* log = &sm.getIf<trying>()->context;
@@ -1477,7 +1477,7 @@ void contextSurvivesTimeoutRetry()
 {
     using namespace Context;
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<tbl, fsm::timed<manual_timer>> sm{tim};
+    fsm::StateMachine<tbl, fsm::timed<manual_timer>> sm{tim};
 
     check(sm.process(start{.payload = 3}));
     check(tim.timer.armed);
@@ -1495,7 +1495,7 @@ void contextInitialState()
     using tbl2 = fsm::transition_table<
         fsm::initial<trying>,
         fsm::transition<fsm::from<trying>, fsm::on<done>, fsm::to<succeeded>>>;
-    fsm::state_machine<tbl2> sm; // initial state constructed from its context
+    fsm::StateMachine<tbl2> sm; // initial state constructed from its context
 
     check(sm.is<trying>());
     check(sm.getIf<trying>()->context.attempts == 1);
@@ -1507,7 +1507,7 @@ void internalTransitionHandlesInPlace()
 
     fsm::timed<manual_timer> tim;
     hook_counter hooks;
-    fsm::state_machine<tbl, fsm::timed<manual_timer>, hook_counter> sm{tim, hooks};
+    fsm::StateMachine<tbl, fsm::timed<manual_timer>, hook_counter> sm{tim, hooks};
 
     check(sm.is<waiting>() && tim.timer.armed);
     auto const enters_before   = hooks.enters;
@@ -1533,7 +1533,7 @@ void internalTransitionHandlesInPlace()
 void guardedAlternativesFirstPassWins()
 {
     using namespace Alternatives;
-    fsm::state_machine<tbl> sm;
+    fsm::StateMachine<tbl> sm;
 
     check(sm.process(tick{})); // idle -> pending, used = 1
     check(sm.is<pending>());
@@ -1552,7 +1552,7 @@ void sharedWildcardFiresLikePerSource()
     using namespace SharedWildcard;
     mode_watcher watcher;
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
+    fsm::StateMachine<tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
 
     check(watcher.notified == 1); // initial entry into a
     check(tim.timer.armed);       // a is timed
@@ -1571,7 +1571,7 @@ void sharedWildcardDeliversExitValues()
 {
     using namespace SharedWildcard;
     exit_watcher watcher;
-    fsm::state_machine<tbl, exit_watcher> sm{watcher};
+    fsm::StateMachine<tbl, exit_watcher> sm{watcher};
 
     check(sm.process(go{}));  // a -> b: equal annotations, exit suppressed
     check(watcher.exits == 0);
@@ -1584,7 +1584,7 @@ void wildcardEntryRenotifiesUnchangedValue()
 {
     using namespace SharedWildcard;
     mode_watcher watcher;
-    fsm::state_machine<home_tbl, mode_watcher> sm{watcher};
+    fsm::StateMachine<home_tbl, mode_watcher> sm{watcher};
 
     check(watcher.notified == 1); // initial entry into a
     check(sm.process(go{}));      // a -> b: equal values, the edge suppresses
@@ -1599,7 +1599,7 @@ void refusedOwnGroupFallsThroughToWildcard()
     using namespace SharedWildcard;
     mode_watcher watcher;
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<guarded_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
+    fsm::StateMachine<guarded_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
 
     check(sm.process(go{}));    // a -> b
     check(sm.process(kill{1})); // b's own pair refused: the wildcard is next
@@ -1610,7 +1610,7 @@ void unguardedOwnEntryOverridesWildcard()
 {
     using namespace Wildcard;
     edge_recorder edges;
-    fsm::state_machine<with_override, edge_recorder> sm{edges};
+    fsm::StateMachine<with_override, edge_recorder> sm{edges};
 
     check(edges.entries == 1);     // construction
     check(sm.process(advance{}));  // idle -> stage1
@@ -1627,7 +1627,7 @@ void deadlineSpansPhaseWithoutRearming()
     manual_timer clock; // the deadline's own timer, next to fsm::timed's
     fsm::deadlined<manual_timer&> ded{clock};
     fsm::timed<manual_timer> tim;
-    fsm::state_machine<tbl, fsm::deadlined<manual_timer&>, fsm::timed<manual_timer>> sm{ded,
+    fsm::StateMachine<tbl, fsm::deadlined<manual_timer&>, fsm::timed<manual_timer>> sm{ded,
                                                                                        tim};
 
     check(clock.armed && clock.duration == 80ms); // armed on phase entry
@@ -1659,7 +1659,7 @@ void transitionHookSeesEdgeAndEvent()
 {
     using namespace transition_hook;
     recorder rec;
-    fsm::state_machine<tbl, recorder> sm{rec};
+    fsm::StateMachine<tbl, recorder> sm{rec};
 
     check(rec.steps.empty()); // construction is no transition
 
@@ -1680,7 +1680,7 @@ void sourceAgnosticHookSeesAnyState()
 {
     using namespace transition_hook;
     agnostic_recorder rec;
-    fsm::state_machine<tbl, agnostic_recorder> sm{rec};
+    fsm::StateMachine<tbl, agnostic_recorder> sm{rec};
 
     check(sm.process(go{}));
     check(rec.steps.back() == step{"idle", "go", "busy"}); // exact edges unchanged
@@ -1695,8 +1695,8 @@ void observerGroupForwardsTransitionHook()
 {
     using namespace transition_hook;
     recorder rec;
-    fsm::observer_group<recorder> group{rec};
-    fsm::state_machine<tbl, fsm::observer_group<recorder>> sm{group};
+    fsm::ObserverGroup<recorder> group{rec};
+    fsm::StateMachine<tbl, fsm::ObserverGroup<recorder>> sm{group};
 
     check(sm.process(go{}));
     check(rec.steps == std::vector<step>{{"idle", "go", "busy"}});
@@ -1709,8 +1709,8 @@ void observerGroupOfAgnosticMembersIsAgnostic()
 {
     using namespace transition_hook;
     agnostic_recorder rec;
-    fsm::observer_group<agnostic_recorder> group{rec};
-    fsm::state_machine<tbl, fsm::observer_group<agnostic_recorder>> sm{group};
+    fsm::ObserverGroup<agnostic_recorder> group{rec};
+    fsm::StateMachine<tbl, fsm::ObserverGroup<agnostic_recorder>> sm{group};
 
     check(sm.process(kill{2}));
     check(rec.steps == std::vector<step>{{"any_state", "kill", "dead"}});
@@ -1721,7 +1721,7 @@ void timerInjectedByReference()
     manual_timer timer; // caller-owned policy instance
     fsm::timed<manual_timer&> tim{timer};
     output_controller ctrl;
-    fsm::state_machine<table, fsm::timed<manual_timer&>, output_controller> sm{tim, ctrl};
+    fsm::StateMachine<table, fsm::timed<manual_timer&>, output_controller> sm{tim, ctrl};
 
     check(sm.process(button_press{})); // off -> running, timeout armed
     check(timer.armed && timer.duration == 50ms);
