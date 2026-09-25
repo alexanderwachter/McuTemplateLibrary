@@ -64,9 +64,12 @@ def strip_code(text):
 
 
 def find_tables(header):
-    """Named, non-template transition tables declared in a header."""
+    """Named concrete transition tables declared in a header, and
+    whether a template table (only a --table instantiation can render
+    it) lives here."""
     text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
     tables = []
+    templates = False
     # namespace tracking: a stack of (name, brace depth at its opening)
     stack = []
     depth = 0
@@ -88,6 +91,7 @@ def find_tables(header):
                         line = before.count("\n") + 1
                         print(f"dotgen: {header}:{line}: template table '{struct.group(2)}' "
                               f"skipped - name an instantiation with --table", file=sys.stderr)
+                        templates = True
                     else:
                         scopes = [name for name, _ in stack if name]
                         qualified = "::".join(scopes + [struct.group(2)])
@@ -99,13 +103,14 @@ def find_tables(header):
             if stack and stack[-1][1] == depth:
                 stack.pop()
         position = brace.end()
-    return tables
+    return tables, templates
 
 
 def scan(paths, say=lambda message: None):
-    """Tables found under the paths, and the headers named directly (the
-    generator includes those even without a found table: --table needs
-    the header declaring the template)."""
+    """Tables found under the paths, the headers named directly, and
+    the headers declaring template tables (the generator includes the
+    latter two even without a found table: a --table instantiation
+    needs the declaration)."""
     headers = []
     given = []
     for path in paths:
@@ -122,11 +127,15 @@ def scan(paths, say=lambda message: None):
             print(f"dotgen: {path}: not a header, skipped (tables must live in headers)",
                   file=sys.stderr)
     tables = []
+    template_headers = []
     for header in headers:
-        for table in find_tables(header.resolve()):
+        found, templates = find_tables(header.resolve())
+        for table in found:
             say(f"dotgen: {table.header}:{table.line}: {table.qualified}")
             tables.append(table)
-    return tables, given
+        if templates:
+            template_headers.append(header.resolve())
+    return tables, given, template_headers
 
 
 def read_includes(header):
@@ -296,7 +305,7 @@ def build_parser(parser=None):
 
 
 def run(args, say=print, fail=sys.exit):
-    tables, given_headers = scan(args.paths, say)
+    tables, given_headers, template_headers = scan(args.paths, say)
     for spec in args.table:
         qualified, _, name = spec.partition("=")
         table = Table(qualified, name or qualified.split("<")[0].split("::")[-1], None, 0)
@@ -316,6 +325,10 @@ def run(args, say=print, fail=sys.exit):
     out_dir.mkdir(parents=True, exist_ok=True)
     include_dirs = [MTL_ROOT / "include"] + [Path(d).resolve() for d in args.include_dirs]
     headers = {table.header for table in tables if table.header} | set(given_headers)
+    if args.table:
+        # a --table instantiation needs the template's declaration: the
+        # scan remembered where the template tables live
+        headers |= set(template_headers)
     include_dirs += sorted({header.parent for header in headers})
     if args.table and not headers:
         fail("dotgen: --table needs the header declaring the type: pass the header as PATH")

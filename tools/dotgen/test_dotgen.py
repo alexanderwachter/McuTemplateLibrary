@@ -61,7 +61,7 @@ class Crawler(unittest.TestCase):
         self.header.write_text(HEADER, encoding="utf-8")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            self.tables = dotgen.find_tables(self.header)
+            self.tables, self.has_templates = dotgen.find_tables(self.header)
         self.messages = stderr.getvalue()
 
     def tearDown(self):
@@ -76,6 +76,7 @@ class Crawler(unittest.TestCase):
     def test_template_is_skipped_with_a_hint(self):
         self.assertIn("template table 'templated_table' skipped", self.messages)
         self.assertIn("--table", self.messages)
+        self.assertTrue(self.has_templates)
 
     def test_line_numbers(self):
         lines = HEADER.splitlines()
@@ -95,9 +96,13 @@ class Crawler(unittest.TestCase):
         self.assertIn('fsm::writeDot<app::templated_table<app::idle>>(out, "idle_table")', source)
 
     def test_scan_reports_given_headers(self):
-        tables, given = dotgen.scan([str(self.header)])
+        tables, given, template_headers = dotgen.scan([str(self.header)])
         self.assertEqual(len(tables), 3)
         self.assertEqual(given, [self.header.resolve()])
+
+    def test_scan_remembers_template_table_headers(self):
+        _, _, template_headers = dotgen.scan([str(self.header)])
+        self.assertEqual(template_headers, [self.header.resolve()])
 
 
 class IncludeSearch(unittest.TestCase):
