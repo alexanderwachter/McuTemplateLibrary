@@ -127,11 +127,12 @@ struct emergency {
 };
 
 // --- guards -----------------------------------------------------------------
-struct above_limit {
-    static constexpr int limit = 75;
-    static bool check(reading const&, reading_done const& event) { return event.value > limit; }
-};
+// A question the table asks, answered by an object injected into the
+// machine (AlarmPolicy in main.cpp holds the limit): the table decides
+// where the question is asked, not what the answer depends on
+struct above_limit {};
 
+// A guard answering itself: static, needs no injection
 struct retries_left {
     static constexpr int max_retries = 3;
     static bool check(reading const& state) { return state.context.failures < max_retries; }

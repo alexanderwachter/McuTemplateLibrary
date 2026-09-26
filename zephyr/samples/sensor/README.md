@@ -11,7 +11,7 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Observer starting work on a state, event with payload | `VirtualSensor` (main.cpp) enters `reading`, answers `reading_done{value}` / `reading_failed` |
 | Machine-owned context, constructor from `(event, context)` | `retry_budget`: `retrying` counts a failure, `idle` resets (sensor.hpp) |
 | Guarded alternatives, guard on state data | `reading -(reading_failed)->` `retrying` while `retries_left`, else `failed` |
-| Guard on the event payload | `reading -(reading_done)->` `alarm` when `above_limit`, else `idle` |
+| Guard on the event payload, answered by an injected object | `reading -(reading_done)->` `alarm` when `above_limit`, else `idle`: `above_limit` is a tag in the table, `AlarmPolicy` (main.cpp) answers it with `check(above_limit, reading const&, reading_done const&)` from its runtime `limit` - injected next to the observers, the table never names it (`retries_left` stays a static guard) |
 | State constructed from the event | `alarm(reading_done const&)` keeps the value |
 | Wildcard source, exact pair overriding it | `any_state -(button)-> emergency`, `emergency -(button)-> idle` |
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |

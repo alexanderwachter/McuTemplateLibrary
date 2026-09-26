@@ -12,7 +12,9 @@ states), drains on a workqueue thread of its own named after the table,
 and deduces the observers' types. Both event sources stay in their
 ISRs: the `k_timer` expiry only latches, and the board's user button
 (devicetree alias `sw0`), the pedestrian button shortening the green
-phase once the minimum green time has elapsed, calls `process()`
+phase once the minimum green time has elapsed - the table asks
+`minimum_green_elapsed`, an injected `PedestrianPolicy` holding the
+minimum answers it - calls `process()`
 straight from its ISR. Every transition is logged by `mtl::zephyr::TraceLogger` on
 the `mtl_fsm` log module in the line grammar of `tools/fsmview`. The
 three lamps are an annotation set on every state

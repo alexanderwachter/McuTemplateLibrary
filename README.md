@@ -87,7 +87,16 @@ whether a transition fired.
 - **Events carry payload.** A target state constructible from the event
   is constructed from it; otherwise it is default-constructed.
 - **Guards** gate a transition with `check(state, event)`, `check(state)`
-  or `check()`, the most specific form the guard provides.
+  or `check()`, the most specific form provided. A guard in the table is
+  a question, a tag type; either it answers itself with a static `check`,
+  or an object injected into the machine like an observer answers it
+  with the same forms and the tag in front, `bool check(above_limit,
+  reading const&, reading_done const& event)`. The table names the
+  question, not the answerer, so it stays free of the answerer's type,
+  a host test injects a mock, and a runtime limit changes the machine's
+  behavior from outside. An injected answer wins over a static one; a
+  question nobody answers, or two objects answer, is a `static_assert`.
+  An object may answer guards and observe at once.
 - **Alternatives.** One `(state, event)` pair may have several entries:
   the first whose guard passes fires; an unguarded entry is the
   catch-all.
@@ -130,7 +139,8 @@ whether a transition fired.
   only what to do with it.
 - **Checked at compile time.** Malformed transitions, dead alternatives,
   an `initial<>` that is no state, timed states without a timeout
-  transition (with `fsm::timed`), guards not matching their state,
+  transition (with `fsm::timed`), guards nobody answers or two objects
+  answer,
   reachability and timeout bounds (`fsm::all_states_reachable_v`,
   `fsm::timeouts_within_bounds_v`), observer coverage
   (`fsm::all_states_notified_v`), and an observer's declared

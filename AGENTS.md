@@ -67,6 +67,11 @@ expecting the specific `static_assert` message - a class template's
   matched to `notifyEntry(A)`/`notifyExit(B)` by type, and so is the
   set an instance returns from `values()` (`fsm::annotate_ref`, or one
   value); `observe_static` remains for a single named member.
+- Guards are questions the table asks, never the answerer's type: a tag
+  the table names, answered by the tag's own static `check` or by an
+  injected object's `check(TAG, ...)`. Naming an injected object's
+  concrete type in a table would drag its headers into the table and
+  fix the implementation for every build (no mock on the host).
 - Observers observe annotations, not states. A hook that names a state
   (`if constexpr (std::is_same_v<STATE, reading>)`) couples the observer
   to one table; an annotation type decouples them - the state says what

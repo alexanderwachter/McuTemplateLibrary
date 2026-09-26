@@ -1,7 +1,8 @@
 /*
  * The traffic light's states and table, free of Zephyr so that the
- * host-built dotgen.cpp can write its graph: the one kernel service the
- * guard needs, the uptime, comes through uptimeMs().
+ * host-built dotgen.cpp can write its graph: the one kernel service a
+ * state needs, the uptime, comes through uptimeMs(). The guard is a
+ * question the table asks; main.cpp injects the object answering it.
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -58,10 +59,10 @@ struct yellow {
     static constexpr auto annotations = fsm::annotate(red_lamp{false}, yellow_lamp{true}, green_lamp{false});
 };
 
-struct minimum_green_elapsed {
-    static constexpr int64_t minimum = 2000;
-    static bool check(green const& state) { return uptimeMs() - state.entered >= minimum; }
-};
+// The table's question at the pedestrian button: answered by an object
+// injected into the machine (PedestrianPolicy in main.cpp, which holds
+// the minimum green time), not by the table
+struct minimum_green_elapsed {};
 
 // Named: the short name is the machine id in trace lines and the graph
 struct traffic_light_table : fsm::transition_table<

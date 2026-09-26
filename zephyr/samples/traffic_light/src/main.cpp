@@ -83,13 +83,27 @@ struct LampDriver : fsm::observing<LampDriver> {
     bool green = false;
 };
 
+// Answers the table's minimum_green_elapsed question: the tag selects
+// the overload, the minimum is this object's runtime data. Injected
+// into the machine like an observer
+struct PedestrianPolicy {
+    bool check(traffic_light::minimum_green_elapsed, traffic_light::green const& state) const
+    {
+        return k_uptime_get() - state.entered >= minimum_green_ms;
+    }
+
+    int64_t minimum_green_ms = 2000;
+};
+
 // The whole machine in one declaration: the table has timed states, so
 // it brings its timeout timer; it drains on a workqueue thread of its
-// own, named after the table; the observers' types are deduced.
+// own, named after the table; the injected objects' types are deduced.
 // Static: the kernel objects and the machine's address must stay put
+PedestrianPolicy pedestrian_policy;
 LampDriver lamps;
 mtl::zephyr::TraceLogger trace_logger;
-mtl::zephyr::StateMachine light{mtl::zephyr::table<traffic_light_table>, lamps, trace_logger};
+mtl::zephyr::StateMachine light{mtl::zephyr::table<traffic_light_table>, pedestrian_policy, lamps,
+                                trace_logger};
 
 // --- pedestrian button ------------------------------------------------------
 // The ISR processes the event itself: process() only queues it, the

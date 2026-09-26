@@ -9,6 +9,8 @@
  *   Calibrator      - the calibration feature: when injected, the table
  *                     gains the calibrating state, which it answers with
  *                     calibrated{offset} (CONFIG_SAMPLE_CALIBRATION)
+ *   AlarmPolicy     - answers the table's above_limit guard from a
+ *                     runtime limit: a guard injected like an observer
  *   LedController  - picks the led_pattern element of each state's
  *                     annotation set and drives its own LED state machine
  *                     (the sub machine is an observer of the sensor machine)
@@ -191,6 +193,19 @@ struct LedController : fsm::observing<LedController> {
 #endif
 };
 
+// --- alarm policy: answers the table's above_limit question -----------------
+// The tag selects the overload; the forms are those of a static guard
+// with the tag in front. The limit is runtime data of this object, so
+// the behavior changes from outside the table
+struct AlarmPolicy {
+    bool check(sensor::above_limit, sensor::reading const&, sensor::reading_done const& event) const
+    {
+        return event.value > limit;
+    }
+
+    int limit = 75;
+};
+
 // --- sensor power rail: the other element of the same annotation sets;
 // reading -> retrying changes the LED but not the rail, so only the LED
 // is notified there
@@ -210,16 +225,19 @@ struct PowerRail : fsm::observing<PowerRail> {
 // puts it first; the tracer goes last (its line follows the effects).
 // Static: kernel objects and machine addresses must stay put
 VirtualSensor sensor;
+AlarmPolicy alarm_policy;
 LedController leds;
 PowerRail rail;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-mtl::zephyr::StateMachineOnSharedWorkqueue monitor{
-    mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, cal, leds, rail, tracer};
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table_for<sensor::sensor_table>,
+                                                   fsm_queue, sensor, cal, alarm_policy, leds,
+                                                   rail, tracer};
 #else
-mtl::zephyr::StateMachineOnSharedWorkqueue monitor{
-    mtl::zephyr::table_for<sensor::sensor_table>, fsm_queue, sensor, leds, rail, tracer};
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table_for<sensor::sensor_table>,
+                                                   fsm_queue, sensor, alarm_policy, leds, rail,
+                                                   tracer};
 #endif
 
 // What the observers report, through the queue
