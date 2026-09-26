@@ -98,6 +98,19 @@ class StateMachine {
     // Observers get a chance to reject the table at compile time
     static_assert((internal::validated<OBSERVERs, TRANSITIONS>() && ...));
 
+    // Every guard of the table is answered: by exactly one injected
+    // object with a check(GUARD, ...) overload, or by a static check of
+    // the guard itself (an injected answer wins over the static one)
+    using injected = mtl::typelist<OBSERVERs...>;
+    static_assert(mtl::all_of_v<typename TRANSITIONS::transitions,
+                                internal::guard_answered_once_in<injected>::template pred>,
+                  "StateMachine: a guard is answered by more than one injected object");
+    static_assert(mtl::all_of_v<typename TRANSITIONS::transitions,
+                                internal::guard_answered_in<injected>::template pred>,
+                  "StateMachine: a guard of the table has no static check and no injected "
+                  "object answers it - inject one with bool check(GUARD, FROM const&[, EVENT "
+                  "const&]) or bool check(GUARD)");
+
 public:
     using table         = TRANSITION_TABLE; // named tables identify the machine (fsm::tracing)
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
@@ -235,7 +248,7 @@ private:
         std::size_t outcome = StateMachine::ignored;
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
-                ((internal::allowed<WILDCARDs>(state, event) &&
+                ((this->template allowed<WILDCARDs>(state, event) &&
                   (this->template leave<STATE, typename WILDCARDs::to>(),
                    outcome = StateMachine::pending + INDEXs, true)) ||
                  ...));
@@ -328,9 +341,35 @@ private:
     template<typename STATE, typename... GUARDEDs, typename EVENT>
     bool tryGuarded(mtl::typelist<GUARDEDs...>, STATE& state, EVENT const& event)
     {
-        return ((internal::checkGuard<typename GUARDEDs::guard>(state, event) &&
+        return ((this->template checkGuard<typename GUARDEDs::guard>(state, event) &&
                  (this->template doTransition<GUARDEDs>(state, event), true)) ||
                 ...);
+    }
+
+    // The guard's answer: from the injected object answering it, else
+    // from its own static check
+    template<typename GUARD, typename STATE, typename EVENT>
+    bool checkGuard(STATE const& state, EVENT const& event)
+    {
+        using answerer =
+            mtl::find_if_t<injected, internal::answering<GUARD, STATE>::template pred>;
+        if constexpr (std::is_same_v<answerer, mtl::nil_type>) {
+            return internal::checkStaticGuard<GUARD>(state, event);
+        } else {
+            return internal::askGuard<GUARD>(
+                std::get<mtl::index_of_v<answerer, injected>>(observers_), state, event);
+        }
+    }
+
+    // True when TRANSITION may fire from the given state instance
+    template<typename TRANSITION, typename STATE, typename EVENT>
+    bool allowed(STATE const& state, EVENT const& event)
+    {
+        if constexpr (internal::has_guard_v<TRANSITION>) {
+            return this->template checkGuard<typename TRANSITION::guard>(state, event);
+        } else {
+            return true;
+        }
     }
 
     // Already instantiated per (transition, state, event): the only

@@ -1198,6 +1198,52 @@ namespace guards {
                         fsm::guard<return_allowed>>>;
 } // namespace guards
 
+// --- injected guards: the table asks, an injected object answers -----------
+namespace InjectedGuards {
+    struct push {};
+    struct closed {};
+    struct open {};
+
+    // the table's questions: a pure tag that must be answered, and a tag
+    // with a static default an injected answer overrides
+    struct door_unlocked {};
+    struct after_hours {
+        static bool check() { return false; }
+    };
+
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<open>,
+                        fsm::guard<door_unlocked>>,
+        fsm::transition<fsm::from<open>,   fsm::on<push>, fsm::to<closed>,
+                        fsm::guard<after_hours>>>;
+
+    // answers door_unlocked from its own data and counts entries: a guard
+    // and an observer at once, the table naming neither
+    struct keeper {
+        bool unlocked = false;
+        int opened    = 0;
+        bool check(door_unlocked, closed const&) const { return unlocked; }
+        template<typename STATE, typename MACHINE>
+        void onEnter(MACHINE&)
+        {
+            if constexpr (std::is_same_v<STATE, open>) {
+                ++opened;
+            }
+        }
+    };
+    // overrides after_hours' static default
+    struct wall_clock {
+        bool late = false;
+        bool check(after_hours) const { return late; }
+    };
+
+    static_assert(fsm::concepts::answers_guard_for<keeper, door_unlocked, closed>);
+    static_assert(!fsm::concepts::answers_guard_for<keeper, after_hours, open>);
+    static_assert(fsm::concepts::answers_guard_for<wall_clock, after_hours, open>);
+    static_assert(fsm::concepts::guard_for<after_hours, open>);    // answers itself
+    static_assert(!fsm::concepts::guard_for<door_unlocked, closed>); // a pure tag
+} // namespace InjectedGuards
+
 void guardBlocksAndAllows()
 {
     using namespace guards;
@@ -1218,6 +1264,37 @@ void guardBlocksAndAllows()
     check(sm.process(push{}));
     check(sm.is<gate>());
     check(!sm.getIf<gate>()->open); // re-entry default-constructs the state
+}
+
+void injectedObjectAnswersGuard()
+{
+    using namespace InjectedGuards;
+    keeper k;
+    wall_clock clock;
+    fsm::StateMachine<tbl, keeper, wall_clock> sm{k, clock};
+
+    check(!sm.process(push{})); // door_unlocked: the keeper says no
+    check(sm.is<closed>());
+    k.unlocked = true;          // the behavior changes from outside the table
+    check(sm.process(push{}));
+    check(sm.is<open>() && k.opened == 1);
+
+    check(!sm.process(push{})); // after_hours: the injected clock overrides the static default
+    clock.late = true;
+    check(sm.process(push{}));
+    check(sm.is<closed>());
+}
+
+void staticGuardIsTheDefaultAnswer()
+{
+    using namespace InjectedGuards;
+    keeper k;
+    fsm::StateMachine<tbl, keeper> sm{k}; // nobody answers after_hours: its static check does
+
+    k.unlocked = true;
+    check(sm.process(push{}));
+    check(!sm.process(push{})); // the static default: never late
+    check(sm.is<open>());
 }
 
 // --- raw lifecycle hooks (observer without the fsm::observing base) ---------
@@ -1856,6 +1933,8 @@ int statemachineTests()
     machineWithOnlyATimerObserver();
     entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
+    injectedObjectAnswersGuard();
+    staticGuardIsTheDefaultAnswer();
     rawHookObserverSeesEveryTransition();
     guardSeesTheEventPayload();
     annotationSetElementsAreNotifiedIndependently();

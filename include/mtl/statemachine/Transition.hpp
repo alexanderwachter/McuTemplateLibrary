@@ -149,7 +149,8 @@ namespace concepts {
 
 // check(from_state, event) for conditions on the event payload before
 // any handler applied it, check(from_state) for conditions on state
-// data, check() for state-independent ones
+// data, check() for state-independent ones. A static guard answers
+// itself:
 template<typename GUARD, typename STATE, typename EVENT>
 concept event_guard_for = requires(STATE const& state, EVENT const& event) {
     { GUARD::check(state, event) } -> std::convertible_to<bool>;
@@ -171,6 +172,31 @@ template<typename GUARD, typename STATE>
 concept guard_for = state_guard_for<GUARD, STATE> ||
                     event_guard_for<GUARD, STATE, internal::any_payload> ||
                     stateless_guard<GUARD>;
+
+// An object injected into the machine answers the guard GUARD - the
+// table's question, a tag - with the same three forms, the tag selecting
+// the overload: check(GUARD, from_state, event), check(GUARD,
+// from_state), check(GUARD). An injected answer wins over a static one
+template<typename OBJECT, typename GUARD, typename STATE, typename EVENT>
+concept answers_event_guard =
+    requires(OBJECT& object, STATE const& state, EVENT const& event) {
+        { object.check(GUARD{}, state, event) } -> std::convertible_to<bool>;
+    };
+
+template<typename OBJECT, typename GUARD, typename STATE>
+concept answers_state_guard = requires(OBJECT& object, STATE const& state) {
+    { object.check(GUARD{}, state) } -> std::convertible_to<bool>;
+};
+
+template<typename OBJECT, typename GUARD>
+concept answers_stateless_guard = requires(OBJECT& object) {
+    { object.check(GUARD{}) } -> std::convertible_to<bool>;
+};
+
+template<typename OBJECT, typename GUARD, typename STATE>
+concept answers_guard_for = answers_state_guard<OBJECT, GUARD, STATE> ||
+                            answers_event_guard<OBJECT, GUARD, STATE, internal::any_payload> ||
+                            answers_stateless_guard<OBJECT, GUARD>;
 
 // Anything exposing the four role aliases works as a transition
 template<typename T>
@@ -211,9 +237,13 @@ public:
     using guard = internal::find_role_t<roles, internal::is_guard>; // nil_type if absent
 
 private:
-    static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard_for<guard, from>,
-                  "transition: guard must provide static bool check(FROM const&) "
-                  "or static bool check()");
+    // A guard is a tag: an empty class the machine passes to the injected
+    // object answering it, or a class answering itself with a static
+    // check. Which of the two it is, the machine decides
+    static_assert(std::is_same_v<guard, mtl::nil_type> ||
+                      (std::is_class_v<guard> && std::default_initializable<guard>),
+                  "transition: guard must be a default-constructible class - a tag an "
+                  "injected object answers, or a static check of its own");
 };
 
 // The to-alias of internal transitions: never a state of the table
@@ -242,9 +272,10 @@ public:
 private:
     static_assert(!std::is_same_v<from, any_state>,
                   "internal_transition: from<any_state> is not supported");
-    static_assert(std::is_same_v<guard, mtl::nil_type> || concepts::guard_for<guard, from>,
-                  "internal_transition: guard must provide static bool check(FROM const&) "
-                  "or static bool check()");
+    static_assert(std::is_same_v<guard, mtl::nil_type> ||
+                      (std::is_class_v<guard> && std::default_initializable<guard>),
+                  "internal_transition: guard must be a default-constructible class - a tag "
+                  "an injected object answers, or a static check of its own");
 };
 
 namespace internal {

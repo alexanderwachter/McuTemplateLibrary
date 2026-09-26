@@ -79,10 +79,9 @@ struct is_guarded : std::bool_constant<has_guard_v<TRANSITION>> {};
 template<typename TRANSITION>
 struct is_unguarded : std::bool_constant<!has_guard_v<TRANSITION>> {};
 
-// The most specific guard form wins. Callability was validated by the
-// transition's guard_for static_assert
+// The most specific guard form wins. A static guard answers itself -
 template<typename GUARD, concepts::state STATE, typename EVENT>
-bool checkGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
+bool checkStaticGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
 {
     if constexpr (concepts::event_guard_for<GUARD, STATE, EVENT>) {
         return GUARD::check(state, event);
@@ -93,16 +92,51 @@ bool checkGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT cons
     }
 }
 
-// True when TRANSITION may fire from the given state instance
-template<typename TRANSITION, typename STATE, typename EVENT>
-bool allowed(STATE const& state, EVENT const& event)
+// - an injected object answers with the tag selecting its overload
+template<typename GUARD, typename OBJECT, concepts::state STATE, typename EVENT>
+bool askGuard(OBJECT& object, [[maybe_unused]] STATE const& state,
+              [[maybe_unused]] EVENT const& event)
 {
-    if constexpr (has_guard_v<TRANSITION>) {
-        return checkGuard<typename TRANSITION::guard>(state, event);
+    if constexpr (concepts::answers_event_guard<OBJECT, GUARD, STATE, EVENT>) {
+        return object.check(GUARD{}, state, event);
+    } else if constexpr (concepts::answers_state_guard<OBJECT, GUARD, STATE>) {
+        return object.check(GUARD{}, state);
     } else {
-        return true;
+        return object.check(GUARD{});
     }
 }
+
+// The injected objects answering GUARD asked from STATE
+template<typename GUARD, typename STATE>
+struct answering {
+    template<typename OBJECT>
+    struct pred : std::bool_constant<concepts::answers_guard_for<OBJECT, GUARD, STATE>> {};
+};
+
+// Whether the machine can resolve TRANSITION's guard: answered by
+// exactly one of the injected OBJECTS, or by a static check of its own
+template<typename OBJECTS>
+struct guard_answered_in {
+    template<typename TRANSITION>
+    struct pred
+        : std::bool_constant<
+              !has_guard_v<TRANSITION> ||
+              mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
+                                                 typename TRANSITION::from>::template pred> == 1 ||
+              (mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
+                                                  typename TRANSITION::from>::template pred> == 0 &&
+               concepts::guard_for<typename TRANSITION::guard, typename TRANSITION::from>)> {};
+};
+
+template<typename OBJECTS>
+struct guard_answered_once_in {
+    template<typename TRANSITION>
+    struct pred
+        : std::bool_constant<
+              !has_guard_v<TRANSITION> ||
+              mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
+                                                 typename TRANSITION::from>::template pred> <= 1> {};
+};
 
 // Alternatives for one (state, event) pair are tried in table order; an
 // unguarded transition always fires, so anything after it is dead

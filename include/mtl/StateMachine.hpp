@@ -34,9 +34,14 @@
  * arbitrary transitions for the machine's lifetime. Context types must
  * be default constructible; context states need no default constructor.
  *
- * A guard gates the transition it is attached to; it provides
- * check(state, event), check(state), or check() - most specific form
- * wins. Transitions may share
+ * A guard gates the transition it is attached to: a question the table
+ * asks, answered with check(state, event), check(state), or check() -
+ * most specific form wins - either by the guard type itself (static
+ * check) or by an object injected into the machine like an observer,
+ * with the guard as tag in front: check(GUARD, state, event). The table
+ * names the question, not the answerer. An injected answer wins over a
+ * static one; a question nobody answers, or two injected objects
+ * answer, is a static_assert. Transitions may share
  * a (state, event) pair when guards distinguish them: the alternatives
  * are tried in table order and the first whose guard passes fires; an
  * unguarded alternative is the catch-all and must be the last of its
