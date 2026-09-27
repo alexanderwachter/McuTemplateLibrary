@@ -429,7 +429,12 @@ namespace Context {
 
     struct idle {}; // no context
 
+    struct history { // a second context type, another lifetime
+        int successes = 0;
+    };
+
     struct trying {
+        using contexts = mtl::typelist<attempt_log>;
         static constexpr auto timeout = 50ms;
 
         trying(start const& event, attempt_log& log) : context(log)
@@ -442,10 +447,19 @@ namespace Context {
         attempt_log& context;
     };
 
-    struct succeeded { // same context type as trying: shared instance
-        explicit succeeded(attempt_log& log) : context(log) {}
+    struct succeeded { // shares trying's instance, and declares a second
+        using contexts = mtl::typelist<attempt_log, history>;
+        succeeded(attempt_log& log, history& past) : context(log), past(past) { ++past.successes; }
         attempt_log& context;
+        history& past;
     };
+
+    static_assert(std::is_same_v<fsm::internal::contexts_of_t<idle>, mtl::typelist<>>);
+    static_assert(std::is_same_v<fsm::internal::contexts_of_t<succeeded>,
+                                 mtl::typelist<attempt_log, history>>);
+    static_assert(fsm::internal::payload_constructible_v<trying, start>);
+    static_assert(!fsm::internal::payload_constructible_v<trying, fail>);
+    static_assert(fsm::internal::context_constructible<succeeded>::value);
 
     using tbl = fsm::transition_table<
         fsm::transition<fsm::from<idle>,    fsm::on<start>,        fsm::to<trying>>,
@@ -470,6 +484,7 @@ namespace Internal {
     };
 
     struct waiting {
+        using contexts = mtl::typelist<log>;
         static constexpr auto timeout = 50ms;
 
         explicit waiting(log& l) : context(l) {}
@@ -521,6 +536,7 @@ namespace Alternatives {
 
     struct idle {};
     struct pending {
+        using contexts = mtl::typelist<budget>;
         explicit pending(budget& b) : context(b) { ++context.used; }
         budget& context;
     };
@@ -1624,6 +1640,7 @@ void contextIsMachineOwnedAndShared()
     check(sm.process(done{})); // succeeded names the same context type
     check(&sm.getIf<succeeded>()->context == log);
     check(log->attempts == 2);
+    check(sm.context<history>().successes == 1); // its second context, another instance
 
     check(sm.process(restart{})); // context also outlives contextless states
     check(sm.process(start{.payload = 9}));

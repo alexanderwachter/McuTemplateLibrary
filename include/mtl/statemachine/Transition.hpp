@@ -33,45 +33,51 @@ struct deadline {};
 
 namespace internal {
 
-// A state opts into machine-owned context by holding a reference
-// member named context, initialized by its constructors
+// A state opts into machine-owned context by declaring the context
+// types it is constructed with, in order:
+//   using contexts = mtl::typelist<connection, negotiation>;
+// Its constructors take (event, connection&, negotiation&) when built
+// from an event and (connection&, negotiation&) otherwise, and keep
+// the references under names of the state's own choosing
 template<typename T>
-concept context_holder = requires { T::context; } && std::is_reference_v<decltype(T::context)>;
+concept context_holder =
+    requires { typename T::contexts; } && mtl::concepts::typelist<typename T::contexts>;
 
 template<typename STATE>
-struct has_context : std::bool_constant<context_holder<STATE>> {};
+struct contexts_of : std::type_identity<mtl::typelist<>> {};
 
 template<context_holder STATE>
-struct context_of : std::type_identity<std::remove_reference_t<decltype(STATE::context)>> {};
+struct contexts_of<STATE> : std::type_identity<typename STATE::contexts> {};
 
-template<context_holder STATE>
-using context_of_t = typename context_of<STATE>::type;
+template<typename STATE>
+using contexts_of_t = typename contexts_of<STATE>::type;
 
-// Whether STATE is constructed from this event (with its context when
-// it has one)
+// Whether STATE is constructible from FRONT... followed by its contexts
+template<typename STATE, typename CONTEXTS, typename... FRONT>
+struct constructible_with;
+
+template<typename STATE, typename... CONTEXTs, typename... FRONT>
+struct constructible_with<STATE, mtl::typelist<CONTEXTs...>, FRONT...>
+    : std::bool_constant<std::constructible_from<STATE, FRONT..., CONTEXTs&...>> {};
+
+// ... from this event (and the contexts), or from the contexts alone
 template<typename STATE, typename EVENT>
-struct payload_constructible : std::bool_constant<std::constructible_from<STATE, EVENT const&>> {};
+inline constexpr bool payload_constructible_v =
+    constructible_with<STATE, contexts_of_t<STATE>, EVENT const&>::value;
 
-template<context_holder STATE, typename EVENT>
-struct payload_constructible<STATE, EVENT>
-    : std::bool_constant<std::constructible_from<STATE, EVENT const&, context_of_t<STATE>&>> {};
+template<typename STATE>
+struct context_constructible : constructible_with<STATE, contexts_of_t<STATE>> {};
 
-template<typename STATE, typename EVENT>
-inline constexpr bool payload_constructible_v = payload_constructible<STATE, EVENT>::value;
-
-// Arguments constructing STATE in place inside a variant. The tuple
-// round-trip through make_from_tuple is free: its prvalue is elided
-// into the variant (measured GCC 15 -Os: direct stores, no tuple, no
-// move)
+// Arguments constructing STATE in place inside a variant: the
+// in_place tag and its contexts. The tuple round-trip through
+// make_from_tuple is free: its prvalue is elided into the variant
+// (measured GCC 15 -Os: direct stores, no tuple, no move)
 template<typename STATE, typename CONTEXT_TUPLE>
 constexpr auto initialArgs(CONTEXT_TUPLE& contexts)
 {
-    if constexpr (context_holder<STATE>) {
-        return std::forward_as_tuple(std::in_place_type<STATE>,
-                                     std::get<context_of_t<STATE>>(contexts));
-    } else {
-        return std::make_tuple(std::in_place_type<STATE>);
-    }
+    return [&]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
+        return std::forward_as_tuple(std::in_place_type<STATE>, std::get<CONTEXTs>(contexts)...);
+    }(contexts_of_t<STATE>{});
 }
 
 } // namespace internal
@@ -80,7 +86,7 @@ namespace concepts {
 
 // States are classes; on entry they are constructed from the triggering
 // event if such a constructor exists, default-constructed otherwise.
-// Context states are constructed with their context instead.
+// Context states are constructed with their contexts instead.
 template<typename T>
 concept state = std::is_class_v<T> &&
                 (std::default_initializable<T> || internal::context_holder<T>);

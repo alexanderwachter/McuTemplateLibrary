@@ -119,20 +119,17 @@ public:
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
 private:
-    using context_states = mtl::filter_t<typename TRANSITIONS::states, internal::has_context>;
-    // Deduplicated: states naming the same context type share one instance
-    using context_types = mtl::unique_t<mtl::transform_t<context_states, internal::context_of>>;
+    // Every context type any state declares, deduplicated: states naming
+    // the same type share one instance
+    using context_types = mtl::unique_t<
+        mtl::linearize_t<mtl::transform_t<typename TRANSITIONS::states, internal::contexts_of>>>;
     using context_tuple = mtl::rebind_t<context_types, std::tuple>;
 
     static_assert(mtl::all_of_v<context_types, std::is_default_constructible>,
                   "StateMachine: context types must be default constructible");
-
-    template<typename STATE>
-    struct constructible_from_context
-        : std::bool_constant<std::constructible_from<STATE, internal::context_of_t<STATE>&>> {};
-    static_assert(mtl::all_of_v<context_states,
-                                StateMachine::template constructible_from_context>,
-                  "StateMachine: a context state must be constructible from its context alone");
+    static_assert(mtl::all_of_v<typename TRANSITIONS::states, internal::context_constructible>,
+                  "StateMachine: a state must be constructible from its declared contexts "
+                  "alone, in their order (default constructible without any)");
 
 public:
     explicit StateMachine(OBSERVERs&... observers)
@@ -471,16 +468,13 @@ private:
         this->template enter<OLD_STATE, NEW_STATE>();
     }
 
-    // Constructs NEW_STATE in place, its context appended when it holds one
+    // Constructs NEW_STATE in place, its contexts appended in declared order
     template<typename NEW_STATE, typename... ARGs>
     void construct(ARGs const&... args)
     {
-        if constexpr (internal::context_holder<NEW_STATE>) {
-            current_.template emplace<NEW_STATE>(
-                args..., std::get<internal::context_of_t<NEW_STATE>>(contexts_));
-        } else {
-            current_.template emplace<NEW_STATE>(args...);
-        }
+        [&]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
+            current_.template emplace<NEW_STATE>(args..., std::get<CONTEXTs>(contexts_)...);
+        }(internal::contexts_of_t<NEW_STATE>{});
     }
 
     template<typename OLD_STATE, typename NEW_STATE>

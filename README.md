@@ -74,7 +74,7 @@ whether a transition fired.
 
 - **Tables are types.** A table is a list of `fsm::transition<fsm::from<A>,
   fsm::on<E>, fsm::to<B>>` (roles in any order, an optional
-  `fsm::guard<G>`), plus an optional `fsm::initial<S>`. The state set is
+  `fsm::guard<G, ...>`), plus an optional `fsm::initial<S>`. The state set is
   derived from the table. Give tables a name - `struct my_table :
   fsm::transition_table<...> {}` - and compose them from typelists
   (`mtl::concat_t`, `mtl::rebind_t`) to switch features in and out.
@@ -96,7 +96,10 @@ whether a transition fired.
   a host test injects a mock, and a runtime limit changes the machine's
   behavior from outside. An injected answer wins over a static one; a
   question nobody answers, or two objects answer, is a `static_assert`.
-  An object may answer guards and observe at once.
+  An object may answer guards and observe at once. `fsm::guard<A, B>`
+  asks every part in order (short-circuit) and `fsm::not_<G>` inverts
+  one, so guards stay primitive and reusable; a disjunction is the next
+  alternative of the same pair.
 - **Alternatives.** One `(state, event)` pair may have several entries:
   the first whose guard passes fires; an unguarded entry is the
   catch-all.
@@ -105,10 +108,12 @@ whether a transition fired.
 - **Internal transitions.** `fsm::internal_transition<from<S>, on<E>>`
   handles E inside S via `S::handle(E const&)`: no exit, no entry, no
   timer restart.
-- **Context.** A state with a reference member named `context` is
-  constructed with a machine-owned instance of that type, shared by
-  every state naming it and surviving transitions: a retry budget, a
-  running count.
+- **Context.** A state declaring `using contexts = mtl::typelist<A, B>;`
+  is constructed with machine-owned instances of those types, in that
+  order, shared by every state naming them and surviving transitions: a
+  retry budget, a running count. Data of different lifetimes goes into
+  different types, so a state resets one by assignment and declares
+  only what it touches.
 - **Features as tags.** A state declares `using feature = tag;`, an
   observer `using enables = tag;` (or a typelist of tags).
   `fsm::remove_disabled_features_t<entries, OBSERVERs...>` drops every entry
@@ -203,8 +208,9 @@ whether a transition fired.
   edge to compare against, so there every value of the state entered is
   notified - the one place a driver may see the value it already holds.
 - Context types are default-constructible; context states need a
-  constructor from `(context&)` and may add `(event const&, context&)`.
-  Context is never reset by the machine - a state's constructor does it.
+  constructor from their declared contexts `(A&, B&)` and may add
+  `(event const&, A&, B&)`. Context is never reset by the machine - a
+  state's constructor does it.
 - Guards run before any exit action, on the still-current state; the
   event form sees the payload before it is delivered.
 - `process()` is not re-entrant and not thread-safe: the timer policy's

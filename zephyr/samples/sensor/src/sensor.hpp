@@ -67,6 +67,7 @@ struct idle {
     static constexpr auto timeout = 1000ms;
     static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{false});
 
+    using contexts = mtl::typelist<retry_budget>;
     retry_budget& context;
     explicit idle(retry_budget& budget) : context(budget) { context.failures = 0; }
 };
@@ -85,6 +86,7 @@ struct reading {
     static constexpr auto timeout = 2000ms; // the sensor never answered
     static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{true});
 
+    using contexts = mtl::typelist<retry_budget>;
     retry_budget& context;
     explicit reading(retry_budget& budget) : context(budget) {}
 };
@@ -93,6 +95,7 @@ struct retrying {
     static constexpr auto timeout = 200ms;
     static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{true});
 
+    using contexts = mtl::typelist<retry_budget>;
     retry_budget& context;
     // constructed from the failure: one more attempt used
     retrying(reading_failed const&, retry_budget& budget) : context(budget)
@@ -119,6 +122,7 @@ struct failed {
 struct emergency {
     static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{false});
 
+    using contexts = mtl::typelist<stop_log>;
     stop_log& context;
     explicit emergency(stop_log& log) : context(log) {}
     // a reading finishing while stopped is handled in place

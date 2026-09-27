@@ -25,14 +25,18 @@
  * alternatives; from<any_state> is not supported.
  *
  * States may keep data in machine-owned context that survives
- * transitions: a state declaring a reference member named context is
- * constructed with a reference to the matching context instance -
- * (event, context) when such a constructor exists, (context) alone
- * otherwise, which every context state must provide. The machine
- * value-initializes one instance per distinct context type; states
- * naming the same type share the instance, and its data persists across
- * arbitrary transitions for the machine's lifetime. Context types must
- * be default constructible; context states need no default constructor.
+ * transitions: a state declaring `using contexts = mtl::typelist<A,
+ * B>;` is constructed with references to the matching instances, in
+ * that order - (event, A&, B&) when such a constructor exists, (A&, B&)
+ * otherwise, which every context state must provide - and keeps them
+ * under member names of its own. The machine value-initializes one
+ * instance per distinct context type; states naming the same type
+ * share the instance, and its data persists across arbitrary
+ * transitions for the machine's lifetime. Splitting data of different
+ * lifetimes into separate context types lets a state reset one by
+ * assignment without touching the other, and declare only what it
+ * touches. Context types must be default constructible; context states
+ * need no default constructor.
  *
  * A guard gates the transition it is attached to: a question the table
  * asks, answered with check(state, event), check(state), or check() -
