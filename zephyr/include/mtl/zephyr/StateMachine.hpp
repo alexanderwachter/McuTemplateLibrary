@@ -62,6 +62,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 
@@ -222,6 +223,12 @@ public:
     [[nodiscard]] T const& context() const
     {
         return machine_.template context<T>();
+    }
+
+    template<typename T>
+    [[nodiscard]] std::optional<T> annotation() const
+    {
+        return machine_.template annotation<T>();
     }
 
 private:

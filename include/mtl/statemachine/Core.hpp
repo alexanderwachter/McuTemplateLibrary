@@ -9,6 +9,7 @@
 #pragma once
 
 #include <mtl/statemachine/Observer.hpp>
+#include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
@@ -17,6 +18,7 @@
 #include <cassert>
 #include <concepts>
 #include <cstddef>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -229,6 +231,31 @@ public:
     [[nodiscard]] T const& context() const
     {
         return std::get<T>(contexts_);
+    }
+
+    // The active state's annotation element of type T - its static
+    // fsm::annotate set - empty while the active state carries no T.
+    // A facade asks the machine what the observers see instead of
+    // enumerating states with is<>(): the states declare the fact,
+    // the query reads it. An element no state of the table carries
+    // could never be answered: a static_assert. Instance values
+    // (values()) stay with the state object, see getIf()
+    template<typename T>
+    [[nodiscard]] std::optional<T> annotation() const
+    {
+        static_assert(annotation_in_table_v<TRANSITION_TABLE, T>,
+                      "StateMachine::annotation: no state of the table carries this annotation");
+        // only the states carrying T take part: a compare chain over
+        // the carriers, each yielding its constant
+        using states   = typename TRANSITIONS::states;
+        using carriers = mtl::filter_t<states, internal::carrying<T>::template pred>;
+        return [this]<typename... CARRIERs>(mtl::typelist<CARRIERs...>) {
+            std::optional<T> result;
+            static_cast<void>(((current_.index() == mtl::index_of_v<CARRIERs, states> &&
+                                (result = CARRIERs::annotations.template get<T>(), true)) ||
+                               ...));
+            return result;
+        }(carriers{});
     }
 
 private:

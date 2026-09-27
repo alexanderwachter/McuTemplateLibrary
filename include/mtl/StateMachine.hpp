@@ -99,7 +99,10 @@
  * feature no injected observer consumes (a timeout without fsm::timed, an
  * annotation nobody watches) is silently unobserved.
  * Value observation with change suppression: see fsm::observing
- * (statemachine/Observing.hpp).
+ * (statemachine/Observing.hpp). A facade asks the active state's
+ * annotation with machine.annotation<T>() - std::optional<T>, empty
+ * while the active state carries no T - and reads the fact the states
+ * declare instead of enumerating them with is<STATE>().
  *
  * This header is the whole library; the parts live in statemachine/:
  *   Transition.hpp  states, transition roles, transition types
