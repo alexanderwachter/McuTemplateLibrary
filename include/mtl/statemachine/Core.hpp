@@ -9,6 +9,7 @@
 #pragma once
 
 #include <mtl/statemachine/Observer.hpp>
+#include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
@@ -17,6 +18,7 @@
 #include <cassert>
 #include <concepts>
 #include <cstddef>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -70,6 +72,22 @@ constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
     }(std::index_sequence_for<ALTERNATIVEs...>{});
 }
 
+// The same over a const variant: the read-only queries
+template<typename VISITOR, typename... ALTERNATIVEs>
+    requires (std::invocable<VISITOR, ALTERNATIVEs const&> && ...)
+constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...> const& variant)
+{
+    using result_type =
+        std::common_type_t<std::invoke_result_t<VISITOR, ALTERNATIVEs const&>...>;
+    return [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
+        result_type result{};
+        static_cast<void>(((variant.index() == INDEXs &&
+                            (result = visitor(*std::get_if<INDEXs>(&variant)), true)) ||
+                           ...));
+        return result;
+    }(std::index_sequence_for<ALTERNATIVEs...>{});
+}
+
 // The fold is the default: it wins clearly on embedded targets with
 // large machines (measurements above), losing only a few bytes on
 // hosted libstdc++ with small ones. Define MTL_FSM_FOLD_VISIT to 0 to
@@ -81,6 +99,17 @@ constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 template<typename VISITOR, typename... ALTERNATIVEs>
     requires (std::invocable<VISITOR, ALTERNATIVEs&> && ...)
 constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
+{
+#if MTL_FSM_FOLD_VISIT
+    return internal::visit(std::forward<VISITOR>(visitor), variant);
+#else
+    return std::visit(std::forward<VISITOR>(visitor), variant);
+#endif
+}
+
+template<typename VISITOR, typename... ALTERNATIVEs>
+    requires (std::invocable<VISITOR, ALTERNATIVEs const&> && ...)
+constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...> const& variant)
 {
 #if MTL_FSM_FOLD_VISIT
     return internal::visit(std::forward<VISITOR>(visitor), variant);
@@ -229,6 +258,29 @@ public:
     [[nodiscard]] T const& context() const
     {
         return std::get<T>(contexts_);
+    }
+
+    // The active state's annotation element of type T - its static
+    // fsm::annotate set - empty while the active state carries no T.
+    // A facade asks the machine what the observers see instead of
+    // enumerating states with is<>(): the states declare the fact,
+    // the query reads it. An element no state of the table carries
+    // could never be answered: a static_assert. Instance values
+    // (values()) stay with the state object, see getIf()
+    template<typename T>
+    [[nodiscard]] std::optional<T> annotation() const
+    {
+        static_assert(annotation_in_table_v<TRANSITION_TABLE, T>,
+                      "StateMachine::annotation: no state of the table carries this annotation");
+        return internal::dispatch(
+            []<typename STATE>(STATE const&) -> std::optional<T> {
+                if constexpr (internal::has_annotation_v<STATE, T>) {
+                    return STATE::annotations.template get<T>();
+                } else {
+                    return std::nullopt;
+                }
+            },
+            current_);
     }
 
 private:

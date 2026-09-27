@@ -1448,6 +1448,27 @@ void declaredObservationsAreValidated()
     check(watcher.heats == 2);
 }
 
+void activeStateAnnotationIsQueried()
+{
+    using namespace AnnotationSets;
+    panel p;
+    fsm::StateMachine<tbl, panel> sm{p};
+
+    // the query reads the active state's static set: an element it
+    // carries as the value, one it lacks as an empty optional
+    check(sm.annotation<light>() == light::off);
+    check(sm.annotation<level>() == level{1});
+    check(!sm.annotation<heat>());
+    check(sm.process(next{})); // lit
+    check(sm.annotation<heat>() == heat{true});
+    check(sm.process(next{})); // bare: no set at all
+    check(!sm.annotation<light>() && !sm.annotation<heat>());
+    check(sm.process(kill{})); // dead
+    check(sm.annotation<heat>() == heat{false});
+    // an element no state carries is refused at compile time
+    // (sm.annotation<sound>() would static_assert)
+}
+
 void annotationSetElementsAreNotifiedIndependently()
 {
     using namespace AnnotationSets;
@@ -1937,6 +1958,7 @@ int statemachineTests()
     staticGuardIsTheDefaultAnswer();
     rawHookObserverSeesEveryTransition();
     guardSeesTheEventPayload();
+    activeStateAnnotationIsQueried();
     annotationSetElementsAreNotifiedIndependently();
     staticHookRunsBeforeNonstaticHook();
     observerGroupForwardsHooksInMemberOrder();

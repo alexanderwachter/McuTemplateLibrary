@@ -63,6 +63,7 @@
 #include <chrono>
 #include <concepts>
 #include <cstddef>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -321,6 +322,12 @@ public:
     [[nodiscard]] T const& context() const
     {
         return machine_.template context<T>();
+    }
+
+    template<typename T>
+    [[nodiscard]] std::optional<T> annotation() const
+    {
+        return machine_.template annotation<T>();
     }
 
 private:
