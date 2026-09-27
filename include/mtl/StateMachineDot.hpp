@@ -132,6 +132,26 @@ void writeDotNode(std::ostream& out)
     out << ";\n";
 }
 
+// The row's condition: its parts joined by &&, an inverted part with !
+template<typename PART>
+void writeDotGuard(std::ostream& out, bool first)
+{
+    if (!first) {
+        out << " && ";
+    }
+    if constexpr (internal::is_negated_v<PART>) {
+        out << '!';
+    }
+    out << label<internal::guard_of_t<PART>>();
+}
+
+template<typename... PARTs>
+void writeDotGuards(std::ostream& out, mtl::typelist<PARTs...>)
+{
+    bool first = true;
+    ((writeDotGuard<PARTs>(out, first), first = false), ...);
+}
+
 template<std::size_t INDEX, typename TRANSITION>
 void writeDotEdge(std::ostream& out)
 {
@@ -141,7 +161,9 @@ void writeDotEdge(std::ostream& out)
     out << "    \"" << label<typename TRANSITION::from>() << "\" -> \"" << label<to>()
         << "\" [label=\"" << label<typename TRANSITION::event>();
     if constexpr (has_guard_v<TRANSITION>) {
-        out << "\\n[" << label<typename TRANSITION::guard>() << ']';
+        out << "\\n[";
+        writeDotGuards(out, typename TRANSITION::guards{});
+        out << ']';
     }
     if constexpr (is_internal_v<TRANSITION>) {
         out << "\\n(internal)";

@@ -173,9 +173,9 @@ namespace Guards {
     using reordered = fsm::transition<fsm::guard<always>, fsm::to<running>,
                                       fsm::from<off>, fsm::on<button_press>>;
 
-    static_assert(std::is_same_v<unguarded::guard, mtl::nil_type>);
-    static_assert(std::is_same_v<guarded::guard, always>);
-    static_assert(std::is_same_v<reordered::guard, always>);
+    static_assert(std::is_same_v<unguarded::guards, mtl::typelist<>>);
+    static_assert(std::is_same_v<guarded::guards, mtl::typelist<always>>);
+    static_assert(std::is_same_v<reordered::guards, mtl::typelist<always>>);
 
     struct with_state { static bool check(off const&) { return true; } };
     static_assert(fsm::concepts::guard_for<with_state, off>);
@@ -1244,6 +1244,65 @@ namespace InjectedGuards {
     static_assert(!fsm::concepts::guard_for<door_unlocked, closed>); // a pure tag
 } // namespace InjectedGuards
 
+// --- combined guards: a conjunction of parts, a part inverted ---------------
+namespace CombinedGuards {
+    struct push {};
+    struct closed {
+        void handle(push const&) {} // locked: the push does nothing
+    };
+    struct open {};
+    struct refused {};
+
+    struct door_unlocked { // static
+        static inline bool unlocked = false;
+        static bool check() { return unlocked; }
+    };
+    struct after_hours {}; // a pure tag, injected answer
+
+    struct wall_clock {
+        bool late = false;
+        bool check(after_hours) const { return late; }
+    };
+
+    // unlocked and not late opens; unlocked but late is refused; locked
+    // stays - a disjunction is the next row of the pair
+    using tbl = fsm::transition_table<
+        fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<open>,
+                        fsm::guard<door_unlocked, fsm::not_<after_hours>>>,
+        fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<refused>,
+                        fsm::guard<door_unlocked>>,
+        fsm::internal_transition<fsm::from<closed>, fsm::on<push>>,
+        fsm::transition<fsm::from<open>,    fsm::on<push>, fsm::to<closed>>,
+        fsm::transition<fsm::from<refused>, fsm::on<push>, fsm::to<closed>>>;
+
+    using opening = mtl::front_t<tbl::transitions>;
+    static_assert(std::is_same_v<opening::guards,
+                                 mtl::typelist<door_unlocked, fsm::not_<after_hours>>>);
+    static_assert(fsm::internal::is_negated_v<fsm::not_<after_hours>>);
+    static_assert(!fsm::internal::is_negated_v<after_hours>);
+    static_assert(std::is_same_v<fsm::internal::guard_of_t<fsm::not_<after_hours>>, after_hours>);
+} // namespace CombinedGuards
+
+void combinedGuardsAskEveryPart()
+{
+    using namespace CombinedGuards;
+    wall_clock clock;
+    fsm::StateMachine<tbl, wall_clock> sm{clock};
+
+    door_unlocked::unlocked = false;
+    check(sm.process(push{})); // the internal row: locked, nothing changes
+    check(sm.is<closed>());
+
+    door_unlocked::unlocked = true; // both parts hold: static yes, inverted injected no
+    check(sm.process(push{}));
+    check(sm.is<open>());
+    check(sm.process(push{})); // back
+
+    clock.late = true; // the inverted part refuses, the next row takes it
+    check(sm.process(push{}));
+    check(sm.is<refused>());
+}
+
 void guardBlocksAndAllows()
 {
     using namespace guards;
@@ -1954,6 +2013,7 @@ int statemachineTests()
     machineWithOnlyATimerObserver();
     entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
+    combinedGuardsAskEveryPart();
     injectedObjectAnswersGuard();
     staticGuardIsTheDefaultAnswer();
     rawHookObserverSeesEveryTransition();

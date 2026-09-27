@@ -96,8 +96,14 @@ struct on {};
 template<concepts::state STATE>
 struct to {};
 
-template<typename GUARD>
+// The row's condition: every part must hold, asked in order with
+// short-circuit; a part not_<G> holds when G does not. A disjunction
+// is another row of the same (state, event) pair
+template<typename... GUARDs>
 struct guard {};
+
+template<typename GUARD>
+struct not_ {};
 
 template<concepts::state STATE>
 struct initial {};
@@ -113,8 +119,8 @@ template<typename E> struct is_on<fsm::on<E>> : std::true_type {};
 template<typename T> struct is_to : std::false_type {};
 template<typename S> struct is_to<fsm::to<S>> : std::true_type {};
 
-template<typename T> struct is_guard : std::false_type {};
-template<typename G> struct is_guard<fsm::guard<G>> : std::true_type {};
+template<typename T>     struct is_guard : std::false_type {};
+template<typename... Gs> struct is_guard<fsm::guard<Gs...>> : std::true_type {};
 
 template<typename T> struct is_initial : std::false_type {};
 template<typename S> struct is_initial<fsm::initial<S>> : std::true_type {};
@@ -123,13 +129,40 @@ template<typename T> struct unwrap;
 template<typename S> struct unwrap<fsm::from<S>>    { using type = S; };
 template<typename E> struct unwrap<fsm::on<E>>      { using type = E; };
 template<typename S> struct unwrap<fsm::to<S>>      { using type = S; };
-template<typename G> struct unwrap<fsm::guard<G>>   { using type = G; };
 template<typename S> struct unwrap<fsm::initial<S>> { using type = S; };
 template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type; };
 
 // Payload of the first role matching PREDICATE; nil_type if there is none
 template<mtl::concepts::typelist LIST, template<typename> typename PREDICATE>
 using find_role_t = typename unwrap<mtl::find_if_t<LIST, PREDICATE>>::type;
+
+// The guard role's parts as a list, empty without the role
+template<typename ROLE>  struct guard_parts { using type = mtl::typelist<>; };
+template<typename... Gs> struct guard_parts<fsm::guard<Gs...>> { using type = mtl::typelist<Gs...>; };
+
+template<mtl::concepts::typelist ROLES>
+using guards_t = typename guard_parts<mtl::find_if_t<ROLES, is_guard>>::type;
+
+// A part is a guard, or not_<guard>: the guard behind it, and whether
+// its answer is inverted
+template<typename PART> struct guard_of : std::type_identity<PART> {};
+template<typename G>    struct guard_of<fsm::not_<G>> : std::type_identity<G> {};
+
+template<typename PART>
+using guard_of_t = typename guard_of<PART>::type;
+
+template<typename PART> struct is_negated : std::false_type {};
+template<typename G>    struct is_negated<fsm::not_<G>> : std::true_type {};
+
+template<typename PART>
+inline constexpr bool is_negated_v = is_negated<PART>::value;
+
+// A guard is a tag: an empty class the machine passes to the injected
+// object answering it, or a class answering itself with a static
+// check. Which of the two it is, the machine decides
+template<typename PART>
+struct is_guard_tag : std::bool_constant<std::is_class_v<guard_of_t<PART>> &&
+                                         std::default_initializable<guard_of_t<PART>>> {};
 
 // Stand-in for any event in unevaluated contexts: validates a guard's
 // two-argument (state, event) form when the event type is unknown
@@ -204,7 +237,7 @@ concept transition = requires {
     typename T::from;
     typename T::event;
     typename T::to;
-    typename T::guard;
+    typename T::guards;
 };
 
 template<typename T>
@@ -228,22 +261,18 @@ private:
     static_assert(mtl::count_if_v<roles, internal::is_to> == 1,
                   "transition: exactly one to<STATE> required");
     static_assert(mtl::count_if_v<roles, internal::is_guard> <= 1,
-                  "transition: at most one guard<GUARD> allowed");
+                  "transition: at most one guard<GUARDs...> allowed - list the parts in it");
 
 public:
-    using from  = internal::find_role_t<roles, internal::is_from>;
-    using event = internal::find_role_t<roles, internal::is_on>;
-    using to    = internal::find_role_t<roles, internal::is_to>;
-    using guard = internal::find_role_t<roles, internal::is_guard>; // nil_type if absent
+    using from   = internal::find_role_t<roles, internal::is_from>;
+    using event  = internal::find_role_t<roles, internal::is_on>;
+    using to     = internal::find_role_t<roles, internal::is_to>;
+    using guards = internal::guards_t<roles>; // the condition's parts, empty if unguarded
 
 private:
-    // A guard is a tag: an empty class the machine passes to the injected
-    // object answering it, or a class answering itself with a static
-    // check. Which of the two it is, the machine decides
-    static_assert(std::is_same_v<guard, mtl::nil_type> ||
-                      (std::is_class_v<guard> && std::default_initializable<guard>),
-                  "transition: guard must be a default-constructible class - a tag an "
-                  "injected object answers, or a static check of its own");
+    static_assert(mtl::all_of_v<guards, internal::is_guard_tag>,
+                  "transition: a guard must be a default-constructible class - a tag an "
+                  "injected object answers, or a static check of its own - or not_<one>");
 };
 
 // The to-alias of internal transitions: never a state of the table
@@ -261,21 +290,21 @@ private:
     static_assert(mtl::count_if_v<roles, internal::is_to> == 0,
                   "internal_transition: to<STATE> is not allowed");
     static_assert(mtl::count_if_v<roles, internal::is_guard> <= 1,
-                  "internal_transition: at most one guard<GUARD> allowed");
+                  "internal_transition: at most one guard<GUARDs...> allowed - list the parts "
+                  "in it");
 
 public:
-    using from  = internal::find_role_t<roles, internal::is_from>;
-    using event = internal::find_role_t<roles, internal::is_on>;
-    using to    = internal_target;
-    using guard = internal::find_role_t<roles, internal::is_guard>; // nil_type if absent
+    using from   = internal::find_role_t<roles, internal::is_from>;
+    using event  = internal::find_role_t<roles, internal::is_on>;
+    using to     = internal_target;
+    using guards = internal::guards_t<roles>; // the condition's parts, empty if unguarded
 
 private:
     static_assert(!std::is_same_v<from, any_state>,
                   "internal_transition: from<any_state> is not supported");
-    static_assert(std::is_same_v<guard, mtl::nil_type> ||
-                      (std::is_class_v<guard> && std::default_initializable<guard>),
-                  "internal_transition: guard must be a default-constructible class - a tag "
-                  "an injected object answers, or a static check of its own");
+    static_assert(mtl::all_of_v<guards, internal::is_guard_tag>,
+                  "internal_transition: a guard must be a default-constructible class - a tag "
+                  "an injected object answers, or a static check of its own - or not_<one>");
 };
 
 namespace internal {

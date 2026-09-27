@@ -60,7 +60,9 @@ struct example_table : fsm::transition_table<
     fsm::transition<fsm::from<running>,        fsm::on<fsm::timeout>, fsm::to<off>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>,         fsm::to<off>>,
     fsm::internal_transition<fsm::from<running>, fsm::on<go>>,
-    fsm::transition<fsm::from<off>, fsm::on<fsm::timeout>, fsm::to<escaped>>> {};
+    fsm::transition<fsm::from<off>, fsm::on<fsm::timeout>, fsm::to<escaped>>,
+    fsm::transition<fsm::from<escaped>, fsm::on<go>, fsm::to<off>,
+                    fsm::guard<ready, fsm::not_<ready>>>> {};
 
 // the label strips namespaces, the type name keeps them (both from
 // mtl/TypeName.hpp)
@@ -107,6 +109,9 @@ int dotTests()
     check(dot.contains("\"any_state\" -> \"off\" [label=\"kill\" id=\"any_state__kill__off__2\"];"));
     check(dot.contains("\"running\" -> \"running\" [label=\"go\\n(internal)\" "
                        "id=\"running__go__internal_target__3\" style=dashed];"));
+    // a combined guard: the parts joined, the inverted one marked
+    check(dot.contains("\"escaped\" -> \"off\" [label=\"go\\n[ready && !ready]\" "
+                       "id=\"escaped__go__off__5\"];"));
     check(dot.contains("__initial -> \"off\";"));
     check(dot.ends_with("}\n"));
 

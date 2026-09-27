@@ -41,7 +41,10 @@
  * with the guard as tag in front: check(GUARD, state, event). The table
  * names the question, not the answerer. An injected answer wins over a
  * static one; a question nobody answers, or two injected objects
- * answer, is a static_assert. Transitions may share
+ * answer, is a static_assert. guard<A, B, ...> asks every part in
+ * order (short-circuit) and a part not_<G> holds when G does not, so
+ * guards stay primitive and reusable; a disjunction is the next
+ * alternative of the same pair. Transitions may share
  * a (state, event) pair when guards distinguish them: the alternatives
  * are tried in table order and the first whose guard passes fires; an
  * unguarded alternative is the catch-all and must be the last of its

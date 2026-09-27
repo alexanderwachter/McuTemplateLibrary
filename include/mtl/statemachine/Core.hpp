@@ -368,12 +368,32 @@ private:
     template<typename STATE, typename... GUARDEDs, typename EVENT>
     bool tryGuarded(mtl::typelist<GUARDEDs...>, STATE& state, EVENT const& event)
     {
-        return ((this->template checkGuard<typename GUARDEDs::guard>(state, event) &&
+        return ((this->template checkGuards<typename GUARDEDs::guards>(state, event) &&
                  (this->template doTransition<GUARDEDs>(state, event), true)) ||
                 ...);
     }
 
-    // The guard's answer: from the injected object answering it, else
+    // A row's condition: every part in order, short-circuit; a not_<G>
+    // part is G's answer inverted
+    template<typename GUARDS, typename STATE, typename EVENT>
+    bool checkGuards(STATE const& state, EVENT const& event)
+    {
+        return [&]<typename... PARTs>(mtl::typelist<PARTs...>) {
+            return (this->template checkPart<PARTs>(state, event) && ...);
+        }(GUARDS{});
+    }
+
+    template<typename PART, typename STATE, typename EVENT>
+    bool checkPart(STATE const& state, EVENT const& event)
+    {
+        if constexpr (internal::is_negated_v<PART>) {
+            return !this->template checkGuard<internal::guard_of_t<PART>>(state, event);
+        } else {
+            return this->template checkGuard<PART>(state, event);
+        }
+    }
+
+    // One guard's answer: from the injected object answering it, else
     // from its own static check
     template<typename GUARD, typename STATE, typename EVENT>
     bool checkGuard(STATE const& state, EVENT const& event)
@@ -393,7 +413,7 @@ private:
     bool allowed(STATE const& state, EVENT const& event)
     {
         if constexpr (internal::has_guard_v<TRANSITION>) {
-            return this->template checkGuard<typename TRANSITION::guard>(state, event);
+            return this->template checkGuards<typename TRANSITION::guards>(state, event);
         } else {
             return true;
         }

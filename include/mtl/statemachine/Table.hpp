@@ -71,7 +71,7 @@ struct endpoints<mtl::typelist<TRANSITIONs...>> {
 };
 
 template<typename TRANSITION>
-inline constexpr bool has_guard_v = !std::is_same_v<typename TRANSITION::guard, mtl::nil_type>;
+inline constexpr bool has_guard_v = !mtl::empty_v<typename TRANSITION::guards>;
 
 template<typename TRANSITION>
 struct is_guarded : std::bool_constant<has_guard_v<TRANSITION>> {};
@@ -113,29 +113,44 @@ struct answering {
     struct pred : std::bool_constant<concepts::answers_guard_for<OBJECT, GUARD, STATE>> {};
 };
 
-// Whether the machine can resolve TRANSITION's guard: answered by
-// exactly one of the injected OBJECTS, or by a static check of its own
+// Whether the machine can resolve one part of a row's guard asked from
+// FROM: answered by exactly one of the injected OBJECTS, or by a static
+// check of the guard's own (a not_<G> part resolves G)
+template<typename OBJECTS, typename FROM>
+struct part_answered_in {
+    template<typename PART, typename GUARD = guard_of_t<PART>>
+    struct pred
+        : std::bool_constant<
+              mtl::count_if_v<OBJECTS, answering<GUARD, FROM>::template pred> == 1 ||
+              (mtl::count_if_v<OBJECTS, answering<GUARD, FROM>::template pred> == 0 &&
+               concepts::guard_for<GUARD, FROM>)> {};
+};
+
+template<typename OBJECTS, typename FROM>
+struct part_answered_once_in {
+    template<typename PART>
+    struct pred
+        : std::bool_constant<
+              mtl::count_if_v<OBJECTS, answering<guard_of_t<PART>, FROM>::template pred> <= 1> {};
+};
+
+// ... and every part of TRANSITION's guard
 template<typename OBJECTS>
 struct guard_answered_in {
     template<typename TRANSITION>
     struct pred
-        : std::bool_constant<
-              !has_guard_v<TRANSITION> ||
-              mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
-                                                 typename TRANSITION::from>::template pred> == 1 ||
-              (mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
-                                                  typename TRANSITION::from>::template pred> == 0 &&
-               concepts::guard_for<typename TRANSITION::guard, typename TRANSITION::from>)> {};
+        : std::bool_constant<mtl::all_of_v<
+              typename TRANSITION::guards,
+              part_answered_in<OBJECTS, typename TRANSITION::from>::template pred>> {};
 };
 
 template<typename OBJECTS>
 struct guard_answered_once_in {
     template<typename TRANSITION>
     struct pred
-        : std::bool_constant<
-              !has_guard_v<TRANSITION> ||
-              mtl::count_if_v<OBJECTS, answering<typename TRANSITION::guard,
-                                                 typename TRANSITION::from>::template pred> <= 1> {};
+        : std::bool_constant<mtl::all_of_v<
+              typename TRANSITION::guards,
+              part_answered_once_in<OBJECTS, typename TRANSITION::from>::template pred>> {};
 };
 
 // Alternatives for one (state, event) pair are tried in table order; an
