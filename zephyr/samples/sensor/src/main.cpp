@@ -4,8 +4,9 @@
  * the graph generator); this file provides the observers:
  *
  *   VirtualSensor  - starts a "conversion" when the reading state is
- *                     entered (a delayed work) and injects reading_done
- *                     {value} or reading_failed when it finishes
+ *                     entered (a delayed work - reading is a sub-state of
+ *                     measuring, the hook gets the submachine) and injects
+ *                     reading_done{value} or reading_failed when it finishes
  *   Calibrator      - the calibration feature: when injected, the table
  *                     gains the calibrating state, which it answers with
  *                     calibrated{offset} (CONFIG_SAMPLE_CALIBRATION)
@@ -29,7 +30,7 @@
  * button (alias sw0) is the emergency stop from any state and resumes
  * from emergency.
  *
- *   west build -t dot        (sensor_table as configured, led_table)
+ *   west build -t dot        (sensor_table as configured, measuring_table, led_table)
  *   west fsm_liveview        (reads /dev/ttyACM0, graphs from build/)
  *
  * Copyright (c) 2026 Alexander Wachter
@@ -198,7 +199,8 @@ struct LedController : fsm::observing<LedController> {
 // with the tag in front. The limit is runtime data of this object, so
 // the behavior changes from outside the table
 struct AlarmPolicy {
-    bool check(sensor::above_limit, sensor::reading const&, sensor::reading_done const& event) const
+    // asked from measuring: the reading_done bubbled up from its submachine
+    bool check(sensor::above_limit, sensor::measuring const&, sensor::reading_done const& event) const
     {
         return event.value > limit;
     }

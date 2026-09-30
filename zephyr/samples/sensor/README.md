@@ -9,14 +9,15 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Feature | Where |
 |---|---|
 | Observer starting work on a state, event with payload | `VirtualSensor` (main.cpp) enters `reading`, answers `reading_done{value}` / `reading_failed` |
-| Machine-owned context (`using contexts = ...`), constructor from `(event, context&)` | `retry_budget`: `retrying` counts a failure, `idle` resets (sensor.hpp) |
-| Guarded alternatives, guard on state data | `reading -(reading_failed)->` `retrying` while `retries_left`, else `failed` |
-| Guard on the event payload, answered by an injected object | `reading -(reading_done)->` `alarm` when `above_limit`, else `idle`: `above_limit` is a tag in the table, `AlarmPolicy` (main.cpp) answers it with `check(above_limit, reading const&, reading_done const&)` from its runtime `limit` - injected next to the observers, the table never names it (`retries_left` stays a static guard) |
+| Hierarchical state (`using submachine = ...`) | `measuring` owns `measuring_table`, the retry loop of `reading` and `retrying` (sensor.hpp): events go to the active sub-state first, what it does not handle - `reading_done`, a `reading_failed` once `retries_left` refuses, the 6 s budget timeout - is `measuring`'s own transition; leaving `measuring` tears the submachine down, entering it starts afresh. The facade brings one timer per level (`fsm::levels_v`), so `measuring`'s budget and `reading`'s 2 s timeout run side by side |
+| Machine-owned context (`using contexts = ...`), constructor from `(event, context&)` | `retry_budget` is the submachine's context: `retrying` counts an attempt, and every entry of `measuring` starts with a fresh count - nothing resets it by hand (sensor.hpp) |
+| Guarded alternatives, guard on state data | `reading -(reading_failed)->` `retrying` while `retries_left`, else the event bubbles up to `measuring -(reading_failed)-> failed` |
+| Guard on the event payload, answered by an injected object | `measuring -(reading_done)->` `alarm` when `above_limit`, else `idle`: `above_limit` is a tag in the table, `AlarmPolicy` (main.cpp) answers it with `check(above_limit, measuring const&, reading_done const&)` from its runtime `limit` - injected next to the observers, the table never names it (`retries_left` stays a static guard) |
 | State constructed from the event | `alarm(reading_done const&)` keeps the value |
 | Wildcard source, exact pair overriding it | `any_state -(button)-> emergency`, `emergency -(button)-> idle` |
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |
 | Sub state machine as an observer | `LedController` picks the `led_pattern` element of each state's annotation set and runs the LED machine (led.hpp) |
-| Annotation sets, value observers with per-element change suppression | states carry `fsm::annotate(led_pattern, sensor_power)`; `LedController` and `PowerRail` consume one element each through their `notifyEntry` overloads (`reading -> retrying` changes the LED, not the rail); `LedDriver` observes the LED machine's `lit` member (`observe_static`) |
+| Annotation sets, value observers with per-element change suppression | states carry `fsm::annotate(led_pattern, sensor_power)`; `LedController` and `PowerRail` consume one element each through their `notifyEntry` overloads; each annotation lives on the level where it changes - the sub-states of `measuring` carry the LED pattern, `measuring` itself the power rail, so the rail is notified once per measurement and the LED per attempt; `LedDriver` observes the LED machine's `lit` member (`observe_static`) |
 | Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's `any_state` transition changes the state through one shared body; `fsm::timed`'s one-state hooks and the value observers' entries run once (a pattern or rail level is re-notified there), their exits and the tracer's line use the edge and pay one body per source |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
@@ -40,11 +41,13 @@ the LED driver or the emergency stop.
 ## Watch it live
 
 ```sh
-west build -t dot        # sensor_table.dot (the configured variant), led_table.dot in build/
+west build -t dot        # sensor_table.dot (the configured variant), measuring_table.dot, led_table.dot in build/
 west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/
 ```
 
-The page stacks both machines, each with its tracked state in the
+The page stacks the three graphs, each with its tracked state in the
 heading (the header buttons hide one); "follow machine" scrolls to the one
-that just moved. Press the button
-during a reading to see the internal transition in `emergency`.
+that just moved. `measuring_table` is the submachine's graph: it lights
+up while `measuring` is active and goes dim when the monitor leaves it.
+Press the button during a reading to see the internal transition in
+`emergency`.

@@ -351,9 +351,12 @@ Samples (each adds the repo itself via `ZEPHYR_EXTRA_MODULES`, keeps its
 tables in Zephyr-free headers for `west build -t dot`):
 `zephyr/samples/traffic_light` (minimal: timeouts, button, tracing) and
 `zephyr/samples/sensor` (feature tour: observer-driven virtual sensor with
-payload events, context retry budget, guarded alternatives, payload guard,
+payload events, the retry loop as a composite state `measuring` owning
+`measuring_table` with the retry budget as the submachine's context and
+the budget timeout on the parent, guarded alternatives, payload guard,
 `any_state` emergency with exact override and internal transitions, LED
-sub-machine inside an `fsm::observing` observer, the calibration feature
+sub-machine inside an `fsm::observing` observer (an orthogonal region
+driven by annotations, deliberately not a composite), the calibration feature
 present only when the `Calibrator` observer is injected -
 `CONFIG_SAMPLE_CALIBRATION`, table composed from typelists with
 `mtl::concat_t`/`mtl::rebind_t`). Build check from the firmware

@@ -4,8 +4,12 @@
  *
  * A reading is started by entering the reading state (the virtual
  * sensor observer starts it) and answered with reading_done{value} or
- * reading_failed. Failures are retried through the retrying state up to
- * a budget kept in machine-owned context; a value above the limit takes
+ * reading_failed. The retry loop is a composite state: measuring owns
+ * a submachine of reading and retrying, failures are retried there up
+ * to a budget kept in the submachine's context (fresh on every entry
+ * of measuring), and what the submachine does not handle - a finished
+ * reading, a failure once the retries are used up, the overall time
+ * budget - is measuring's own transition. A value above the limit takes
  * the alarm branch. The button is an emergency stop from every state.
  *
  * The calibration at start is a feature: its state declares
@@ -66,10 +70,6 @@ struct stop_log {
 struct idle {
     static constexpr auto timeout = 1000ms;
     static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{false});
-
-    using contexts = mtl::typelist<retry_budget>;
-    retry_budget& context;
-    explicit idle(retry_budget& budget) : context(budget) { context.failures = 0; }
 };
 
 // Feature state: in the table only with an observer enabling the
@@ -82,9 +82,13 @@ struct calibrating {
     static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{true});
 };
 
+// The sub-states of measuring: they annotate the LED, which changes
+// between them, while the sensor's power rail - on for the whole
+// measurement - is measuring's own annotation. An annotation type lives
+// on one level of the hierarchy
 struct reading {
     static constexpr auto timeout = 2000ms; // the sensor never answered
-    static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{true});
+    static constexpr auto annotations = fsm::annotate(led_pattern::on);
 
     using contexts = mtl::typelist<retry_budget>;
     retry_budget& context;
@@ -93,16 +97,14 @@ struct reading {
 
 struct retrying {
     static constexpr auto timeout = 200ms;
-    static constexpr auto annotations = fsm::annotate(led_pattern::off, sensor_power{true});
+    static constexpr auto annotations = fsm::annotate(led_pattern::off);
 
     using contexts = mtl::typelist<retry_budget>;
     retry_budget& context;
-    // constructed from the failure: one more attempt used
-    retrying(reading_failed const&, retry_budget& budget) : context(budget)
-    {
-        ++context.failures;
-    }
-    explicit retrying(retry_budget& budget) : context(budget) {}
+    // one more attempt used, whether the sensor reported the failure or
+    // never answered (the timeout path constructs without the event)
+    retrying(reading_failed const&, retry_budget& budget) : retrying(budget) {}
+    explicit retrying(retry_budget& budget) : context(budget) { ++context.failures; }
 };
 
 struct alarm {
@@ -142,6 +144,26 @@ struct retries_left {
     static bool check(reading const& state) { return state.context.failures < max_retries; }
 };
 
+// --- the retry loop: the submachine of measuring ----------------------------
+// Every row here is the submachine's own business; a reading_done, or a
+// reading_failed once the guard refuses, is not handled here and falls
+// through to measuring's rows in the parent table. The timeouts run on
+// the second timer slot, next to measuring's budget on the first
+struct measuring_table : fsm::transition_table<
+    fsm::transition<fsm::from<reading>,  fsm::on<reading_failed>, fsm::to<retrying>,
+                    fsm::guard<retries_left>>,
+    fsm::transition<fsm::from<reading>,  fsm::on<fsm::timeout>,   fsm::to<retrying>>,
+    fsm::transition<fsm::from<retrying>, fsm::on<fsm::timeout>,   fsm::to<reading>>> {};
+
+// The composite state: constructed with a fresh submachine (and a fresh
+// retry_budget - the submachine's context) on every entry, its timeout
+// the budget for the whole loop
+struct measuring {
+    using submachine = measuring_table;
+    static constexpr auto timeout     = 6000ms;
+    static constexpr auto annotations = fsm::annotate(sensor_power{true});
+};
+
 // --- the table: one list, features included; a disabled feature is
 // filtered out. Without the calibration entries the first transition's
 // source, idle, is the initial state
@@ -149,19 +171,16 @@ using sensor_transitions = mtl::typelist<
     fsm::initial<calibrating>,
     fsm::transition<fsm::from<calibrating>, fsm::on<calibrated>,   fsm::to<idle>>,
     fsm::transition<fsm::from<calibrating>, fsm::on<fsm::timeout>, fsm::to<failed>>,
-    fsm::transition<fsm::from<idle>,     fsm::on<fsm::timeout>,   fsm::to<reading>>,
-    fsm::transition<fsm::from<reading>,  fsm::on<reading_done>,   fsm::to<alarm>,
+    fsm::transition<fsm::from<idle>,      fsm::on<fsm::timeout>,   fsm::to<measuring>>,
+    fsm::transition<fsm::from<measuring>, fsm::on<reading_done>,   fsm::to<alarm>,
                     fsm::guard<above_limit>>,
-    fsm::transition<fsm::from<reading>,  fsm::on<reading_done>,   fsm::to<idle>>,
-    fsm::transition<fsm::from<reading>,  fsm::on<reading_failed>, fsm::to<retrying>,
-                    fsm::guard<retries_left>>,
-    fsm::transition<fsm::from<reading>,  fsm::on<reading_failed>, fsm::to<failed>>,
-    fsm::transition<fsm::from<reading>,  fsm::on<fsm::timeout>,   fsm::to<failed>>,
-    fsm::transition<fsm::from<retrying>, fsm::on<fsm::timeout>,   fsm::to<reading>>,
-    fsm::transition<fsm::from<alarm>,    fsm::on<fsm::timeout>,   fsm::to<idle>>,
-    fsm::transition<fsm::from<failed>,   fsm::on<fsm::timeout>,   fsm::to<idle>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<button>,   fsm::to<emergency>>,
-    fsm::transition<fsm::from<emergency>, fsm::on<button>,        fsm::to<idle>>,
+    fsm::transition<fsm::from<measuring>, fsm::on<reading_done>,   fsm::to<idle>>,
+    fsm::transition<fsm::from<measuring>, fsm::on<reading_failed>, fsm::to<failed>>, // retries used up
+    fsm::transition<fsm::from<measuring>, fsm::on<fsm::timeout>,   fsm::to<failed>>, // the budget
+    fsm::transition<fsm::from<alarm>,     fsm::on<fsm::timeout>,   fsm::to<idle>>,
+    fsm::transition<fsm::from<failed>,    fsm::on<fsm::timeout>,   fsm::to<idle>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<button>,    fsm::to<emergency>>,
+    fsm::transition<fsm::from<emergency>, fsm::on<button>,         fsm::to<idle>>,
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_done>>,
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_failed>>>;
 
@@ -183,5 +202,9 @@ struct every_feature {
 static_assert(std::is_same_v<mtl::front_t<sensor_table<every_feature>::states>, calibrating>);
 static_assert(std::is_same_v<mtl::front_t<sensor_table<>::states>, idle>);
 static_assert(!mtl::has_a_v<sensor_table<>::states, calibrating>);
+// two machine levels: the facade brings two timers
+static_assert(fsm::levels_v<sensor_table<>> == 2);
+static_assert(std::is_same_v<fsm::nested_tables_t<sensor_table<>>,
+                             mtl::typelist<sensor_table<>, measuring_table>>);
 
 } // namespace sensor
