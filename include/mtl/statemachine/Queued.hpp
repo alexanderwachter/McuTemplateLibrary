@@ -203,13 +203,13 @@ namespace internal {
 
 template<typename OBSERVER>
 struct is_timed_observer : std::false_type {};
-template<typename TIMER>
-struct is_timed_observer<timed<TIMER>> : std::true_type {};
+template<typename TIMER, std::size_t LEVELS>
+struct is_timed_observer<timed<TIMER, LEVELS>> : std::true_type {};
 
 template<typename OBSERVER>
 struct is_deadlined_observer : std::false_type {};
-template<typename TIMER>
-struct is_deadlined_observer<deadlined<TIMER>> : std::true_type {};
+template<typename TIMER, std::size_t LEVELS>
+struct is_deadlined_observer<deadlined<TIMER, LEVELS>> : std::true_type {};
 
 // QueuedTimer<TIMER> or a class built on one (OwningQueuedTimer)
 template<typename T>
@@ -220,10 +220,11 @@ struct is_queued_timer : std::is_base_of<QueuedTimerBase, T> {};
 // machine, outside the queue
 template<typename OBSERVER>
 struct queue_compatible : std::true_type {};
-template<typename TIMER>
-struct queue_compatible<timed<TIMER>> : is_queued_timer<std::remove_reference_t<TIMER>> {};
-template<typename TIMER>
-struct queue_compatible<deadlined<TIMER>> : is_queued_timer<std::remove_reference_t<TIMER>> {};
+template<typename TIMER, std::size_t LEVELS>
+struct queue_compatible<timed<TIMER, LEVELS>> : is_queued_timer<std::remove_reference_t<TIMER>> {};
+template<typename TIMER, std::size_t LEVELS>
+struct queue_compatible<deadlined<TIMER, LEVELS>>
+    : is_queued_timer<std::remove_reference_t<TIMER>> {};
 
 template<typename OBSERVER>
 inline constexpr bool queue_compatible_v = queue_compatible<OBSERVER>::value;
@@ -442,11 +443,11 @@ private:
     void bindChannels(OBSERVER& observer)
     {
         if constexpr (internal::is_deadlined_observer<OBSERVER>::value) {
-            QueuedTimerBase& channel = observer.timer;
+            QueuedTimerBase& channel = observer.timer();
             channel.bind(this, &QueuedMachine::notifyHook);
             deadline_ = &channel;
         } else if constexpr (internal::is_timed_observer<OBSERVER>::value) {
-            QueuedTimerBase& channel = observer.timer;
+            QueuedTimerBase& channel = observer.timer();
             channel.bind(this, &QueuedMachine::notifyHook);
             timeout_ = &channel;
         }

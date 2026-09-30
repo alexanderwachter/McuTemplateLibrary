@@ -188,7 +188,7 @@ int main(int argc, char* argv[])
     bool first_press  = false;
     bool second_press = false;
     while (elapsed() < 10s) {
-        timeouts.timer.poll();
+        timeouts.timer().poll();
         if (!first_press && elapsed() >= 3500ms) {
             first_press = true;
             press_button();

@@ -1132,7 +1132,7 @@ void initialStateAndNotification()
     machine sm{tim, ctrl};
 
     check(sm.is<off>());
-    check(!tim.timer.armed); // off has no timeout
+    check(!tim.timer().armed); // off has no timeout
     // observers get the initial state's value during construction
     check(ctrl.log.size() == 1 && ctrl.log.back() == off::outputs);
 }
@@ -1167,11 +1167,11 @@ void timerArmedOnEntryStoppedOnExit()
     machine sm{tim, ctrl};
 
     sm.process(button_press{}); // off -> running: timed state
-    check(tim.timer.armed);
-    check(tim.timer.duration == 50ms);
+    check(tim.timer().armed);
+    check(tim.timer().duration == 50ms);
 
     sm.process(button_press{}); // running -> off: leaving must disarm
-    check(!tim.timer.armed);
+    check(!tim.timer().armed);
 }
 
 void timeoutChain()
@@ -1181,15 +1181,15 @@ void timeoutChain()
     machine sm{tim, ctrl};
     sm.process(button_press{}); // off -> running
 
-    tim.timer.expire();        // running -> cooldown (led off, fan still on)
+    tim.timer().expire();        // running -> cooldown (led off, fan still on)
     check(sm.is<cooldown>());
-    check(tim.timer.armed);    // cooldown re-arms with its own timeout
-    check(tim.timer.duration == 100ms);
+    check(tim.timer().armed);    // cooldown re-arms with its own timeout
+    check(tim.timer().duration == 100ms);
     check(ctrl.log.size() == 3 && ctrl.log.back() == cooldown::outputs);
 
-    tim.timer.expire();        // cooldown -> off
+    tim.timer().expire();        // cooldown -> off
     check(sm.is<off>());
-    check(!tim.timer.armed);
+    check(!tim.timer().armed);
     check(ctrl.log.size() == 4 && ctrl.log.back() == off::outputs);
 }
 
@@ -1314,7 +1314,7 @@ void machineWithOnlyATimerObserver()
 
     check(sm.process(button_press{}));
     check(sm.is<running>());
-    check(tim.timer.armed); // running is a timed state
+    check(tim.timer().armed); // running is a timed state
 }
 
 // --- entry is construction, exit is destruction -----------------------------
@@ -1756,7 +1756,7 @@ void observerGroupForwardsHooksInMemberOrder()
     check(ctrl.log.size() == 1); // initial off outputs
 
     sm.process(button_press{}); // off -> running
-    check(tim.timer.armed && tim.timer.duration == 50ms); // timed's validate/hooks forwarded
+    check(tim.timer().armed && tim.timer().duration == 50ms); // timed's validate/hooks forwarded
     check(counter.enters == 2 && counter.exits == 1);
     check(ctrl.log.back() == outputs_t{.led = true, .fan = true});
 
@@ -1812,13 +1812,13 @@ void contextSurvivesTimeoutRetry()
     fsm::StateMachine<tbl, fsm::timed<manual_timer>> sm{tim};
 
     check(sm.process(start{.payload = 3}));
-    check(tim.timer.armed);
+    check(tim.timer().armed);
 
-    tim.timer.expire(); // the retry loses neither payload nor attempt count
+    tim.timer().expire(); // the retry loses neither payload nor attempt count
     check(sm.is<trying>());
     check(sm.getIf<trying>()->context.attempts == 2);
     check(sm.getIf<trying>()->context.payload == 3);
-    check(tim.timer.armed); // re-armed for the next attempt
+    check(tim.timer().armed); // re-armed for the next attempt
 }
 
 void contextInitialState()
@@ -1841,15 +1841,15 @@ void internalTransitionHandlesInPlace()
     hook_counter hooks;
     fsm::StateMachine<tbl, fsm::timed<manual_timer>, hook_counter> sm{tim, hooks};
 
-    check(sm.is<waiting>() && tim.timer.armed);
+    check(sm.is<waiting>() && tim.timer().armed);
     auto const enters_before   = hooks.enters;
-    auto const duration_before = tim.timer.duration;
+    auto const duration_before = tim.timer().duration;
 
     check(sm.process(note{.value = 7})); // handled in place
     check(sm.is<waiting>());
     check(sm.getIf<waiting>()->context.noted == 7);
     check(hooks.enters == enters_before && hooks.exits == 0); // no exit/entry ran
-    check(tim.timer.armed && tim.timer.duration == duration_before); // timer untouched
+    check(tim.timer().armed && tim.timer().duration == duration_before); // timer untouched
 
     // the guarded internal alternative wins over the regular fallback
     check(sm.process(tick{}));
@@ -1859,7 +1859,7 @@ void internalTransitionHandlesInPlace()
     check(sm.process(note{0})); // clears noted in place
     check(sm.process(tick{}));
     check(sm.is<done>());
-    check(!tim.timer.armed);
+    check(!tim.timer().armed);
 }
 
 void guardedAlternativesFirstPassWins()
@@ -1887,11 +1887,11 @@ void sharedWildcardFiresLikePerSource()
     fsm::StateMachine<tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
 
     check(watcher.notified == 1); // initial entry into a
-    check(tim.timer.armed);       // a is timed
+    check(tim.timer().armed);       // a is timed
 
     check(sm.process(kill{7}));   // wildcard from a, delivered shared
     check(sm.is<dead>() && sm.getIf<dead>()->code == 7); // payload arrived
-    check(!tim.timer.armed);      // the left state's timer was stopped
+    check(!tim.timer().armed);      // the left state's timer was stopped
     check(watcher.notified == 1); // dead carries no mode annotation
 
     check(sm.process(kill{9}));   // dead has no exact pair: fires again
@@ -1966,14 +1966,14 @@ void deadlineSpansPhaseWithoutRearming()
     check(clock.starts == 1);
 
     check(sm.process(step{})); // searching -> probing: same value
-    check(tim.timer.armed);    // the per-state timeout runs alongside
+    check(tim.timer().armed);    // the per-state timeout runs alongside
     check(sm.process(bounce{})); // ... and back: still the same phase
     check(sm.process(step{}));
     check(clock.starts == 1); // bouncing never re-armed the deadline
 
     clock.expire(); // the budget is up, wherever the phase stands
     check(sm.is<gave_up>());
-    check(!tim.timer.armed); // probing's timeout stopped by the exit
+    check(!tim.timer().armed); // probing's timeout stopped by the exit
 
     check(sm.process(retry{})); // gave_up -> searching: a fresh phase
     check(clock.starts == 2 && clock.duration == 80ms);
@@ -2089,8 +2089,8 @@ void queuedOwningTimerIsOneLine()
 
     check(sm.process(Queued::go{}));
     check(sm.is<Queued::armed>());
-    check(tim.timer.platformTimer().armed);
-    tim.timer.platformTimer().expire(); // latches, the inline work drains
+    check(tim.timer().platformTimer().armed);
+    tim.timer().platformTimer().expire(); // latches, the inline work drains
     check(sm.is<Queued::timed_out>());
     check(actor.log == std::vector<char>{'t'});
 }
@@ -2338,6 +2338,52 @@ void nestedAnnotationsAreQueriedAndObservedPerLevel()
     check(!sm.annotation<power>().has_value()); // done carries no power
 }
 
+void nestedTimersArmOneSlotPerLevel()
+{
+    using namespace Nested;
+    fsm::timed<manual_timer, 2> tim; // fsm::levels_v<outer_table> slots
+    static_assert(decltype(tim)::levels == fsm::levels_v<outer_table>);
+    recorder rec;
+    fsm::StateMachine<outer_table, fsm::timed<manual_timer, 2>, recorder> sm{tim, rec};
+
+    sm.process(go{}); // active is timed, its initial sub-state low is not
+    check(tim.timer(0).armed && tim.timer(0).duration == 100ms);
+    check(!tim.timer(1).armed);
+
+    sm.process(tick{}); // high: the child's slot arms, the parent's runs on
+    check(tim.timer(1).armed && tim.timer(1).duration == 10ms);
+    check(tim.timer(0).armed && tim.timer(0).starts == 1);
+
+    tim.timer(1).expire(); // the child's expiry is the child's: high -> low
+    check(sm.is<active>() && sm.submachine<active>()->is<low>());
+    check(!tim.timer(1).armed);
+    check(tim.timer(0).armed && tim.timer(0).starts == 1);
+
+    sm.process(tick{}); // high again, both slots armed
+    tim.timer(0).expire(); // the parent's expiry leaves the composite
+    check(sm.is<done>());
+    check(!tim.timer(0).armed);
+    check(!tim.timer(1).armed); // the child's slot was stopped on the way out
+}
+
+void nestedTimersInjectedByReferencePerLevel()
+{
+    using namespace Nested;
+    manual_timer outer_clock;
+    manual_timer inner_clock;
+    fsm::timed<manual_timer&, 2> tim{outer_clock, inner_clock};
+    fsm::StateMachine<outer_table, fsm::timed<manual_timer&, 2>> sm{tim};
+
+    sm.process(go{});
+    sm.process(tick{});
+    check(outer_clock.armed && inner_clock.armed);
+    inner_clock.expire();
+    check(sm.submachine<active>()->is<low>());
+    check(&tim.timer(1) == &inner_clock);
+}
+
+static_assert(fsm::deadlined<manual_timer, 2>::levels == 2); // the same slots for deadlines
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -2391,6 +2437,8 @@ int statemachineTests()
     nestedLocalEventStaysAtItsLevel();
     nestedWildcardLeavesComposite();
     nestedAnnotationsAreQueriedAndObservedPerLevel();
+    nestedTimersArmOneSlotPerLevel();
+    nestedTimersInjectedByReferencePerLevel();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();
     queuedRunsOnCallerOwnedWork();
