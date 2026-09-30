@@ -180,5 +180,77 @@ class StepResolution(unittest.TestCase):
         self.assertEqual(resolved.graph_for("wild_table").stem, "b")
 
 
+OUTER_DOT = """digraph "outer" {
+    // table: outer_table
+    // submachine: active inner_table
+    rankdir=LR;
+    __initial [shape=point];
+    "idle";
+    "active" [label=<<table><tr><td>active</td></tr><hr/><tr><td>submachine inner_table</td></tr></table>>];
+    "done";
+    "idle" -> "active" [label="go" id="idle__go__active__0"];
+    "active" -> "done" [label="stop" id="active__stop__done__1"];
+    "active" -> "active" [label="poke\\n(internal)" id="active__poke__internal_target__2" style=dashed];
+    "done" -> "idle" [label="go" id="done__go__idle__3"];
+    __initial -> "idle";
+}
+"""
+
+INNER_DOT = """digraph "inner" {
+    // table: inner_table
+    __initial [shape=point];
+    "low";
+    "high";
+    "low" -> "high" [label="tick" id="low__tick__high__0"];
+    __initial -> "low";
+}
+"""
+
+
+class Hierarchy(unittest.TestCase):
+    def setUp(self):
+        self.trace = fsmview.Trace(
+            [fsmview.Graph("outer", OUTER_DOT), fsmview.Graph("inner", INNER_DOT)], mapping={})
+
+    def step(self, line):
+        return self.trace.add_line(line)
+
+    def test_graph_reads_its_submachines(self):
+        self.assertEqual(fsmview.Graph("outer", OUTER_DOT).submachines, {"active": "inner_table"})
+        self.assertEqual(fsmview.Graph("inner", INNER_DOT).submachines, {})
+        self.assertEqual(fsmview.Graph("outer", OUTER_DOT).as_json()["submachines"],
+                         {"active": "inner_table"})
+
+    def test_child_lines_resolve_on_their_own_graph(self):
+        self.step("fsm[outer_table] -> idle")
+        entering = self.step("fsm[outer_table] idle -(go)-> active")
+        self.assertEqual(entering["deactivates"], [])
+        child = self.step("fsm[inner_table] -> low")
+        self.assertEqual((child["graph"], child["state"], child["warnings"]), ("inner", "low", []))
+        child = self.step("fsm[inner_table] low -(tick)-> high")
+        self.assertEqual(child["edges"], ["low__tick__high__0"])
+        self.assertEqual(self.trace.state, {"outer_table": "active", "inner_table": "high"})
+
+    def test_leaving_the_composite_ends_the_child_graph(self):
+        for line in ("fsm[outer_table] -> idle", "fsm[outer_table] idle -(go)-> active",
+                     "fsm[inner_table] -> low", "fsm[inner_table] low -(tick)-> high"):
+            self.step(line)
+        leaving = self.step("fsm[outer_table] active -(stop)-> done")
+        self.assertEqual(leaving["deactivates"], ["inner"])
+        self.assertNotIn("inner_table", self.trace.state)  # the next child line starts afresh
+        self.step("fsm[outer_table] done -(go)-> idle")
+        self.step("fsm[outer_table] idle -(go)-> active")
+        restarted = self.step("fsm[inner_table] -> low")
+        self.assertEqual((restarted["state"], restarted["warnings"]), ("low", []))
+
+    def test_internal_transition_keeps_the_child(self):
+        for line in ("fsm[outer_table] -> idle", "fsm[outer_table] idle -(go)-> active",
+                     "fsm[inner_table] -> low"):
+            self.step(line)
+        poked = self.step("fsm[outer_table] active -(poke)-> internal_target")
+        self.assertEqual(poked["deactivates"], [])
+        self.assertEqual(self.trace.state["inner_table"], "low")
+
+
 if __name__ == "__main__":
     unittest.main()

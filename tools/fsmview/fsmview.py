@@ -73,6 +73,8 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 DOT_NAME_RE = re.compile(r'digraph\s+"?([^"{\s]+)"?\s*\{')
 DOT_TABLE_RE = re.compile(r"^\s*//\s*table:\s*(\S+)", re.MULTILINE)
+# one per composite state: the state and the table of its submachine
+DOT_SUBMACHINE_RE = re.compile(r"^\s*//\s*submachine:\s*(\S+)\s+(\S+)", re.MULTILINE)
 # one statement per line; labels may contain brackets ("[guard]"), so the
 # attribute block runs to the line's closing "];"
 DOT_NODE_RE = re.compile(r'^\s*"([^"]+)"\s*(?:\[.*\])?\s*;\s*$', re.MULTILINE)
@@ -125,6 +127,7 @@ class Graph:
         self.name = name.group(1) if name else stem
         table = DOT_TABLE_RE.search(dot)
         self.table = table.group(1) if table else None
+        self.submachines = dict(DOT_SUBMACHINE_RE.findall(dot))  # composite state -> table
         self.states = [node for node in DOT_NODE_RE.findall(dot) if node != "__initial"]
         initial = DOT_INITIAL_RE.search(dot)
         self.initial = initial.group(1) if initial else None
@@ -160,6 +163,7 @@ class Graph:
             "stem": self.stem,
             "name": self.name,
             "table": self.table,
+            "submachines": self.submachines,
             "initial": self.initial,
             "states": self.states,
             "events": self.events,
@@ -236,9 +240,27 @@ class Trace:
         self._graph_of[machine] = found
         return found
 
+    def deactivate(self, graph, state):
+        """Leaving a composite state ends its submachine: the child's
+        tracked state is forgotten (its next line is a fresh initial
+        one) and the child's graph - and every graph below it - is
+        reported inactive. The stems, for the page."""
+        table = graph.submachines.get(state)
+        if table is None:
+            return []
+        self.state.pop(table, None)
+        child = self.graph_for(table)
+        if child is None:
+            return []
+        stems = [child.stem]
+        for nested in child.submachines:
+            stems.extend(self.deactivate(child, nested))
+        return stems
+
     def resolve(self, record):
         """The step of a trace record: the tracked state after it, the
-        edges it took, and what did not add up."""
+        edges it took, the child graphs it ended, and what did not add
+        up."""
         machine = record["machine"]
         graph = self.graph_for(machine)
         warnings = []
@@ -249,6 +271,7 @@ class Trace:
             tracked = graph.initial
 
         edges = []
+        deactivates = []
         if record["from"] is None:
             prev, state = None, record["to"]
         else:
@@ -265,6 +288,8 @@ class Trace:
                     warnings.append(f"no edge '{source} -({event})-> {to}' in {graph.stem}")
                 if event not in graph.events:
                     warnings.append(f"unknown event '{event}' for {graph.stem}")
+                if to != INTERNAL_TARGET and prev is not None:
+                    deactivates = self.deactivate(graph, prev)  # a self-transition restarts the child too
         if graph is not None:
             for name in (prev, state):
                 if name is not None and name not in graph.states:
@@ -279,6 +304,7 @@ class Trace:
             "prev": prev,
             "state": state,
             "edges": edges,
+            "deactivates": deactivates,
             "ts": record["ts"],
             "raw": record["raw"],
             "warnings": warnings,

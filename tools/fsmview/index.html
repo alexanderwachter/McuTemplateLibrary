@@ -57,6 +57,9 @@ main { display: grid; grid-template-columns: 1fr 10px var(--log-width, 360px); m
 .panel h2 .zoom button { font: 12px system-ui, sans-serif; padding: 1px 7px; cursor: pointer; }
 .panel h2 .zoom .level { font: 12px ui-monospace, monospace; color: #555; min-width: 4em; text-align: right; }
 .panel.active h2 { color: hsl(140 65% 32%); }
+/* a submachine's graph while its composite state is not active */
+.panel.inactive svg { opacity: 0.4; }
+.panel.inactive h2 .state { font-style: italic; }
 /* the graph keeps its own size and the body scrolls: a large machine is
    read by zooming and panning, not by shrinking it to the panel */
 .panel .body { overflow: auto; cursor: grab; user-select: none; }
@@ -145,6 +148,7 @@ let config = null;
 let lines = [];          // every log line by index, as served
 let steps = [];          // the trace lines' steps by step index
 let currentLine = null;  // the log <div> of the step at the cursor
+const inactiveState = "(inactive)";  // shown for a submachine whose composite state is not active
 let cursor = -1;         // shown step, -1 before the first
 let live = false;        // cursor follows the newest step
 let ended = false;       // the source is exhausted (replay, or EOF)
@@ -358,12 +362,22 @@ function mark(element, age) {
     element.style.setProperty("--w", age === 0 ? "3.5" : (2.5 - 1.5 * age / config.history).toFixed(2));
 }
 
+// A parent's step that leaves a composite state ends the child's graph:
+// older highlights there are stale until the child's next line
 function render() {
     clearHighlights();
     const remaining = new Map([...graphs.keys()].map(stem => [stem, config.history]));
+    const inactive = new Set();
     for (let i = cursor; i >= 0; i--) {
         const step = steps[i];
-        if (!step || !step.graph) continue;
+        if (!step) continue;
+        for (const stem of step.deactivates || []) {
+            if (remaining.get(stem) === config.history && !inactive.has(stem)) {
+                inactive.add(stem);
+                remaining.set(stem, 0);
+            }
+        }
+        if (!step.graph) continue;
         const left = remaining.get(step.graph);
         if (!left) continue;
         const graph = graphs.get(step.graph);
@@ -377,7 +391,10 @@ function render() {
         remaining.set(step.graph, left - 1);
     }
     const step = steps[cursor];
-    for (const graph of graphs.values()) graph.panel.classList.toggle("active", !!step && step.graph === graph.data.stem);
+    for (const graph of graphs.values()) {
+        graph.panel.classList.toggle("active", !!step && step.graph === graph.data.stem);
+        graph.panel.classList.toggle("inactive", inactive.has(graph.data.stem));
+    }
     if (step && step.graph && ui.follow.checked) {
         const graph = graphs.get(step.graph);
         if (graph.panel.hidden) setShown(step.graph, true);
@@ -402,7 +419,14 @@ function renderStatus() {
     let open = pending.size;
     for (let i = cursor; i >= 0 && open > 0; i--) {
         const step = steps[i];
-        if (step && step.graph && pending.get(step.graph) === null) {
+        if (!step) continue;
+        for (const stem of step.deactivates || []) {
+            if (pending.get(stem) === null) {
+                pending.set(stem, inactiveState);
+                open--;
+            }
+        }
+        if (step.graph && pending.get(step.graph) === null) {
             pending.set(step.graph, step.state);
             open--;
         }

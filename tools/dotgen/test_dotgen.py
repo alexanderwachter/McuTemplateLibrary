@@ -54,6 +54,40 @@ struct anonymous_table : fsm::transition_table<
 """
 
 
+NESTED_HEADER = """
+#include <mtl/StateMachine.hpp>
+
+namespace app {
+struct tick {};
+struct low {};
+struct high {};
+
+struct inner_table : fsm::transition_table<
+    fsm::transition<fsm::from<low>, fsm::on<tick>, fsm::to<high>>> {};
+
+// a composite state is not a table: its sub-table above is, and gets a graph of its own
+struct active {
+    using submachine = inner_table;
+};
+struct idle {};
+
+struct outer_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>, fsm::on<tick>, fsm::to<active>>> {};
+} // namespace app
+"""
+
+
+class NestedCrawler(unittest.TestCase):
+    def test_a_sub_table_is_a_table_of_its_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            header = Path(directory) / "nested.hpp"
+            header.write_text(NESTED_HEADER, encoding="utf-8")
+            tables, has_templates = dotgen.find_tables(header)
+        self.assertEqual([table.qualified for table in tables],
+                         ["app::inner_table", "app::outer_table"])
+        self.assertFalse(has_templates)
+
+
 class Crawler(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

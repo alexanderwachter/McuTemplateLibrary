@@ -178,6 +178,14 @@ knows the state it was in. A `<from>` that does not match the tracked
 state (dropped log lines) and names missing from the graph (a stale
 `.dot`) are flagged in the page.
 
+A hierarchical machine traces one line stream per level: a composite
+state's submachine is a table of its own, so it has its own graph and
+its own `fsm[<sub table>]` lines (a `->` line when the composite state
+is entered, transitions while it is active). The parent's graph carries
+a `// submachine: <state> <table>` comment per composite state; when the
+parent leaves that state the child's graph is shown inactive (dimmed,
+its tracked state reads "(inactive)") until its next `->` line.
+
 The line grammar and the C++ side live in `include/mtl/StateMachineTrace.hpp`;
 the format strings `fsm::trace_format::*` spell it for `std::format` and
 printf-style loggers, `mtl::zephyr::TraceLogger` logs it on Zephyr.
