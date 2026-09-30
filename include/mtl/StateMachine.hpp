@@ -66,12 +66,42 @@
  * wildcard - that is how a state is exempted from one - while a guarded
  * own entry that refuses falls through to it.
  *
- * Timer policy contract (owned by fsm::timed<TIMER>):
+ * Hierarchy: a state declaring `using submachine = sub_table;` is a
+ * composite state owning a machine of that table while it is active.
+ * Entering it constructs the child after the state's own entry and
+ * transition hooks (the child's initial state is entered by the
+ * child's constructor, hooks included: a trace reads parent line, then
+ * child line); leaving it leaves the child's active state first - its
+ * exit hooks with TO = mtl::nil_type, innermost first - then runs the
+ * state's own exit hooks. Events enter at the root and descend: the
+ * active sub-state gets an event first, what it handles counts as
+ * fired (process() returns true) without touching the parent, what it
+ * does not - no row, or every guard refused - is tried against the
+ * parent's own alternatives and then the wildcards. A local event
+ * (fsm::is_local_event: fsm::timeout, fsm::deadline, own
+ * specializations) is addressed to one machine and never descends -
+ * the timer observers inject an expiry into the machine whose state
+ * they armed. There is no history: a transition to a composite state
+ * restarts its child at the child's initial state. The child is a
+ * real StateMachine with the same observers, its `table` the
+ * sub-table and its `depth` one more than the parent's; the parent's
+ * submachine<STATE>() is getIf() for the nested level, and
+ * annotation<T>() answers from the one level of the active path that
+ * carries T - an annotation type of a composite state may not recur
+ * in its submachine (annotate at the level where the value changes).
+ * Observers are validated once, at the root, with the whole hierarchy
+ * in view (fsm::nested_tables_t, all_states_t walk it; fsm::levels_v
+ * counts the levels).
+ *
+ * Timer policy contract (owned by fsm::timed<TIMER, LEVELS>):
  *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
  *   that invokes callback(context) once; restarting re-arms. stop()
  *   disarms and must tolerate an unarmed timer. The callback runs in the
  *   policy's execution context; process() is not re-entrant and not
  *   thread-safe - callback and process() must be serialized externally.
+ *   The observer holds one timer per machine level (a composite state
+ *   and its active sub-state may both be timed): LEVELS defaults to 1,
+ *   fsm::levels_v<table> covers a hierarchy, timer(level) reads a slot.
  *
  * Observer contract: injected by reference, must outlive the machine.
  * Optional hooks, each detected by a requires-expression, run in observer
@@ -91,7 +121,10 @@
  *   void onEnterFrom(MACHINE&);         hooks; on machine construction the
  *   template<typename FROM, typename EVENT, typename TO, typename MACHINE>
  *   void onTransitionFrom(MACHINE&);    initial state is entered once with
- *                                       FROM = mtl::nil_type
+ *                                       FROM = mtl::nil_type; when a parent
+ *                                       leaves a composite state, the
+ *                                       child's active state is left once
+ *                                       with TO = mtl::nil_type
  *   Where both forms exist the edge form is used when the edge is known.
  *   A from<any_state> transition fires through one shared body per
  *   (event, target): the exit hooks run where the state left is known,
