@@ -12,6 +12,8 @@
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <type_traits>
 
 namespace fsm {
@@ -254,6 +256,117 @@ template<typename TABLE, typename STATE, typename EVENT>
 inline constexpr bool wildcard_source_v = std::is_same_v<
     mtl::find_if_t<exact_transitions_t<TABLE, STATE, EVENT>, is_unguarded>, mtl::nil_type>;
 
+// --- hierarchy ----------------------------------------------------------------
+// A composite state declares the table of its submachine:
+//   using submachine = my_sub_table;
+// The machine owning the table constructs a machine of that table when
+// the state is entered and destroys it when the state is left
+template<typename STATE>
+concept composite = requires { typename STATE::submachine; } &&
+                    concepts::transition_table<typename STATE::submachine>;
+
+template<typename STATE>
+struct submachine : std::type_identity<mtl::nil_type> {};
+
+template<composite STATE>
+struct submachine<STATE> : std::type_identity<typename STATE::submachine> {};
+
+template<typename STATE>
+using submachine_t = typename submachine<STATE>::type;
+
+template<typename STATE>
+struct is_composite : std::bool_constant<composite<STATE>> {};
+
+// The table a parent machine builds its child machine from: the
+// sub-table itself plus the child's nesting depth (the root is 0),
+// which the timer observers use to pick their timer slot. Every
+// user-facing alias (StateMachine::table, trace names, validate)
+// sees the plain table
+template<concepts::transition_table TABLE, std::size_t DEPTH>
+struct nested : TABLE {
+    static constexpr std::size_t depth = DEPTH;
+};
+
+template<typename TABLE>
+struct plain_table : std::type_identity<TABLE> {};
+
+template<typename TABLE, std::size_t DEPTH>
+struct plain_table<nested<TABLE, DEPTH>> : std::type_identity<TABLE> {};
+
+template<typename TABLE>
+using plain_table_t = typename plain_table<TABLE>::type;
+
+template<typename TABLE>
+inline constexpr std::size_t table_depth_v = 0;
+
+template<typename TABLE, std::size_t DEPTH>
+inline constexpr std::size_t table_depth_v<nested<TABLE, DEPTH>> = DEPTH;
+
+// The number of machine levels below a state: none for a plain state,
+// the levels of its submachine for a composite one
+template<typename TABLE>
+struct levels;
+
+template<typename STATE>
+struct levels_below : std::integral_constant<std::size_t, 0> {};
+
+template<composite STATE>
+struct levels_below<STATE> : levels<submachine_t<STATE>> {};
+
+template<typename... STATEs>
+constexpr std::size_t maxLevelsBelow(mtl::typelist<STATEs...>)
+{
+    return std::max({std::size_t{0}, levels_below<STATEs>::value...});
+}
+
+template<typename TABLE>
+struct levels
+    : std::integral_constant<std::size_t, 1 + maxLevelsBelow(typename TABLE::states{})> {};
+
+// TABLE and every table nested below it, TABLE first
+template<typename TABLE>
+struct nested_tables;
+
+template<typename STATE>
+struct tables_below : std::type_identity<mtl::typelist<>> {};
+
+template<composite STATE>
+struct tables_below<STATE> : nested_tables<submachine_t<STATE>> {};
+
+template<typename TABLE>
+struct nested_tables
+    : std::type_identity<mtl::unique_t<mtl::prepend_t<
+          TABLE, mtl::linearize_t<mtl::transform_t<typename TABLE::states, tables_below>>>>> {};
+
+template<typename TABLE>
+struct states_of : std::type_identity<typename TABLE::states> {};
+
+template<typename TABLE>
+struct events_of_table : std::type_identity<typename TABLE::events> {};
+
 } // namespace internal
+
+// How many machine levels a table spans: 1 for a flat table, one more
+// per level of composite states below it. A machine at nesting depth d
+// (root 0) is level d; fsm::timed<TIMER, LEVELS> needs one timer per
+// level
+template<concepts::transition_table TABLE>
+inline constexpr std::size_t levels_v = internal::levels<TABLE>::value;
+
+// TABLE followed by every sub-table it nests, recursively, each once:
+// what a table-wide proof walks when it has to cover the whole machine
+template<concepts::transition_table TABLE>
+using nested_tables_t = typename internal::nested_tables<TABLE>::type;
+
+// The states of TABLE and of every table nested below it, in that order
+template<concepts::transition_table TABLE>
+using all_states_t =
+    mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE>, internal::states_of>>;
+
+// Every event any level of the machine reacts to, each once: the
+// alternatives of a queued machine's event storage
+template<concepts::transition_table TABLE>
+using nested_events_t = mtl::unique_t<
+    mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE>, internal::events_of_table>>>;
 
 } // namespace fsm

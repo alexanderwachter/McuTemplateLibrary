@@ -953,6 +953,118 @@ using machine = fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock,
 
 } // namespace QueuedDeadline
 
+namespace Nested {
+
+struct go {};
+struct stop {};
+struct tick {};
+struct inner_only {};
+
+struct power {
+    bool on;
+    constexpr bool operator==(power const&) const = default;
+};
+struct lamp {
+    bool lit;
+    constexpr bool operator==(lamp const&) const = default;
+};
+
+struct never {
+    static bool check() { return false; }
+};
+
+// the sub-states: a timed one, a guarded row that always refuses
+struct low {
+    static constexpr auto annotations = fsm::annotate(lamp{false});
+};
+struct high {
+    static constexpr auto timeout     = 10ms;
+    static constexpr auto annotations = fsm::annotate(lamp{true});
+    void handle(inner_only const&) {}
+};
+
+struct inner_table : fsm::transition_table<
+    fsm::transition<fsm::from<low>,  fsm::on<tick>,         fsm::to<high>>,
+    fsm::transition<fsm::from<high>, fsm::on<fsm::timeout>, fsm::to<low>>,
+    fsm::transition<fsm::from<high>, fsm::on<tick>,         fsm::to<low>, fsm::guard<never>>,
+    fsm::internal_transition<fsm::from<high>, fsm::on<inner_only>>> {};
+
+struct idle {
+    static constexpr auto annotations = fsm::annotate(power{false});
+};
+// the composite: timed itself, annotated at its own level only
+struct active {
+    using submachine = inner_table;
+    static constexpr auto timeout     = 100ms;
+    static constexpr auto annotations = fsm::annotate(power{true});
+};
+struct done {};
+
+struct outer_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>,   fsm::on<go>,           fsm::to<active>>,
+    fsm::transition<fsm::from<active>, fsm::on<stop>,         fsm::to<done>>,
+    fsm::transition<fsm::from<active>, fsm::on<fsm::timeout>, fsm::to<done>>,
+    fsm::transition<fsm::from<active>, fsm::on<tick>,         fsm::to<idle>>, // only when the child refused
+    fsm::transition<fsm::from<done>,   fsm::on<go>,           fsm::to<idle>>> {};
+
+// a composite without a timeout of its own: the table is timed through its child
+struct wrapper {
+    using submachine = inner_table;
+};
+struct wrapped_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<wrapper>>> {};
+
+// the declaration and its traits
+static_assert(fsm::internal::composite<active>);
+static_assert(!fsm::internal::composite<idle>);
+static_assert(std::is_same_v<fsm::internal::submachine_t<active>, inner_table>);
+static_assert(std::is_same_v<fsm::internal::submachine_t<idle>, mtl::nil_type>);
+
+// levels: a flat table is one, each nesting adds one
+static_assert(fsm::levels_v<inner_table> == 1);
+static_assert(fsm::levels_v<outer_table> == 2);
+static_assert(fsm::levels_v<wrapped_table> == 2);
+
+// the tables and states of the whole machine, root first
+static_assert(std::is_same_v<fsm::nested_tables_t<outer_table>,
+                             mtl::typelist<outer_table, inner_table>>);
+static_assert(std::is_same_v<fsm::nested_tables_t<inner_table>, mtl::typelist<inner_table>>);
+static_assert(std::is_same_v<fsm::all_states_t<outer_table>,
+                             mtl::typelist<idle, active, done, low, high>>);
+// every level's events, each once (tick is on both levels)
+static_assert(std::is_same_v<fsm::nested_events_t<outer_table>,
+                             mtl::typelist<go, stop, fsm::timeout, tick, inner_only>>);
+
+// a table is timed through a timed sub-state alone
+static_assert(fsm::has_timed_states_v<wrapped_table>);
+static_assert(!fsm::has_deadlined_states_v<wrapped_table>);
+static_assert(fsm::annotation_in_table_v<wrapped_table, lamp>); // carried by a sub-state
+
+// timer events stay with the machine they were injected into
+static_assert(fsm::local_event_v<fsm::timeout>);
+static_assert(fsm::local_event_v<fsm::deadline>);
+static_assert(!fsm::local_event_v<tick>);
+
+// the wrapper a parent builds its child from: the same table plus its depth
+using child_table = fsm::internal::nested<inner_table, 1>;
+static_assert(fsm::concepts::transition_table<child_table>);
+static_assert(child_table::depth == 1);
+static_assert(fsm::internal::table_depth_v<child_table> == 1);
+static_assert(fsm::internal::table_depth_v<inner_table> == 0);
+static_assert(std::is_same_v<fsm::internal::plain_table_t<child_table>, inner_table>);
+static_assert(std::is_same_v<fsm::internal::plain_table_t<inner_table>, inner_table>);
+
+// an annotation type lives on one level of a nesting path
+struct refining {
+    using submachine = inner_table;
+    static constexpr auto annotations = fsm::annotate(lamp{true}); // lamp is the sub-states'
+};
+static_assert(fsm::internal::annotation_levels_exclusive<active>::value);
+static_assert(fsm::internal::annotation_levels_exclusive<idle>::value);
+static_assert(!fsm::internal::annotation_levels_exclusive<refining>::value);
+
+} // namespace Nested
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {

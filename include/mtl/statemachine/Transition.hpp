@@ -31,6 +31,23 @@ struct timeout {};
 // to both
 struct deadline {};
 
+// An event addressed to one machine: a composite state does not offer
+// it to its submachine. Timer expiries are - the observer arming the
+// timer injects them into the machine whose state it armed for, and a
+// timed sub-state (which always handles fsm::timeout) must not swallow
+// its parent's. Specialize for own events with the same nature
+template<typename EVENT>
+struct is_local_event : std::false_type {};
+
+template<>
+struct is_local_event<timeout> : std::true_type {};
+
+template<>
+struct is_local_event<deadline> : std::true_type {};
+
+template<typename EVENT>
+inline constexpr bool local_event_v = is_local_event<EVENT>::value;
+
 namespace internal {
 
 // A state opts into machine-owned context by declaring the context

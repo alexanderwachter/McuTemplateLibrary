@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <mtl/statemachine/Table.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
 
@@ -246,13 +247,14 @@ concept notified_of =
 
 } // namespace concepts
 
-// Whether any state of TABLE carries the annotation T: an observer
-// watching an annotation no state carries is wired to nothing (the
-// check fsm::observing runs for the types an observer declares)
+// Whether any state of TABLE - at any nesting level - carries the
+// annotation T: an observer watching an annotation no state carries is
+// wired to nothing (the check fsm::observing runs for the types an
+// observer declares)
 template<typename TABLE, typename T>
 struct annotation_in_table
     : std::bool_constant<
-          mtl::any_of_v<typename TABLE::states, internal::carrying<T>::template pred>> {};
+          mtl::any_of_v<all_states_t<TABLE>, internal::carrying<T>::template pred>> {};
 
 template<typename TABLE, typename T>
 inline constexpr bool annotation_in_table_v = annotation_in_table<TABLE, T>::value;
@@ -264,6 +266,19 @@ struct carried_in {
     template<typename T>
     struct pred : annotation_in_table<TABLE, T> {};
 };
+
+// An annotation type belongs to one level of a nesting path: a
+// composite state carrying T forbids T below it. A sub-state refining
+// the parent's value would leave the observers and the machine's
+// annotation<T>() query disagreeing - moving on to a sibling without T
+// re-notifies nothing, while the parent's T is still the active one
+template<typename STATE>
+struct annotation_levels_exclusive : std::true_type {};
+
+template<composite STATE>
+struct annotation_levels_exclusive<STATE>
+    : std::bool_constant<mtl::none_of_v<annotation_types_t<STATE>,
+                                        carried_in<submachine_t<STATE>>::template pred>> {};
 
 } // namespace internal
 

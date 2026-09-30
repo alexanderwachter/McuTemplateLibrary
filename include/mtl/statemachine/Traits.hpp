@@ -238,16 +238,16 @@ struct notified_in {
 
 } // namespace internal
 
-// Proves the observer notified of every state of the table: an
-// unannotated state (or one whose annotation no hook accepts) is
-// silently skipped by the observing dispatch, which for a driver
-// observer means stale hardware on entry. States in EXCEPTIONS may go
-// unobserved. Typically asserted from the observer's validate() hook so
-// every machine built with the observer is covered
+// Proves the observer notified of every state of the table, sub-tables
+// included: an unannotated state (or one whose annotation no hook
+// accepts) is silently skipped by the observing dispatch, which for a
+// driver observer means stale hardware on entry. States in EXCEPTIONS
+// may go unobserved. Typically asserted from the observer's validate()
+// hook so every machine built with the observer is covered
 template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<>>
 struct all_states_notified
     : std::bool_constant<mtl::all_of_v<
-          typename TABLE::states,
+          all_states_t<TABLE>,
           internal::notified_in<OBSERVER, EXCEPTIONS>::template pred>> {};
 
 template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<>>

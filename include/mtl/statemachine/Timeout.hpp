@@ -56,6 +56,20 @@ struct deadline_handled_in {
         mtl::any_of_v<transitions_for_t<TABLE, STATE, deadline>, is_unguarded>> {};
 };
 
+// The per-table proofs behind fsm::timed/fsm::deadlined::validate, as
+// predicates over nested_tables_t: a timed state's timeout must be
+// handled in ITS table (a sub-state's fsm::timeout never reaches the
+// parent's rows - timer events are local)
+template<typename TABLE>
+struct timeouts_handled_in_table
+    : std::bool_constant<
+          mtl::all_of_v<typename TABLE::states, timeout_handled_in<TABLE>::template pred>> {};
+
+template<typename TABLE>
+struct deadlines_handled_in_table
+    : std::bool_constant<
+          mtl::all_of_v<typename TABLE::states, deadline_handled_in<TABLE>::template pred>> {};
+
 template<typename STATE>
 struct is_timed_state : std::bool_constant<has_timeout_v<STATE>> {};
 
@@ -64,15 +78,16 @@ struct is_deadlined_state : std::bool_constant<active_deadline_v<STATE>> {};
 
 } // namespace internal
 
-// Whether any state of TABLE carries a timeout / an active deadline:
-// what a facade asks to decide which timers a machine needs at all
+// Whether any state of TABLE, at any nesting level, carries a timeout /
+// an active deadline: what a facade asks to decide which timers a
+// machine needs at all
 template<typename TABLE>
 inline constexpr bool has_timed_states_v =
-    mtl::any_of_v<typename TABLE::states, internal::is_timed_state>;
+    mtl::any_of_v<all_states_t<TABLE>, internal::is_timed_state>;
 
 template<typename TABLE>
 inline constexpr bool has_deadlined_states_v =
-    mtl::any_of_v<typename TABLE::states, internal::is_deadlined_state>;
+    mtl::any_of_v<all_states_t<TABLE>, internal::is_deadlined_state>;
 
 // A range of acceptable timeouts, e.g. a specification's min/max pair.
 // Microsecond resolution: spec bounds may be fractions of a millisecond
