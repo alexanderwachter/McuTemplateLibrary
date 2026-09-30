@@ -149,8 +149,10 @@ struct queued_machine<TABLE, CAPACITY, mtl::typelist<TIMERs...>, OBSERVERs...> {
 // StateMachineOnSharedWorkqueue below are the two everyday forms
 template<typename TABLE, typename QUEUE, machine_config CONFIG, typename... OBSERVERs>
 class ConfiguredStateMachine {
-    using timed_type     = fsm::timed<QueuedTimer>;
-    using deadlined_type = fsm::deadlined<QueuedTimer>;
+    // one timer per machine level: a composite state and its active
+    // sub-state may both be timed
+    using timed_type     = fsm::timed<QueuedTimer, fsm::levels_v<TABLE>>;
+    using deadlined_type = fsm::deadlined<QueuedTimer, fsm::levels_v<TABLE>>;
 
     static constexpr bool has_timeouts  = fsm::has_timed_states_v<TABLE>;
     static constexpr bool has_deadlines = fsm::has_deadlined_states_v<TABLE>;
@@ -229,6 +231,12 @@ public:
     [[nodiscard]] std::optional<T> annotation() const
     {
         return machine_.template annotation<T>();
+    }
+
+    template<typename STATE>
+    [[nodiscard]] auto const* submachine() const
+    {
+        return machine_.template submachine<STATE>();
     }
 
 private:

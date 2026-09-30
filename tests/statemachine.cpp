@@ -2384,6 +2384,36 @@ void nestedTimersInjectedByReferencePerLevel()
 
 static_assert(fsm::deadlined<manual_timer, 2>::levels == 2); // the same slots for deadlines
 
+void queuedNestedExpiryReachesItsLevel()
+{
+    using namespace Nested;
+    using timers = fsm::timed<fsm::OwningQueuedTimer<manual_timer>, 2>;
+    using queued =
+        fsm::QueuedMachine<outer_table, 4, fsm::inline_work, fsm::no_lock, timers, recorder>;
+    // the ring takes every level's events
+    static_assert(mtl::has_a_v<queued::queueable_events, inner_only>);
+    static_assert(!mtl::has_a_v<queued::queueable_events, fsm::timeout>);
+
+    timers tim;
+    recorder rec;
+    queued sm{tim, rec};
+
+    check(sm.process(go{}));
+    check(sm.process(tick{}));
+    check(sm.submachine<active>()->is<high>());
+    check(sm.process(inner_only{})); // a child-only event, through the queue
+    check(rec.log.back() == "transition inner_table:internal_target");
+
+    check(tim.timer(1).platformTimer().armed);
+    tim.timer(1).platformTimer().expire(); // latches; the inline work drains to the child
+    check(sm.is<active>() && sm.submachine<active>()->is<low>());
+
+    sm.process(tick{});
+    tim.timer(0).platformTimer().expire(); // the parent's channel: leaves the composite
+    check(sm.is<done>());
+    check(!tim.timer(1).platformTimer().armed);
+}
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -2439,6 +2469,7 @@ int statemachineTests()
     nestedAnnotationsAreQueriedAndObservedPerLevel();
     nestedTimersArmOneSlotPerLevel();
     nestedTimersInjectedByReferencePerLevel();
+    queuedNestedExpiryReachesItsLevel();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();
     queuedRunsOnCallerOwnedWork();

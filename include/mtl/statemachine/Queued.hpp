@@ -21,19 +21,22 @@
  * Timers: fsm::QueuedTimer adapts a platform timer to the queue, and
  * the fsm::timed/fsm::deadlined observer injected into a queued
  * machine must run on one (statically checked; at most one of each -
- * states carry a single timeout and a single deadline annotation).
+ * states carry a single timeout and a single deadline annotation),
+ * with one channel per machine level (fsm::timed<TIMER, LEVELS>).
  * The expiry callback (any context, ISRs included) only latches the
  * channel's pending flag and triggers WORK - the drain finds the flag
- * and processes the channel's event itself, fsm::timeout for the timed
- * observer's and fsm::deadline for the deadlined one's, so timed and
- * deadlined work unchanged on top. The latch, not the
+ * and delivers the callback the observer armed the channel with, to
+ * the machine it armed it for: the root's fsm::timeout, or a
+ * submachine's, which never passes the parent's dispatch. So timed
+ * and deadlined work unchanged on top. The latch, not the
  * FIFO, carries expiries: stop() and start() clear it, which retracts
  * a stale expiry exactly when the arming that produced it is gone (a
  * queued event that leaves a timed state stops the timer before the
  * expiry could be delivered - the wrong-state timeout cannot happen,
  * while an expiry whose arming survives the queued events is
- * delivered). The observer's kind decides the expiry's place relative
- * to queued events:
+ * delivered; leaving a composite state stops its child's slot). The
+ * observer's kind decides the expiry's place relative to queued
+ * events, and among a kind's channels the outer level goes first:
  *   fsm::timed     after the FIFO - an event that arrived before the
  *                  expiry wins; arrival order is the on-wire truth
  *                  for response timers
@@ -99,8 +102,9 @@ struct no_lock {
     void unlock() {}
 };
 
-// One timer channel: the latch, free of the TIMER type. bind() and
-// consume() are the QueuedMachine's wiring, not for users
+// One timer channel: the latch plus the callback it stands for, free
+// of the TIMER type. bind() and deliver() are the QueuedMachine's
+// wiring, not for users
 class QueuedTimerBase {
 public:
     void bind(void* queue, work_callback notify)
@@ -109,18 +113,22 @@ public:
         notify_ = notify;
     }
 
-    // Consume the latch: true once per pending expiry, which the
-    // machine owning the channel then delivers as its event. Serialized
-    // context only. Load and clear, not an exchange: a new expiry needs
-    // a re-arm, which happens in this same context - nothing can set
-    // the latch between the two (and Cortex-M0-class cores inline atomic
-    // loads and stores but need a library call for read-modify-write)
-    bool consume()
+    // Deliver a pending expiry: true once per expiry, having run the
+    // callback the observer armed the channel with - the machine's
+    // process(fsm::timeout) or process(fsm::deadline), the machine
+    // being the level whose state was armed. Serialized context only.
+    // The latch is loaded and cleared, not exchanged: a new expiry
+    // needs a re-arm, which happens in this same context - nothing can
+    // set the latch between the two (and Cortex-M0-class cores inline
+    // atomic loads and stores but need a library call for
+    // read-modify-write)
+    bool deliver()
     {
         if (!pending_.load(std::memory_order_acquire)) {
             return false;
         }
         pending_.store(false, std::memory_order_relaxed);
+        callback_(context_);
         return true;
     }
 
@@ -130,8 +138,10 @@ public:
 protected:
     QueuedTimerBase() = default;
 
-    void* queue_          = nullptr;
-    work_callback notify_ = nullptr;
+    void* queue_             = nullptr;
+    work_callback notify_    = nullptr;
+    timer_callback callback_ = nullptr;
+    void* context_           = nullptr;
     std::atomic<bool> pending_{false};
 };
 
@@ -144,13 +154,15 @@ class QueuedTimer : public QueuedTimerBase {
 public:
     explicit QueuedTimer(TIMER& timer) : timer_(timer) {}
 
-    // The callback and context the observer arms with are not kept:
-    // behind a queue the expiry is delivered by the machine owning the
-    // channel, as its fsm::timeout or fsm::deadline
-    void start(std::chrono::milliseconds duration, timer_callback, void*)
+    // The callback and context the observer arms with are kept for
+    // the drain: behind a queue the expiry is delivered from the
+    // serialized context, to the machine the observer armed for
+    void start(std::chrono::milliseconds duration, timer_callback callback, void* context)
     {
         timer_.stop(); // an expiry of the previous arming must not leak into this one
         pending_.store(false, std::memory_order_relaxed);
+        callback_ = callback;
+        context_  = context;
         timer_.start(duration, &QueuedTimer::expired, this);
     }
 
@@ -229,6 +241,15 @@ struct queue_compatible<deadlined<TIMER, LEVELS>>
 template<typename OBSERVER>
 inline constexpr bool queue_compatible_v = queue_compatible<OBSERVER>::value;
 
+// The channels a timer observer brings - one per machine level - and
+// none for any other observer
+template<typename OBSERVER>
+inline constexpr std::size_t timer_channels_v = 0;
+template<typename TIMER, std::size_t LEVELS>
+inline constexpr std::size_t timer_channels_v<timed<TIMER, LEVELS>> = LEVELS;
+template<typename TIMER, std::size_t LEVELS>
+inline constexpr std::size_t timer_channels_v<deadlined<TIMER, LEVELS>> = LEVELS;
+
 // Timer events never travel through the FIFO - expiries live in the
 // channels' latches - so the ring's variant leaves them out: their
 // delivery arms would duplicate the heaviest per-event dispatch
@@ -249,10 +270,11 @@ template<typename TABLE, std::size_t CAPACITY, concepts::work_queue WORK = inlin
 class QueuedMachine {
 public:
     using machine_type = StateMachine<TABLE, OBSERVERs...>;
-    // fsm::timeout and fsm::deadline enter through the latches, never
-    // the ring: the variant leaves them out
+    // Every level's events: a submachine's are processed at the root
+    // and descend. fsm::timeout and fsm::deadline enter through the
+    // latches, never the ring: the variant leaves them out
     using queueable_events =
-        mtl::remove_if_t<typename TABLE::events, internal::is_timer_event>;
+        mtl::remove_if_t<nested_events_t<TABLE>, internal::is_timer_event>;
     using event_variant =
         mtl::rebind_t<mtl::prepend_t<std::monostate, queueable_events>, std::variant>;
 
@@ -331,6 +353,12 @@ public:
         return machine_.template annotation<T>();
     }
 
+    template<typename STATE>
+    [[nodiscard]] auto const* submachine() const
+    {
+        return machine_.template submachine<STATE>();
+    }
+
 private:
     static void drainHook(void* self) { static_cast<QueuedMachine*>(self)->drain(); }
 
@@ -344,12 +372,26 @@ private:
     // Deliver until nothing is pending; no-op while a drain is running
     // (a process() from a hook only enqueues - the running drain
     // delivers it after the current transition)
-    // Whether the observer pack brings the channel at all: without
-    // one, its delivery check drops out of the drain entirely
+    // Whether the observer pack brings the channels at all, and how
+    // many (one per machine level): without any, the kind's delivery
+    // check drops out of the drain entirely
     static constexpr bool has_timeout =
         (internal::is_timed_observer<OBSERVERs>::value || ...);
     static constexpr bool has_deadline =
         (internal::is_deadlined_observer<OBSERVERs>::value || ...);
+    template<template<typename> typename KIND>
+    static constexpr std::size_t channelsOf()
+    {
+        return ((KIND<OBSERVERs>::value ? internal::timer_channels_v<OBSERVERs> : 0) + ... +
+                std::size_t{0});
+    }
+    static constexpr std::size_t timeout_channels =
+        QueuedMachine::channelsOf<internal::is_timed_observer>();
+    static constexpr std::size_t deadline_channels =
+        QueuedMachine::channelsOf<internal::is_deadlined_observer>();
+
+    template<std::size_t CHANNELS>
+    using channels = std::array<QueuedTimerBase*, CHANNELS == 0 ? 1 : CHANNELS>;
 
     void drain()
     {
@@ -359,8 +401,7 @@ private:
         draining_ = true;
         while (true) {
             if constexpr (QueuedMachine::has_deadline) {
-                if (deadline_->consume()) {
-                    machine_.process(deadline{});
+                if (QueuedMachine::deliverAny(deadline_)) {
                     continue;
                 }
             }
@@ -379,14 +420,27 @@ private:
                 continue;
             }
             if constexpr (QueuedMachine::has_timeout) {
-                if (timeout_->consume()) {
-                    machine_.process(timeout{});
+                if (QueuedMachine::deliverAny(timeout_)) {
                     continue;
                 }
             }
             break;
         }
         draining_ = false;
+    }
+
+    // The first pending channel of a kind delivers, outer level first:
+    // a parent's expiry leaving its composite state stops the child's
+    // slot, which retracts the child's pending expiry
+    template<std::size_t CHANNELS>
+    static bool deliverAny(std::array<QueuedTimerBase*, CHANNELS>& kind)
+    {
+        for (std::size_t level = 0; level < CHANNELS; ++level) {
+            if (kind[level]->deliver()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Split so the ring bookkeeping is one shared body: only the
@@ -436,20 +490,26 @@ private:
         return true;
     }
 
-    // The timed/deadlined observers are known types: their channels
-    // are bound to this queue before the machine (and with it the
-    // initial state, which may arm them) is constructed
+    // The timed/deadlined observers are known types: their channels,
+    // one per level, are bound to this queue before the machine (and
+    // with it the initial state, which may arm them) is constructed
     template<typename OBSERVER>
     void bindChannels(OBSERVER& observer)
     {
         if constexpr (internal::is_deadlined_observer<OBSERVER>::value) {
-            QueuedTimerBase& channel = observer.timer();
-            channel.bind(this, &QueuedMachine::notifyHook);
-            deadline_ = &channel;
+            this->bindLevels(observer, deadline_);
         } else if constexpr (internal::is_timed_observer<OBSERVER>::value) {
-            QueuedTimerBase& channel = observer.timer();
+            this->bindLevels(observer, timeout_);
+        }
+    }
+
+    template<typename OBSERVER, std::size_t CHANNELS>
+    void bindLevels(OBSERVER& observer, std::array<QueuedTimerBase*, CHANNELS>& kind)
+    {
+        for (std::size_t level = 0; level < OBSERVER::levels; ++level) {
+            QueuedTimerBase& channel = observer.timer(level);
             channel.bind(this, &QueuedMachine::notifyHook);
-            timeout_ = &channel;
+            kind[level] = &channel;
         }
     }
 
@@ -461,8 +521,8 @@ private:
     std::size_t read_           = 0;
     std::size_t count_          = 0;
     bool draining_              = true; // construction counts as a delivery
-    QueuedTimerBase* deadline_  = nullptr;
-    QueuedTimerBase* timeout_   = nullptr;
+    channels<QueuedMachine::deadline_channels> deadline_{};
+    channels<QueuedMachine::timeout_channels> timeout_{};
     machine_type machine_;
 };
 
