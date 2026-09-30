@@ -11,6 +11,7 @@
 #include <chrono>
 #include <print>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <variant>
@@ -1000,12 +1001,57 @@ struct active {
 };
 struct done {};
 
+struct reset {};
+
 struct outer_table : fsm::transition_table<
     fsm::transition<fsm::from<idle>,   fsm::on<go>,           fsm::to<active>>,
     fsm::transition<fsm::from<active>, fsm::on<stop>,         fsm::to<done>>,
     fsm::transition<fsm::from<active>, fsm::on<fsm::timeout>, fsm::to<done>>,
     fsm::transition<fsm::from<active>, fsm::on<tick>,         fsm::to<idle>>, // only when the child refused
-    fsm::transition<fsm::from<done>,   fsm::on<go>,           fsm::to<idle>>> {};
+    fsm::transition<fsm::from<done>,   fsm::on<go>,           fsm::to<idle>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<reset>, fsm::to<idle>>> {};
+
+// Records every hook with the machine it came from - the table's short
+// name tells the level
+struct recorder {
+    template<typename STATE, typename MACHINE>
+    void onEnter(MACHINE&)
+    {
+        log.push_back(std::string{"enter "} + mtl::short_name_of<typename MACHINE::table> + ":" +
+                      mtl::short_name_of<STATE>);
+    }
+
+    template<typename STATE, typename MACHINE>
+    void onExit(MACHINE&)
+    {
+        log.push_back(std::string{"exit "} + mtl::short_name_of<typename MACHINE::table> + ":" +
+                      mtl::short_name_of<STATE>);
+    }
+
+    template<typename EVENT, typename TO, typename MACHINE>
+    void onTransition(MACHINE&)
+    {
+        log.push_back(std::string{"transition "} + mtl::short_name_of<typename MACHINE::table> +
+                      ":" + mtl::short_name_of<TO>);
+    }
+
+    std::vector<std::string> log;
+};
+
+// Sees both levels' annotations through one observer
+struct level_watcher : fsm::observing<level_watcher> {
+    void notifyEntry(power value) { powers.push_back(value); }
+    void notifyEntry(lamp value) { lamps.push_back(value); }
+    void notifyExit(lamp value) { left_lamps.push_back(value); }
+
+    std::vector<power> powers;
+    std::vector<lamp> lamps;
+    std::vector<lamp> left_lamps;
+};
+
+using nested_machine = fsm::StateMachine<outer_table, recorder, level_watcher>;
+static_assert(nested_machine::depth == 0);
+static_assert(std::is_same_v<nested_machine::table, outer_table>);
 
 // a composite without a timeout of its own: the table is timed through its child
 struct wrapper {
@@ -1033,7 +1079,7 @@ static_assert(std::is_same_v<fsm::all_states_t<outer_table>,
                              mtl::typelist<idle, active, done, low, high>>);
 // every level's events, each once (tick is on both levels)
 static_assert(std::is_same_v<fsm::nested_events_t<outer_table>,
-                             mtl::typelist<go, stop, fsm::timeout, tick, inner_only>>);
+                             mtl::typelist<go, stop, fsm::timeout, tick, reset, inner_only>>);
 
 // a table is timed through a timed sub-state alone
 static_assert(fsm::has_timed_states_v<wrapped_table>);
@@ -2124,6 +2170,174 @@ void queuedDeadlineGatesQueuedEvents()
     check(sm.is<QueuedDeadline::expired>());
 }
 
+// --- hierarchy ----------------------------------------------------------------
+
+void nestedChildIsConstructedOnEntry()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+
+    check(sm.is<idle>());
+    check(sm.submachine<active>() == nullptr); // no composite active
+    check(rec.log == (std::vector<std::string>{"enter outer_table:idle"}));
+
+    check(sm.process(go{}));
+    check(sm.is<active>());
+    auto const* child = sm.submachine<active>();
+    check(child != nullptr && child->is<low>());
+    static_assert(std::decay_t<decltype(*child)>::depth == 1);
+    static_assert(std::is_same_v<std::decay_t<decltype(*child)>::table, inner_table>);
+    // the parent's entry and transition hooks first, then the child's
+    // construction enters its initial state
+    check(rec.log == (std::vector<std::string>{"enter outer_table:idle", "exit outer_table:idle",
+                                               "enter outer_table:active",
+                                               "transition outer_table:active",
+                                               "enter inner_table:low"}));
+}
+
+void nestedChildHandlesEventFirst()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    rec.log.clear();
+
+    check(sm.process(tick{})); // low -(tick)-> high inside the child
+    check(sm.is<active>());
+    check(sm.submachine<active>()->is<high>());
+    check(rec.log == (std::vector<std::string>{"exit inner_table:low", "enter inner_table:high",
+                                               "transition inner_table:high"}));
+}
+
+void nestedUnhandledEventBubblesUp()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    rec.log.clear();
+
+    check(sm.process(stop{})); // the child has no row for stop: the parent's fires
+    check(sm.is<done>());
+    check(sm.submachine<active>() == nullptr);
+    // innermost first: the child's active state is left, then the composite
+    check(rec.log == (std::vector<std::string>{"exit inner_table:low", "exit outer_table:active",
+                                               "enter outer_table:done",
+                                               "transition outer_table:done"}));
+}
+
+void nestedRefusedChildFallsThroughToParent()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    sm.process(tick{}); // -> high, whose tick row is guarded by never
+
+    check(sm.process(tick{})); // refused in the child: active -(tick)-> idle
+    check(sm.is<idle>());
+    check(sm.submachine<active>() == nullptr);
+}
+
+void nestedReentryRestartsChild()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    sm.process(tick{}); // child in high
+    sm.process(stop{}); // done
+    sm.process(go{});   // idle
+    sm.process(go{});   // active again
+
+    check(sm.submachine<active>()->is<low>()); // no history: the initial sub-state
+}
+
+void nestedInternalTransitionStaysInChild()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    sm.process(tick{}); // high handles inner_only in place
+    rec.log.clear();
+
+    check(sm.process(inner_only{}));
+    check(sm.submachine<active>()->is<high>());
+    check(rec.log == (std::vector<std::string>{"transition inner_table:internal_target"}));
+    check(!sm.process(inner_only{}) == false); // still handled...
+    sm.process(stop{});
+    check(!sm.process(inner_only{})); // ...and ignored once no level has a row
+}
+
+void nestedLocalEventStaysAtItsLevel()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    sm.process(tick{}); // high: a timed sub-state with its own timeout row
+
+    check(sm.process(fsm::timeout{})); // injected at the root: the root's row fires
+    check(sm.is<done>());
+}
+
+void nestedWildcardLeavesComposite()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    sm.process(go{});
+    sm.process(tick{});
+    rec.log.clear();
+
+    check(sm.process(reset{})); // any_state -(reset)-> idle, from inside the composite
+    check(sm.is<idle>());
+    check(sm.submachine<active>() == nullptr);
+    check(rec.log == (std::vector<std::string>{"exit inner_table:high", "exit outer_table:active",
+                                               "enter outer_table:idle",
+                                               "transition outer_table:idle"}));
+}
+
+void nestedAnnotationsAreQueriedAndObservedPerLevel()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+
+    check(sm.annotation<power>() == power{false});
+    check(!sm.annotation<lamp>().has_value()); // idle nests nothing
+
+    sm.process(go{}); // active carries the power, its child the lamp
+    check(sm.annotation<power>() == power{true});
+    check(sm.annotation<lamp>() == lamp{false});
+
+    sm.process(tick{});
+    check(sm.annotation<lamp>() == lamp{true});
+    check(sm.annotation<power>() == power{true});
+
+    // each level notified its own value once, in entry order
+    check(watcher.powers == (std::vector<power>{{false}, {true}}));
+    check(watcher.lamps == (std::vector<lamp>{{false}, {true}}));
+    check(watcher.left_lamps == (std::vector<lamp>{{false}}));
+
+    sm.process(stop{}); // leaving the composite leaves the lamp behind
+    check(watcher.left_lamps == (std::vector<lamp>{{false}, {true}}));
+    check(!sm.annotation<lamp>().has_value());
+    check(!sm.annotation<power>().has_value()); // done carries no power
+}
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -2168,6 +2382,15 @@ int statemachineTests()
     unguardedOwnEntryOverridesWildcard();
     declaredObservationsAreValidated();
     deadlineSpansPhaseWithoutRearming();
+    nestedChildIsConstructedOnEntry();
+    nestedChildHandlesEventFirst();
+    nestedUnhandledEventBubblesUp();
+    nestedRefusedChildFallsThroughToParent();
+    nestedReentryRestartsChild();
+    nestedInternalTransitionStaysInChild();
+    nestedLocalEventStaysAtItsLevel();
+    nestedWildcardLeavesComposite();
+    nestedAnnotationsAreQueriedAndObservedPerLevel();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();
     queuedRunsOnCallerOwnedWork();

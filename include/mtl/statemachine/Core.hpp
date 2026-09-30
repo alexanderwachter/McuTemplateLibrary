@@ -97,8 +97,38 @@ template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class StateMachine {
     using TRANSITIONS = TRANSITION_TABLE;
 
-    // Observers get a chance to reject the table at compile time
-    static_assert((internal::validated<OBSERVERs, TRANSITIONS>() && ...));
+    // A parent machine leaves its child through the child's private
+    // leave path
+    template<concepts::transition_table, typename...>
+    friend class StateMachine;
+
+public:
+    // The user's table: named tables identify the machine (fsm::tracing).
+    // A child machine is built from internal::nested<TABLE, DEPTH>, the
+    // table plus its nesting depth - stripped here
+    using table         = internal::plain_table_t<TRANSITION_TABLE>;
+    using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
+    using initial_state = mtl::front_t<typename TRANSITIONS::states>;
+
+    // Nesting depth of this machine: 0 for a root, one more per level of
+    // composite states above it. The timer observers pick their timer
+    // slot by it
+    static constexpr std::size_t depth = internal::table_depth_v<TRANSITION_TABLE>;
+
+private:
+    // Observers get a chance to reject the table at compile time - once,
+    // at the root, with the whole hierarchy in view: a table-wide proof
+    // (an observed annotation, a timed state's timeout row) walks the
+    // nested tables itself, and would be wrong on a sub-table alone
+    static constexpr bool observersValidated()
+    {
+        if constexpr (StateMachine::depth == 0) {
+            return (internal::validated<OBSERVERs, table>() && ...);
+        } else {
+            return true;
+        }
+    }
+    static_assert(StateMachine::observersValidated());
 
     // Every guard of the table is answered: by exactly one injected
     // object with a check(GUARD, ...) overload, or by a static check of
@@ -113,12 +143,37 @@ class StateMachine {
                   "object answers it - inject one with bool check(GUARD, FROM const&[, EVENT "
                   "const&]) or bool check(GUARD)");
 
-public:
-    using table         = TRANSITION_TABLE; // named tables identify the machine (fsm::tracing)
-    using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
-    using initial_state = mtl::front_t<typename TRANSITIONS::states>;
+    // --- hierarchy ----------------------------------------------------------
+    // The composite states of this table each own a child machine of
+    // their submachine table, alive while the state is: one variant
+    // next to the state variant holds the active one (at most one
+    // composite state is active), std::monostate while none is
+    using composites = mtl::filter_t<typename TRANSITIONS::states, internal::is_composite>;
+    static constexpr bool has_composites = !mtl::empty_v<composites>;
 
-private:
+    template<typename STATE>
+    struct nests_this_table : std::is_same<internal::submachine_t<STATE>, table> {};
+    static_assert(mtl::none_of_v<composites, nests_this_table>,
+                  "StateMachine: a state's submachine is the table it belongs to");
+    static_assert(mtl::all_of_v<composites, internal::annotation_levels_exclusive>,
+                  "StateMachine: an annotation of a composite state may not recur in its "
+                  "submachine - annotate at the level where the value changes");
+
+    template<typename STATE>
+    using submachine_of =
+        StateMachine<internal::nested<internal::submachine_t<STATE>, StateMachine::depth + 1>,
+                     OBSERVERs...>;
+
+    template<typename STATE>
+    struct make_submachine : std::type_identity<submachine_of<STATE>> {};
+
+    using submachine_variant = mtl::rebind_t<
+        mtl::prepend_t<std::monostate, mtl::transform_t<composites, make_submachine>>,
+        std::variant>;
+    using submachine_storage =
+        std::conditional_t<StateMachine::has_composites, submachine_variant, mtl::nil_type>;
+
+public:
     // Every context type any state declares, deduplicated: states naming
     // the same type share one instance
     using context_types = mtl::unique_t<
@@ -139,6 +194,7 @@ public:
     {
         this->beginProcessing();
         this->template enter<mtl::nil_type, initial_state>();
+        this->template enterSubmachine<initial_state>();
         this->endProcessing();
     }
 
@@ -155,7 +211,13 @@ public:
     // kilobytes in a machine with a handful of wildcard events). Its
     // guards and exit hooks run in the arm, where the state left is
     // known; only an edge-form entry or transition hook is delivered per
-    // source afterwards, through a switch on the state left
+    // source afterwards, through a switch on the state left.
+    // A composite state offers the event to its submachine first: what
+    // the active sub-state handles counts as fired here without
+    // touching this level; what it does not - no row, or every guard
+    // refused - is tried against this state's own alternatives. A local
+    // event (fsm::timeout, fsm::deadline) is addressed to this machine
+    // and never descends
     template<typename EVENT>
     bool process(EVENT const& event)
     {
@@ -167,6 +229,12 @@ public:
                 using own        = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
                 using guarded    = mtl::filter_t<own, internal::is_guarded>;
                 using unguarded  = mtl::find_if_t<own, internal::is_unguarded>;
+                // 0. the active sub-state's own chance
+                if constexpr (internal::composite<state_type> && !local_event_v<EVENT>) {
+                    if (this->template submachineOf<state_type>().process(event)) {
+                        return StateMachine::fired;
+                    }
+                }
                 // 1. the state's guarded alternatives in table order
                 if constexpr (!mtl::empty_v<guarded>) {
                     if (this->template tryGuarded<state_type>(guarded{}, state, event)) {
@@ -230,29 +298,55 @@ public:
         return std::get<T>(contexts_);
     }
 
+    // The child machine of the composite state STATE while STATE is
+    // active, nullptr otherwise - getIf() for the nested level. Read-only
+    // like the parent: events enter at the root and descend
+    template<internal::composite STATE>
+    [[nodiscard]] submachine_of<STATE> const* submachine() const
+    {
+        static_assert(mtl::has_a_v<composites, STATE>,
+                      "StateMachine::submachine: not a composite state of this table");
+        return std::get_if<submachine_of<STATE>>(&sub_);
+    }
+
     // The active state's annotation element of type T - its static
     // fsm::annotate set - empty while the active state carries no T.
     // A facade asks the machine what the observers see instead of
     // enumerating states with is<>(): the states declare the fact,
     // the query reads it. An element no state of the table carries
     // could never be answered: a static_assert. Instance values
-    // (values()) stay with the state object, see getIf()
+    // (values()) stay with the state object, see getIf().
+    // Over a hierarchy the answer comes from the one level carrying T
+    // along the active path (annotation_levels_exclusive): this level's
+    // state, or else the active submachine's
     template<typename T>
     [[nodiscard]] std::optional<T> annotation() const
     {
-        static_assert(annotation_in_table_v<TRANSITION_TABLE, T>,
+        static_assert(annotation_in_table_v<table, T>,
                       "StateMachine::annotation: no state of the table carries this annotation");
         // only the states carrying T take part: a compare chain over
         // the carriers, each yielding its constant
         using states   = typename TRANSITIONS::states;
         using carriers = mtl::filter_t<states, internal::carrying<T>::template pred>;
-        return [this]<typename... CARRIERs>(mtl::typelist<CARRIERs...>) {
-            std::optional<T> result;
+        std::optional<T> result = [this]<typename... CARRIERs>(mtl::typelist<CARRIERs...>) {
+            std::optional<T> own;
             static_cast<void>(((current_.index() == mtl::index_of_v<CARRIERs, states> &&
-                                (result = CARRIERs::annotations.template get<T>(), true)) ||
+                                (own = CARRIERs::annotations.template get<T>(), true)) ||
                                ...));
-            return result;
+            return own;
         }(carriers{});
+        if constexpr (StateMachine::has_composites) {
+            // ... and the composites whose hierarchy carries T ask their child
+            using nesting = mtl::filter_t<composites, internal::nesting_carrier<T>::template pred>;
+            [this, &result]<typename... NESTINGs>(mtl::typelist<NESTINGs...>) {
+                static_cast<void>(((current_.index() == mtl::index_of_v<NESTINGs, states> &&
+                                    (result = this->template submachine<NESTINGs>()
+                                                  ->template annotation<T>(),
+                                     true)) ||
+                                   ...));
+            }(nesting{});
+        }
+        return result;
     }
 
 private:
@@ -310,6 +404,7 @@ private:
         this->forEachObserver([&](auto& observer) {
             this->template transitionFromSource<EVENT, NEW_STATE>(observer, source);
         });
+        this->template enterSubmachine<NEW_STATE>();
     }
 
     // The switch on the state left: f(std::type_identity<STATE>{}) for
@@ -435,6 +530,7 @@ private:
             this->template changeState<STATE, TO_STATE>();
         }
         this->template notifyTransition<STATE, EVENT, TO_STATE>();
+        this->template enterSubmachine<TO_STATE>(); // never for internal_target
     }
 
     // Runs after the transition completed (new state constructed and
@@ -477,9 +573,11 @@ private:
         }(internal::contexts_of_t<NEW_STATE>{});
     }
 
+    // Innermost first: a composite's child is left before the state itself
     template<typename OLD_STATE, typename NEW_STATE>
     void leave()
     {
+        this->template leaveSubmachine<OLD_STATE>();
         this->forEachObserver(
             [this](auto& observer) { internal::exitHook<OLD_STATE, NEW_STATE>(observer, *this); });
     }
@@ -489,6 +587,62 @@ private:
     {
         this->forEachObserver(
             [this](auto& observer) { internal::enterHook<OLD_STATE, NEW_STATE>(observer, *this); });
+    }
+
+    // --- hierarchy ----------------------------------------------------------
+
+    // Entering a composite state constructs its child machine, after the
+    // state's own entry and transition hooks ran: the child's initial
+    // state is entered by the child's constructor, hooks included, so a
+    // trace reads parent line, then child line. Leaving a composite
+    // state leaves the child's active state through the child's private
+    // leave path - its exit hooks, then the destruction - before the
+    // state's own exit hooks
+    template<typename STATE>
+    void enterSubmachine()
+    {
+        if constexpr (internal::composite<STATE>) {
+            std::apply(
+                [this](auto&... observer) {
+                    sub_.template emplace<submachine_of<STATE>>(observer...);
+                },
+                observers_);
+        }
+    }
+
+    template<typename STATE>
+    void leaveSubmachine()
+    {
+        if constexpr (internal::composite<STATE>) {
+            this->template submachineOf<STATE>().leaveCurrent();
+            sub_.template emplace<std::monostate>();
+        }
+    }
+
+    // The counterpart of the constructor's entry: the active state is
+    // left once with TO = mtl::nil_type, its own submachine first. Only
+    // a parent calls it; a root machine's destructor runs no hooks
+    void leaveCurrent()
+    {
+        this->beginProcessing();
+        internal::dispatch(
+            [this](auto& state) {
+                this->template leave<std::decay_t<decltype(state)>, mtl::nil_type>();
+                return true;
+            },
+            current_);
+        this->endProcessing();
+    }
+
+    // The live child of the active composite state STATE
+    template<typename STATE>
+    submachine_of<STATE>& submachineOf()
+    {
+        auto* const child = std::get_if<submachine_of<STATE>>(&sub_);
+#if MTL_FSM_CHECKS
+        MTL_FSM_ASSERT(child != nullptr, "fsm: composite state active without its submachine");
+#endif
+        return *child;
     }
 
     // Every observer in injection order
@@ -522,6 +676,8 @@ private:
     bool processing_ = false;
 #endif
     state_variant current_; // constructed by the constructor via initialArgs()
+    // the active composite state's child machine; nil_type in a flat table
+    [[no_unique_address]] submachine_storage sub_{};
 };
 
 } // namespace fsm

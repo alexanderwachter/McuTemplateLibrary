@@ -272,6 +272,13 @@ struct carried_in {
 // the parent's value would leave the observers and the machine's
 // annotation<T>() query disagreeing - moving on to a sibling without T
 // re-notifies nothing, while the parent's T is still the active one
+// A composite state whose hierarchy carries T somewhere below it
+template<typename T>
+struct nesting_carrier {
+    template<composite STATE>
+    struct pred : annotation_in_table<submachine_t<STATE>, T> {};
+};
+
 template<typename STATE>
 struct annotation_levels_exclusive : std::true_type {};
 
