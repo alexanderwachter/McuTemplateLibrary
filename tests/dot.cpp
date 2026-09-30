@@ -53,6 +53,17 @@ struct escaped {
     static constexpr std::string_view dot_note = "a <b> & c";
 };
 
+// a composite state: its sub-table is a graph of its own
+struct dive {};
+struct shallow {};
+struct deep {};
+struct sub_table : fsm::transition_table<
+    fsm::transition<fsm::from<shallow>, fsm::on<go>, fsm::to<deep>>> {};
+struct diving {
+    using submachine = sub_table;
+    static constexpr auto timeout = 90ms;
+};
+
 // named: the short name is the machine id in the table comment
 struct example_table : fsm::transition_table<
     fsm::transition<fsm::from<off>,            fsm::on<go>,           fsm::to<running>,
@@ -62,7 +73,9 @@ struct example_table : fsm::transition_table<
     fsm::internal_transition<fsm::from<running>, fsm::on<go>>,
     fsm::transition<fsm::from<off>, fsm::on<fsm::timeout>, fsm::to<escaped>>,
     fsm::transition<fsm::from<escaped>, fsm::on<go>, fsm::to<off>,
-                    fsm::guard<ready, fsm::not_<ready>>>> {};
+                    fsm::guard<ready, fsm::not_<ready>>>,
+    fsm::transition<fsm::from<off>, fsm::on<dive>, fsm::to<diving>>,
+    fsm::transition<fsm::from<diving>, fsm::on<fsm::timeout>, fsm::to<off>>> {};
 
 // the label strips namespaces, the type name keeps them (both from
 // mtl/TypeName.hpp)
@@ -87,7 +100,21 @@ int dotTests()
     fsm::writeDot<example_table>(out, "example");
     auto const dot = out.str();
 
-    check(dot.starts_with("digraph \"example\" {\n    // table: example_table\n"));
+    // the table comment, then one line per composite state naming the
+    // child's graph
+    check(dot.starts_with("digraph \"example\" {\n    // table: example_table\n"
+                          "    // submachine: diving sub_table\n    rankdir=LR;\n"));
+    // the composite's label carries its sub-table as a section of its own
+    check(dot.contains("\"diving\" [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">"
+                       "<tr><td><b><font point-size=\"16\">diving</font></b></td></tr><hr/>"
+                       "<tr><td align=\"left\">timeout 90 ms</td></tr>"
+                       "<hr/><tr><td align=\"left\">submachine sub_table</td></tr></table>>];"));
+    check(dot.contains("\"off\" -> \"diving\" [label=\"dive\" id=\"off__dive__diving__6\"];"));
+    // the sub-table renders as its own graph, flat
+    std::ostringstream sub;
+    fsm::writeDot<sub_table>(sub, "sub");
+    check(sub.str().starts_with("digraph \"sub\" {\n    // table: sub_table\n    rankdir=LR;\n"));
+    check(sub.str().contains("\"shallow\" -> \"deep\" [label=\"go\" id=\"shallow__go__deep__0\"];"));
     check(dot.contains("\"off\" -> \"running\" [label=\"go\\n[ready]\" id=\"off__go__running__0\"];"));
     // an HTML-like table: the name bold and larger, a rule between the
     // sections name / timeout / annotation set (type name for the

@@ -9,12 +9,17 @@
  * non-structural element by its type name), and a state's optional
  * static dot_note and dot_action strings. Every transition is one
  * labeled edge (guards in brackets), the initial state gets an entry
- * marker, and an any_state wildcard source is shown as a dashed node.
+ * marker, and an any_state wildcard source is shown as a dashed node. A
+ * composite state names its submachine's table in its label; the
+ * sub-table is a graph of its own (write it separately - tools/dotgen
+ * finds every named table).
  *
  * For tools/fsmview the graph carries a "// table: <short name>" comment
- * naming the table (the machine id of fsm::tracing lines) and every edge
- * an id "<from>__<event>__<to>__<index>" that Graphviz passes into its
- * SVG output; the index in the table keeps guarded alternatives of one
+ * naming the table (the machine id of fsm::tracing lines), one
+ * "// submachine: <state> <table>" comment per composite state (the
+ * child graph a parent's exit deactivates), and every edge an id
+ * "<from>__<event>__<to>__<index>" that Graphviz passes into its SVG
+ * output; the index in the table keeps guarded alternatives of one
  * (state, event) pair distinct, <to> is internal_target for internal
  * transitions - the same names the trace lines use.
  *
@@ -31,6 +36,7 @@
 #include <chrono>
 #include <cstddef>
 #include <ostream>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -97,22 +103,28 @@ void writeDotAnnotations(std::ostream& out)
 }
 
 // The label is an HTML-like table so that a rule separates the
-// sections: the name, the timeout, the annotation set, the notes
+// sections: the name, the timeout, the submachine, the annotation set,
+// the notes
 template<typename STATE>
 void writeDotNode(std::ostream& out)
 {
     constexpr bool timed     = has_timeout_v<STATE>;
+    constexpr bool nesting   = internal::composite<STATE>;
     constexpr bool annotated = internal::annotated<STATE>;
     constexpr bool noted     = requires { std::string_view{STATE::dot_note}; };
     constexpr bool acting    = requires { std::string_view{STATE::dot_action}; };
 
     out << "    \"" << label<STATE>() << '"';
-    if constexpr (timed || annotated || noted || acting) {
+    if constexpr (timed || nesting || annotated || noted || acting) {
         out << " [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">";
         writeDotNameRow(out, label<STATE>());
         if constexpr (timed) {
             auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
             out << "<hr/><tr><td align=\"left\">timeout " << ms << " ms</td></tr>";
+        }
+        if constexpr (nesting) {
+            out << "<hr/>";
+            writeDotRow(out, "submachine " + std::string{label<submachine_t<STATE>>()});
         }
         if constexpr (annotated) {
             out << "<hr/>";
@@ -180,8 +192,21 @@ void writeDotEdge(std::ostream& out)
 template<typename STATES, typename TRANSITIONS>
 struct dot_writer;
 
+// One comment per composite state, naming the graph its child lives
+// in: how tools/fsmview knows which graph a parent's exit deactivates
+template<typename STATE>
+void writeDotSubmachine(std::ostream& out)
+{
+    if constexpr (composite<STATE>) {
+        out << "    // submachine: " << label<STATE>() << ' ' << label<submachine_t<STATE>>()
+            << '\n';
+    }
+}
+
 template<typename... STATEs, typename... TRANSITIONs>
 struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
+    static void writeSubmachines(std::ostream& out) { (writeDotSubmachine<STATEs>(out), ...); }
+
     static void write(std::ostream& out)
     {
         (writeDotNode<STATEs>(out), ...);
@@ -203,8 +228,9 @@ void writeDot(std::ostream& out, std::string_view name = "fsm")
     using initial = mtl::front_t<typename TABLE::states>;
 
     out << "digraph \"" << name << "\" {\n"
-        << "    // table: " << internal::label<TABLE>() << '\n'
-        << "    rankdir=LR;\n"
+        << "    // table: " << internal::label<TABLE>() << '\n';
+    writer::writeSubmachines(out);
+    out << "    rankdir=LR;\n"
         << "    node [shape=box, style=rounded];\n"
         << "    __initial [shape=point];\n";
     if constexpr (writer::uses_wildcard) {

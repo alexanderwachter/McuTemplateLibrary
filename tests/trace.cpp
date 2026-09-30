@@ -61,6 +61,18 @@ struct transition_tracer : fsm::tracing<transition_tracer> {
     int transitions = 0;
 };
 
+// a composite state: the child's lines carry the sub-table's name
+struct in_a {};
+struct in_b {};
+struct inner_trace_table : fsm::transition_table<
+    fsm::transition<fsm::from<in_a>, fsm::on<tick>, fsm::to<in_b>>> {};
+struct compound {
+    using submachine = inner_trace_table;
+};
+struct nested_trace_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>,     fsm::on<go>, fsm::to<compound>>,
+    fsm::transition<fsm::from<compound>, fsm::on<go>, fsm::to<idle>>> {};
+
 int failures = 0;
 
 void check(bool condition, std::source_location location = std::source_location::current())
@@ -100,11 +112,34 @@ void tracerWithoutInitialSink()
     check(tracer.transitions == 1);
 }
 
+void tracerNamesEachLevelsTable()
+{
+    line_tracer tracer;
+    fsm::StateMachine<nested_trace_table, line_tracer> sm{tracer};
+
+    check(tracer.lines == std::vector<std::string>{"fsm[nested_trace_table] -> idle"});
+
+    // the parent's line, then the child's construction line
+    check(sm.process(go{}));
+    check(tracer.lines.size() == 3);
+    check(tracer.lines[1] == "fsm[nested_trace_table] idle -(go)-> compound");
+    check(tracer.lines[2] == "fsm[inner_trace_table] -> in_a");
+
+    check(sm.process(tick{})); // handled inside the child
+    check(tracer.lines.back() == "fsm[inner_trace_table] in_a -(tick)-> in_b");
+
+    // leaving the composite is one parent line: nothing traces the child's end
+    check(sm.process(go{}));
+    check(tracer.lines.size() == 5);
+    check(tracer.lines.back() == "fsm[nested_trace_table] compound -(go)-> idle");
+}
+
 } // namespace
 
 int traceTests()
 {
     tracerFormatsEveryKindOfChange();
     tracerWithoutInitialSink();
+    tracerNamesEachLevelsTable();
     return failures;
 }
