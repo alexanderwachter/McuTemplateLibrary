@@ -1109,11 +1109,11 @@ static_assert(fsm::internal::annotation_levels_exclusive<active>::value);
 static_assert(fsm::internal::annotation_levels_exclusive<idle>::value);
 static_assert(!fsm::internal::annotation_levels_exclusive<refining>::value);
 
-// --- lent contexts: a composite state shares its machine's instance
-// with its child, everything else the child declares is its own
+// --- inherited contexts: a composite state's child shares its
+// machine's instance, everything else the child declares is its own
 
 struct port_line {
-    int cc = 0; // the root's, lent down two levels
+    int cc = 0; // the root's, inherited two levels down
 };
 struct phase_budget {
     int tries = 0; // the probing phase's own, fresh on every entry
@@ -1138,8 +1138,8 @@ struct probing {
 struct probe_table : fsm::transition_table<
     fsm::transition<fsm::from<probing>, fsm::on<sense>, fsm::to<probing>>> {};
 
-// the phase lends the line on, declaring no context of its own: it
-// passes through what it inherited
+// the phase passes the line on, declaring no context of its own: its
+// child inherits what it inherited
 struct trying {
     using submachine      = probe_table;
     using parent_contexts = mtl::typelist<port_line>;
@@ -1158,52 +1158,55 @@ struct session {
     using parent_contexts = mtl::typelist<port_line>;
 };
 
-struct lending_table : fsm::transition_table<
+struct inheriting_table : fsm::transition_table<
     fsm::transition<fsm::from<resting>, fsm::on<go>,   fsm::to<session>>,
     fsm::transition<fsm::from<session>, fsm::on<stop>, fsm::to<resting>>> {};
 
-using lending_machine = fsm::StateMachine<lending_table>;
-using session_machine =
-    std::remove_cvref_t<decltype(*std::declval<lending_machine const&>().submachine<session>())>;
+using inheriting_machine = fsm::StateMachine<inheriting_table>;
+using session_machine = std::remove_cvref_t<
+    decltype(*std::declval<inheriting_machine const&>().submachine<session>())>;
 using probe_machine =
     std::remove_cvref_t<decltype(*std::declval<session_machine const&>().submachine<trying>())>;
 
 // the declaration
-static_assert(fsm::internal::context_lender<trying>);
-static_assert(!fsm::internal::context_lender<waiting>);
+static_assert(fsm::internal::declares_parent_contexts<trying>);
+static_assert(!fsm::internal::declares_parent_contexts<waiting>);
 static_assert(std::is_same_v<fsm::internal::parent_contexts_t<trying>, mtl::typelist<port_line>>);
 static_assert(std::is_same_v<fsm::internal::parent_contexts_t<waiting>, mtl::typelist<>>);
 
 // each level's contexts: the root owns the line, the session only
 // inherits it, the probe inherits it next to its own budget
-static_assert(std::is_same_v<lending_machine::own_contexts, mtl::typelist<port_line>>);
-static_assert(std::is_same_v<lending_machine::inherited_contexts, mtl::typelist<>>);
+static_assert(std::is_same_v<inheriting_machine::own_contexts, mtl::typelist<port_line>>);
+static_assert(std::is_same_v<inheriting_machine::inherited_contexts, mtl::typelist<>>);
 static_assert(std::is_same_v<session_machine::own_contexts, mtl::typelist<>>);
 static_assert(std::is_same_v<session_machine::inherited_contexts, mtl::typelist<port_line>>);
 static_assert(std::is_same_v<probe_machine::own_contexts, mtl::typelist<phase_budget>>);
 static_assert(std::is_same_v<probe_machine::inherited_contexts, mtl::typelist<port_line>>);
 static_assert(std::is_same_v<probe_machine::context_types, mtl::typelist<phase_budget, port_line>>);
 
-// the tuple holds a lent context as a reference
-static_assert(fsm::internal::holds_lent_context<port_line, std::tuple<phase_budget, port_line&>>::value);
-static_assert(!fsm::internal::holds_lent_context<phase_budget, std::tuple<phase_budget, port_line&>>::value);
+// the tuple holds an inherited context as a reference
+static_assert(
+    fsm::internal::holds_inherited_context<port_line, std::tuple<phase_budget, port_line&>>::value);
+static_assert(!fsm::internal::holds_inherited_context<phase_budget,
+                                                      std::tuple<phase_budget, port_line&>>::value);
 
-// the checks on a lender, each askable per state
-struct plain_lender {
-    using parent_contexts = mtl::typelist<port_line>; // no submachine to lend to
+// the checks on a parent_contexts declaration, each askable per state
+struct plain_with_parent_contexts {
+    using parent_contexts = mtl::typelist<port_line>; // no submachine to inherit it
 };
-struct lender_of_unused {
+struct parent_contexts_unused {
     using submachine      = inner_table; // low and high declare no context
     using parent_contexts = mtl::typelist<port_line>;
 };
-static_assert(fsm::internal::lender_is_composite<trying>::value);
-static_assert(fsm::internal::lender_is_composite<waiting>::value);
-static_assert(!fsm::internal::lender_is_composite<plain_lender>::value);
-static_assert(fsm::internal::lends_from<mtl::typelist<port_line>>::pred<trying>::value);
-static_assert(!fsm::internal::lends_from<mtl::typelist<phase_budget>>::pred<trying>::value);
-static_assert(fsm::internal::lent_contexts_declared_below<trying>::value);
-static_assert(fsm::internal::lent_contexts_declared_below<session>::value); // two levels down
-static_assert(!fsm::internal::lent_contexts_declared_below<lender_of_unused>::value);
+static_assert(fsm::internal::parent_contexts_on_composite<trying>::value);
+static_assert(fsm::internal::parent_contexts_on_composite<waiting>::value);
+static_assert(!fsm::internal::parent_contexts_on_composite<plain_with_parent_contexts>::value);
+static_assert(fsm::internal::parent_contexts_held_in<mtl::typelist<port_line>>::pred<trying>::value);
+static_assert(
+    !fsm::internal::parent_contexts_held_in<mtl::typelist<phase_budget>>::pred<trying>::value);
+static_assert(fsm::internal::parent_contexts_declared_below<trying>::value);
+static_assert(fsm::internal::parent_contexts_declared_below<session>::value); // two levels down
+static_assert(!fsm::internal::parent_contexts_declared_below<parent_contexts_unused>::value);
 
 } // namespace Nested
 
@@ -2478,10 +2481,10 @@ void nestedTimersInjectedByReferencePerLevel()
     check(&tim.timer(1) == &inner_clock);
 }
 
-void nestedLentContextIsTheParentsInstance()
+void nestedInheritedContextIsTheParentsInstance()
 {
     using namespace Nested;
-    lending_machine sm;
+    inheriting_machine sm;
     sm.process(go{}); // session: waiting
     sm.process(go{}); // trying: probing, two levels below the line's owner
 
@@ -2497,10 +2500,10 @@ void nestedLentContextIsTheParentsInstance()
     check(probe->context<phase_budget>().tries == 2);
 }
 
-void nestedOwnContextIsFreshOnReentryLentOnePersists()
+void nestedOwnContextIsFreshOnReentryInheritedOnePersists()
 {
     using namespace Nested;
-    lending_machine sm;
+    inheriting_machine sm;
     sm.process(go{});
     sm.process(go{});
     sm.process(sense{5});
@@ -2603,8 +2606,8 @@ int statemachineTests()
     nestedAnnotationsAreQueriedAndObservedPerLevel();
     nestedTimersArmOneSlotPerLevel();
     nestedTimersInjectedByReferencePerLevel();
-    nestedLentContextIsTheParentsInstance();
-    nestedOwnContextIsFreshOnReentryLentOnePersists();
+    nestedInheritedContextIsTheParentsInstance();
+    nestedOwnContextIsFreshOnReentryInheritedOnePersists();
     queuedNestedExpiryReachesItsLevel();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();

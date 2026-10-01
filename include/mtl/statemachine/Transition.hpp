@@ -86,21 +86,21 @@ template<typename STATE>
 struct context_constructible : constructible_with<STATE, contexts_of_t<STATE>> {};
 
 // Whether a machine's context tuple holds T as a reference into the
-// parent machine (a lent context) rather than as an own instance
+// parent machine (an inherited context) rather than as an own instance
 template<typename T, typename CONTEXT_TUPLE>
-struct holds_lent_context;
+struct holds_inherited_context;
 
 template<typename T, typename... ELEMENTs>
-struct holds_lent_context<T, std::tuple<ELEMENTs...>>
+struct holds_inherited_context<T, std::tuple<ELEMENTs...>>
     : std::disjunction<std::is_same<T&, ELEMENTs>...> {};
 
 // The instance of context type T in a machine's context tuple: an own
-// instance held by value, or the parent machine's behind the lent
+// instance held by value, or the parent machine's behind the inherited
 // reference
 template<typename T, typename CONTEXT_TUPLE>
 constexpr auto& contextOf(CONTEXT_TUPLE& contexts)
 {
-    if constexpr (holds_lent_context<T, std::remove_cv_t<CONTEXT_TUPLE>>::value) {
+    if constexpr (holds_inherited_context<T, std::remove_cv_t<CONTEXT_TUPLE>>::value) {
         return std::get<T&>(contexts);
     } else {
         return std::get<T>(contexts);

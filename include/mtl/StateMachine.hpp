@@ -95,19 +95,20 @@
  * Contexts are per machine: a sub-table's context types are the
  * child's own instances, fresh on every entry of the composite state
  * (the lifetime of a phase: a retry budget, a debounce record). A
- * composite state lends contexts of its own machine to its child with
+ * composite state names the contexts of its own machine that its
+ * child inherits:
  *   using parent_contexts = mtl::typelist<line_status>;
- * the sub-states declaring a lent type then bind to the parent
- * machine's instance - the parent's lifetime - and a lent type the
- * sub-table does not declare itself may be lent further down by one
- * of its composites. The sub-states stay plain (`contexts` is still
- * their constructor signature), so the same state serves a root table
- * and a sub-table alike; only the composite, which knows it nests,
- * names what it lends. Checked at compile time: only a composite
- * lends, it lends what its machine holds (declared by a state of its
- * table or lent to it in turn), and every lent type is declared by
- * some state below. A machine's `own_contexts` / `inherited_contexts`
- * spell the split; context<T>() answers for both.
+ * the sub-states declaring an inherited type then bind to the parent
+ * machine's instance - the parent's lifetime - and an inherited type
+ * the sub-table does not declare itself may be inherited further down
+ * through one of its composites. The sub-states stay plain (`contexts`
+ * is still their constructor signature), so the same state serves a
+ * root table and a sub-table alike; only the composite, which knows it
+ * nests, names what its child inherits. Checked at compile time: only
+ * a composite declares parent_contexts, the parent machine holds every
+ * named type (declared by a state of its table or inherited in turn),
+ * and some state below declares it. A machine's `own_contexts` /
+ * `inherited_contexts` spell the split; context<T>() answers for both.
  *
  * Timer policy contract (owned by fsm::timed<TIMER, LEVELS>):
  *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
