@@ -15,9 +15,10 @@
  *   mtl::zephyr::StateMachine light{mtl::zephyr::table<light_table>, lamps, tracer};
  *
  * (class template argument deduction cannot take the table explicitly
- * and deduce the rest, hence the table as a tag value). A table that
- * is a template over the observers - one filtered by the features they
- * enable - is named by table_for:
+ * and deduce the rest, hence the table as a tag value). Features the
+ * observers do not enable are left out by the machine itself; a table
+ * that is nevertheless a template over the observers is named by
+ * table_for:
  *
  *   mtl::zephyr::StateMachine monitor{mtl::zephyr::table_for<sensor_table>, leds, rail};
  *

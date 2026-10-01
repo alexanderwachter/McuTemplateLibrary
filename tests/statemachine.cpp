@@ -691,6 +691,21 @@ namespace Features {
     static_assert(std::is_same_v<fsm::remove_feature_t<ranges, vconn_feature>,
                                  mtl::typelist<fsm::timed_by<plain, any_time>>>);
     static_assert(std::is_same_v<fsm::remove_disabled_features_t<ranges, both_policies>, ranges>);
+
+    // the table a machine runs: the one given while nothing is disabled
+    // (no observer list, or observers enabling every feature), else
+    // rebuilt without the disabled features
+    using table_entries = mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, plain_self>;
+    struct full_table : mtl::rebind_t<table_entries, fsm::transition_table> {};
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table>, full_table>);
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, mtl::typelist<both_policies>>,
+                                 full_table>);
+    using for_bystander = fsm::enabled_table_t<full_table, mtl::typelist<bystander>>;
+    static_assert(!std::is_same_v<for_bystander, full_table>);
+    static_assert(std::is_same_v<for_bystander::states, mtl::typelist<plain>>);
+    static_assert(std::is_same_v<for_bystander::transitions, mtl::typelist<plain_self>>);
+    // the machine filters by its own observers and keeps the table's name
+    static_assert(std::is_same_v<fsm::StateMachine<full_table, bystander>::table, full_table>);
 } // namespace Features
 
 namespace SharedWildcard {
@@ -1204,9 +1219,70 @@ static_assert(!fsm::internal::parent_contexts_on_composite<plain_with_parent_con
 static_assert(fsm::internal::parent_contexts_held_in<mtl::typelist<port_line>>::pred<trying>::value);
 static_assert(
     !fsm::internal::parent_contexts_held_in<mtl::typelist<phase_budget>>::pred<trying>::value);
-static_assert(fsm::internal::parent_contexts_declared_below<trying>::value);
-static_assert(fsm::internal::parent_contexts_declared_below<session>::value); // two levels down
-static_assert(!fsm::internal::parent_contexts_declared_below<parent_contexts_unused>::value);
+static_assert(fsm::internal::parent_contexts_declared_in_submachine<trying>::value);
+static_assert(fsm::internal::parent_contexts_declared_in_submachine<session>::value); // two levels
+static_assert(!fsm::internal::parent_contexts_declared_in_submachine<parent_contexts_unused>::value);
+
+// --- a feature inside a submachine: the child machine filters its
+// table by the same observers as the root
+
+struct boost_feature {};
+struct push {};
+
+struct calm {};
+struct warm {};
+struct boost {
+    using feature = boost_feature;
+};
+
+struct deep_table : fsm::transition_table<
+    fsm::transition<fsm::from<calm>,  fsm::on<tick>, fsm::to<warm>>,
+    fsm::transition<fsm::from<warm>,  fsm::on<tick>, fsm::to<calm>>,
+    fsm::transition<fsm::from<calm>,  fsm::on<push>, fsm::to<boost>>,
+    fsm::transition<fsm::from<boost>, fsm::on<push>, fsm::to<calm>>> {};
+
+struct engine {
+    using submachine = deep_table;
+};
+// the same feature at the root, and a composite that is itself a feature state
+struct turbo {
+    using feature = boost_feature;
+};
+struct optional_engine {
+    using feature    = boost_feature;
+    using submachine = deep_table;
+};
+
+struct featured_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>,            fsm::on<go>,   fsm::to<engine>>,
+    fsm::transition<fsm::from<engine>,          fsm::on<stop>, fsm::to<idle>>,
+    fsm::transition<fsm::from<idle>,            fsm::on<push>, fsm::to<turbo>>,
+    fsm::transition<fsm::from<turbo>,           fsm::on<stop>, fsm::to<idle>>,
+    fsm::transition<fsm::from<idle>,            fsm::on<tick>, fsm::to<optional_engine>>,
+    fsm::transition<fsm::from<optional_engine>, fsm::on<stop>, fsm::to<idle>>> {};
+
+struct booster {
+    using enables = boost_feature;
+};
+
+// disabled: both levels lose the feature's states, and push with them
+static_assert(std::is_same_v<fsm::all_states_t<featured_table, mtl::typelist<>>,
+                             mtl::typelist<idle, engine, calm, warm>>);
+static_assert(!mtl::has_a_v<fsm::nested_events_t<featured_table, mtl::typelist<>>, push>);
+// enabled, or no observer list at all: everything in view, the sub-table as named
+static_assert(std::is_same_v<fsm::all_states_t<featured_table, mtl::typelist<booster>>,
+                             mtl::typelist<idle, engine, turbo, optional_engine, calm, warm, boost>>);
+static_assert(std::is_same_v<fsm::nested_tables_t<featured_table, mtl::typelist<booster>>,
+                             mtl::typelist<featured_table, deep_table>>);
+static_assert(std::is_same_v<fsm::nested_tables_t<featured_table>,
+                             mtl::typelist<featured_table, deep_table>>);
+static_assert(mtl::has_a_v<fsm::nested_events_t<featured_table>, push>);
+// the queued machine's ring follows its observers
+using queued_off = fsm::QueuedMachine<featured_table, 4, fsm::inline_work, fsm::no_lock, recorder>;
+using queued_on =
+    fsm::QueuedMachine<featured_table, 4, fsm::inline_work, fsm::no_lock, booster, recorder>;
+static_assert(!mtl::has_a_v<queued_off::queueable_events, push>);
+static_assert(mtl::has_a_v<queued_on::queueable_events, push>);
 
 } // namespace Nested
 
@@ -2519,6 +2595,53 @@ void nestedOwnContextIsFreshOnReentryInheritedOnePersists()
     check(probe->context<port_line>().cc == 5);       // still the root's
 }
 
+void nestedFeatureDisabledAtEveryLevel()
+{
+    using namespace Nested;
+    recorder rec;
+    fsm::StateMachine<featured_table, recorder> sm{rec}; // nobody enables boost_feature
+    static_assert(std::is_same_v<decltype(sm)::table, featured_table>); // the name stays
+
+    check(!sm.process(push{})); // turbo is gone from the root
+    check(!sm.process(tick{})); // and the optional engine with it
+    sm.process(go{});
+    check(sm.submachine<engine>()->is<calm>());
+    check(!sm.process(push{})); // boost is gone from the child: no level handles push
+    check(sm.process(tick{}));  // the child's featureless rows stay
+    check(sm.submachine<engine>()->is<warm>());
+}
+
+void nestedFeatureEnabledByAnObserver()
+{
+    using namespace Nested;
+    booster enabler;
+    recorder rec;
+    fsm::StateMachine<featured_table, booster, recorder> sm{enabler, rec};
+
+    sm.process(go{});
+    check(sm.process(push{}));
+    check(sm.submachine<engine>()->is<boost>());
+    sm.process(stop{});
+    check(sm.process(tick{}));
+    check(sm.is<optional_engine>());
+    // the two composites share deep_table: the child belongs to the active one
+    check(sm.submachine<optional_engine>() != nullptr &&
+          sm.submachine<optional_engine>()->is<calm>());
+    check(sm.submachine<engine>() == nullptr);
+}
+
+void machineFiltersItsOwnTable()
+{
+    using namespace Features;
+    bystander nobody;
+    swap_policy policy;
+    fsm::StateMachine<full_table, bystander> without{nobody};
+    fsm::StateMachine<full_table, swap_policy> with{policy};
+
+    check(without.is<plain>());   // the initial<swapping> went with its feature
+    check(with.is<swapping>());
+}
+
 static_assert(fsm::deadlined<manual_timer, 2>::levels == 2); // the same slots for deadlines
 
 void queuedNestedExpiryReachesItsLevel()
@@ -2608,6 +2731,9 @@ int statemachineTests()
     nestedTimersInjectedByReferencePerLevel();
     nestedInheritedContextIsTheParentsInstance();
     nestedOwnContextIsFreshOnReentryInheritedOnePersists();
+    nestedFeatureDisabledAtEveryLevel();
+    nestedFeatureEnabledByAnObserver();
+    machineFiltersItsOwnTable();
     queuedNestedExpiryReachesItsLevel();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();

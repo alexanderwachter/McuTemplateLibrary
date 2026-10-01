@@ -181,9 +181,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   on what it inherited. Static checks per composite:
   `parent_contexts_on_composite`, `parent_contexts_held_in<
   context_types>` (the parent holds it),
-  `parent_contexts_declared_below` (some state of the sub-table or the
-  tables below declares it). Features are not filtered inside
-  sub-tables. Tests: namespace `Nested`.
+  `parent_contexts_declared_in_submachine` (some state of the
+  sub-table or the submachines inside it declares it). Tests:
+  namespace `Nested`.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine
@@ -243,16 +243,33 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `fsm[<machine>] <from> -(<event>)-> <to>` per transition, names verbatim
   (`internal_target` included; a wildcard names its real source - the
   tool still resolves `any_state` for older logs).
-- Features as tags (library, StateMachine.hpp "optional features"): a
-  state declares `using feature = TAG;`, an observer `using enables =
-  TAG;` (or an `mtl::typelist` of tags). `fsm::observer_enables_v`,
-  `state_in_feature_v`, `feature_enabled_v<TAG, OBSERVERs...>`;
-  `remove_features_t<LIST, typelist<TAGs...>>` / `remove_feature_t`
-  remove the tagged states' entries in one pass - transitions from/to,
-  `initial<>` (the next entry's source leads), `timed_by<>` map entries -
-  and `remove_disabled_features_t<LIST, OBSERVERs...>` removes every feature no
-  observer enables. Origin: the USB-C firmware's `pe::` machinery, now
-  replaced by these. Tests: namespace `Features` in tests/statemachine.cpp.
+- Features as tags (Feature.hpp): a state declares `using feature =
+  TAG;`, an observer `using enables = TAG;` (or an `mtl::typelist` of
+  tags). `fsm::observer_enables_v`, `state_in_feature_v`,
+  `feature_enabled_v<TAG, OBSERVERs...>`; `remove_features_t<LIST,
+  typelist<TAGs...>>` / `remove_feature_t` remove the tagged states'
+  entries in one pass - transitions from/to, `initial<>` (the next
+  entry's source leads), `timed_by<>` map entries - and
+  `remove_disabled_features_t<LIST, OBSERVERs...>` removes every
+  feature no observer enables. The machine filters its own table: its
+  `TRANSITIONS` is `fsm::enabled_table_t<TABLE, typelist<OBSERVERs...>>`
+  - TABLE itself while nothing is disabled (lazy: `internal::
+  has_disabled_features_v` over `transition_table::entries`, now
+  public; `mtl::nil_type` as the list disables nothing), else the
+  table rebuilt from the entries without them; `StateMachine::table`
+  stays the user's type for names. A child machine filters its
+  sub-table with the same observers, so a disabled feature is gone at
+  every level; a sub-table emptied this way is a static_assert (tag
+  the composite instead). The hierarchy traits take the observer list
+  as a second parameter (`nested_tables_t<TABLE, OBSERVER_LIST>`,
+  `all_states_t`, `nested_events_t` - the queued ring uses it; default
+  `nil_type` = every state in view, what validate hooks see). Tables
+  need no observer template any more (the sensor sample's
+  `sensor_table` is plain; `mtl::zephyr::table_for` stays for tables
+  that are). Timer-range maps are still filtered by hand with
+  `remove_disabled_features_t`. Origin: the USB-C firmware's `pe::`
+  machinery. Tests: namespaces `Features` and `Nested` in
+  tests/statemachine.cpp.
 - `fsm::writeDot<TABLE>(out, name)` writes `// table: <short name>` as
   the first line inside the digraph, writes node labels as HTML-like
   tables (`label=<<table ...>`, text HTML-escaped) with an `<hr/>` rule
@@ -308,8 +325,8 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `fsm::timed`/`deadlined` with fewer levels than `fsm::levels_v<table>`
   -> static_assert from its validate
 - `parent_contexts` on a state without a submachine, naming a type
-  the machine does not hold, or a type no state below declares
-  -> static_assert
+  the machine does not hold, or a type no state of the submachine
+  declares -> static_assert
 
 - `fsm::any_state` in `from<>` matches every state and is the last
   alternative: `transitions_for` is the exact (FROM, EVENT) group

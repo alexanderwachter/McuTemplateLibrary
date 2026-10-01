@@ -184,27 +184,29 @@ using sensor_transitions = mtl::typelist<
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_done>>,
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_failed>>>;
 
-// The table for the observers injected into the machine: every feature
-// none of them enables is removed. Named (a struct, not an alias): the
-// short name, sensor_table, identifies the machine in trace lines and
-// graphs whatever the observers are
-template<typename... OBSERVERs>
-struct sensor_table
-    : mtl::rebind_t<fsm::remove_disabled_features_t<sensor_transitions, OBSERVERs...>,
-                    fsm::transition_table> {};
+// The table, features included: the machine built on it removes every
+// feature none of its observers enables, at every level. Named (a
+// struct, not an alias): the short name, sensor_table, identifies the
+// machine in trace lines and graphs
+struct sensor_table : mtl::rebind_t<sensor_transitions, fsm::transition_table> {};
 
-// A stand-in observer enabling every feature, for the graph generator
-// and the checks below (the real enablers live with the board code)
+// A stand-in observer enabling every feature, for the checks below
+// (the real enabler lives with the board code)
 struct every_feature {
     using enables = calibration_feature;
 };
 
-static_assert(std::is_same_v<mtl::front_t<sensor_table<every_feature>::states>, calibrating>);
-static_assert(std::is_same_v<mtl::front_t<sensor_table<>::states>, idle>);
-static_assert(!mtl::has_a_v<sensor_table<>::states, calibrating>);
+// what a machine runs: with the calibrator, the table as named; without
+// an enabler, the table minus the feature, idle leading
+using with_calibration    = fsm::enabled_table_t<sensor_table, mtl::typelist<every_feature>>;
+using without_calibration = fsm::enabled_table_t<sensor_table, mtl::typelist<>>;
+static_assert(std::is_same_v<with_calibration, sensor_table>);
+static_assert(std::is_same_v<mtl::front_t<with_calibration::states>, calibrating>);
+static_assert(std::is_same_v<mtl::front_t<without_calibration::states>, idle>);
+static_assert(!mtl::has_a_v<without_calibration::states, calibrating>);
 // two machine levels: the facade brings two timers
-static_assert(fsm::levels_v<sensor_table<>> == 2);
-static_assert(std::is_same_v<fsm::nested_tables_t<sensor_table<>>,
-                             mtl::typelist<sensor_table<>, measuring_table>>);
+static_assert(fsm::levels_v<sensor_table> == 2);
+static_assert(std::is_same_v<fsm::nested_tables_t<sensor_table>,
+                             mtl::typelist<sensor_table, measuring_table>>);
 
 } // namespace sensor

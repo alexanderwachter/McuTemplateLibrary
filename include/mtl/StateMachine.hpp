@@ -110,6 +110,19 @@
  * and some state below declares it. A machine's `own_contexts` /
  * `inherited_contexts` spell the split; context<T>() answers for both.
  *
+ * Optional features: a state declaring `using feature = TAG;` belongs
+ * to the feature TAG, and an observer declaring `using enables = TAG;`
+ * (or an mtl::typelist of tags) switches it on. The machine runs the
+ * table minus every feature none of its injected observers enables -
+ * the tagged states and every entry touching them, initial<> included
+ * (then the next entry's source leads) - and a child machine filters
+ * its submachine's table with the same observers, so a disabled
+ * feature is gone at every level; the table keeps its name. A table
+ * with nothing to remove is used as it is (fsm::enabled_table_t, also
+ * what a test asks to see the table a machine runs). A guard on a
+ * removed entry needs no answerer. Timer-range maps are filtered
+ * alongside with fsm::remove_disabled_features_t.
+ *
  * Timer policy contract (owned by fsm::timed<TIMER, LEVELS>):
  *   start(ms, fsm::timer_callback, void* context) arms a one-shot timer
  *   that invokes callback(context) once; restarting re-arms. stop()
@@ -168,7 +181,8 @@
  *   Timer.hpp       the timer policy contract, fsm::timed, fsm::deadlined
  *   Observing.hpp   annotation sets, fsm::observing
  *   Observer.hpp    the hook forms, their delivery, ObserverGroup
- *   Traits.hpp      reachability, features as tags, observer coverage
+ *   Feature.hpp     features as tags and the filter removing one
+ *   Traits.hpp      reachability, observer coverage
  *   Core.hpp        the state machine and its dispatch
  *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
  *                   through a bounded FIFO + WORK policy; QueuedTimer
@@ -178,6 +192,7 @@
 #pragma once
 
 #include <mtl/statemachine/Core.hpp>
+#include <mtl/statemachine/Feature.hpp>
 #include <mtl/statemachine/Observer.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Queued.hpp>

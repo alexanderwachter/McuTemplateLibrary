@@ -270,11 +270,12 @@ template<typename TABLE, std::size_t CAPACITY, concepts::work_queue WORK = inlin
 class QueuedMachine {
 public:
     using machine_type = StateMachine<TABLE, OBSERVERs...>;
-    // Every level's events: a submachine's are processed at the root
-    // and descend. fsm::timeout and fsm::deadline enter through the
-    // latches, never the ring: the variant leaves them out
-    using queueable_events =
-        mtl::remove_if_t<nested_events_t<TABLE>, internal::is_timer_event>;
+    // Every level's events, disabled features left out: a submachine's
+    // are processed at the root and descend. fsm::timeout and
+    // fsm::deadline enter through the latches, never the ring: the
+    // variant leaves them out
+    using queueable_events = mtl::remove_if_t<nested_events_t<TABLE, mtl::typelist<OBSERVERs...>>,
+                                              internal::is_timer_event>;
     using event_variant =
         mtl::rebind_t<mtl::prepend_t<std::monostate, queueable_events>, std::variant>;
 

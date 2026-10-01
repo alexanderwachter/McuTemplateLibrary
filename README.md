@@ -115,11 +115,13 @@ whether a transition fired.
   different types, so a state resets one by assignment and declares
   only what it touches.
 - **Features as tags.** A state declares `using feature = tag;`, an
-  observer `using enables = tag;` (or a typelist of tags).
-  `fsm::remove_disabled_features_t<entries, OBSERVERs...>` drops every entry
-  touching a feature no injected observer enables, `initial<>`
-  included, so the table shrinks with the observers
-  (`remove_features_t` for explicit tags).
+  observer `using enables = tag;` (or a typelist of tags). The machine
+  runs its table minus every feature no injected observer enables -
+  the tagged states and every entry touching them, `initial<>`
+  included - at every level of a hierarchy, so the table shrinks with
+  the observers and keeps its name (`fsm::enabled_table_t` shows the
+  result; `remove_disabled_features_t` / `remove_features_t` filter a
+  timer-range map or an entry list by hand).
 - **Observers** are the only extension point. Injected by reference,
   they get `onExit<STATE>`, `onEnter<STATE>` and `onTransition<EVENT,
   TO>` hooks - or the edge forms `onExitFrom<FROM, TO>`,

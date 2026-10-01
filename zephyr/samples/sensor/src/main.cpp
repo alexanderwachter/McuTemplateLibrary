@@ -30,7 +30,7 @@
  * button (alias sw0) is the emergency stop from any state and resumes
  * from emergency.
  *
- *   west build -t dot        (sensor_table as configured, measuring_table, led_table)
+ *   west build -t dot        (sensor_table with every feature, measuring_table, led_table)
  *   west fsm_liveview        (reads /dev/ttyACM0, graphs from build/)
  *
  * Copyright (c) 2026 Alexander Wachter
@@ -221,11 +221,11 @@ struct PowerRail : fsm::observing<PowerRail> {
 };
 
 // --- the sensor state machine -----------------------------------------------
-// sensor_table is a template over the observers - it keeps only the
-// features they enable - so it is named by table_for and instantiated
-// with the deduced observers. The machine brings its timeout timer and
-// puts it first; the tracer goes last (its line follows the effects).
-// Static: kernel objects and machine addresses must stay put
+// The machine keeps only the features its observers enable: without
+// the calibrator, calibrating and its entries are gone from the table
+// it runs. The machine brings its timeout timer and puts it first; the
+// tracer goes last (its line follows the effects). Static: kernel
+// objects and machine addresses must stay put
 VirtualSensor sensor;
 AlarmPolicy alarm_policy;
 LedController leds;
@@ -233,11 +233,11 @@ PowerRail rail;
 mtl::zephyr::TraceLogger tracer;
 #ifdef CONFIG_SAMPLE_CALIBRATION
 Calibrator cal;
-mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table_for<sensor::sensor_table>,
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table<sensor::sensor_table>,
                                                    fsm_queue, sensor, cal, alarm_policy, leds,
                                                    rail, tracer};
 #else
-mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table_for<sensor::sensor_table>,
+mtl::zephyr::StateMachineOnSharedWorkqueue monitor{mtl::zephyr::table<sensor::sensor_table>,
                                                    fsm_queue, sensor, alarm_policy, leds, rail,
                                                    tracer};
 #endif

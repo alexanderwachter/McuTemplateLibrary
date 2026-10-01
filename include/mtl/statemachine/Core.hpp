@@ -95,7 +95,12 @@ constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& varian
 
 template<concepts::transition_table TRANSITION_TABLE, typename... OBSERVERs>
 class StateMachine {
-    using TRANSITIONS = TRANSITION_TABLE;
+    // The table this machine runs: the one given, minus every feature
+    // none of the injected observers enables - its states and the
+    // entries touching them. A child machine filters its sub-table the
+    // same way with the same observers, so a disabled feature is gone
+    // from every level of a hierarchy
+    using TRANSITIONS = enabled_table_t<TRANSITION_TABLE, mtl::typelist<OBSERVERs...>>;
 
     // A parent machine leaves its child through the child's private
     // leave path
@@ -106,7 +111,10 @@ public:
     // The user's table: named tables identify the machine (fsm::tracing).
     // A child machine is built from internal::nested<TABLE, DEPTH>, the
     // table plus its nesting depth - stripped here
-    using table         = internal::plain_table_t<TRANSITION_TABLE>;
+    using table = internal::plain_table_t<TRANSITION_TABLE>;
+    static_assert(!mtl::empty_v<typename TRANSITIONS::states>,
+                  "StateMachine: every entry of the table belongs to a disabled feature - a "
+                  "submachine emptied this way is a feature itself: tag its composite state");
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
@@ -170,8 +178,10 @@ private:
     template<typename STATE>
     struct make_submachine : std::type_identity<submachine_of<STATE>> {};
 
+    // Two composites of one table may share a sub-table: one alternative
     using submachine_variant = mtl::rebind_t<
-        mtl::prepend_t<std::monostate, mtl::transform_t<composites, make_submachine>>,
+        mtl::prepend_t<std::monostate,
+                       mtl::unique_t<mtl::transform_t<composites, make_submachine>>>,
         std::variant>;
     using submachine_storage =
         std::conditional_t<StateMachine::has_composites, submachine_variant, mtl::nil_type>;
@@ -202,8 +212,9 @@ private:
                   "StateMachine: a state must be constructible from its declared contexts "
                   "alone, in their order (default constructible without any)");
 
-    // What a child inherits its parent must hold, and some state below
-    // must declare it; a plain state has no child to inherit anything
+    // What a child inherits its parent must hold, and some state of the
+    // submachine must declare it; a plain state has no child to inherit
+    // anything
     static_assert(
         mtl::all_of_v<typename TRANSITIONS::states, internal::parent_contexts_on_composite>,
         "StateMachine: parent_contexts is declared by a state without a submachine");
@@ -211,9 +222,9 @@ private:
         mtl::all_of_v<composites, internal::parent_contexts_held_in<context_types>::template pred>,
         "StateMachine: a submachine inherits a context its parent machine does not hold - a "
         "state of this table declares it, or this machine inherits it in turn");
-    static_assert(mtl::all_of_v<composites, internal::parent_contexts_declared_below>,
+    static_assert(mtl::all_of_v<composites, internal::parent_contexts_declared_in_submachine>,
                   "StateMachine: a submachine inherits a context no state of it (or of the "
-                  "tables below it) declares");
+                  "submachines inside it) declares");
 
 public:
     explicit StateMachine(OBSERVERs&... observers)
@@ -342,14 +353,15 @@ public:
     }
 
     // The child machine of the composite state STATE while STATE is
-    // active, nullptr otherwise - getIf() for the nested level. Read-only
-    // like the parent: events enter at the root and descend
+    // active, nullptr otherwise (a sibling sharing the sub-table is
+    // not STATE) - getIf() for the nested level. Read-only like the
+    // parent: events enter at the root and descend
     template<internal::composite STATE>
     [[nodiscard]] submachine_of<STATE> const* submachine() const
     {
         static_assert(mtl::has_a_v<composites, STATE>,
                       "StateMachine::submachine: not a composite state of this table");
-        return std::get_if<submachine_of<STATE>>(&sub_);
+        return this->template is<STATE>() ? std::get_if<submachine_of<STATE>>(&sub_) : nullptr;
     }
 
     // The active state's annotation element of type T - its static

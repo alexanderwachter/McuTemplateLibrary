@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <mtl/statemachine/Feature.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
@@ -178,8 +179,11 @@ struct no_shadowed_alternatives<mtl::typelist<FIRST, RESTs...>>
 // state of the first transition is the initial state
 template<concepts::transition_table_entry... ENTRYs>
 struct transition_table {
-private:
+    // The entries as given, initial<> included: what a machine rebuilds
+    // the table from when a feature of its states is disabled
     using entries = mtl::typelist<ENTRYs...>;
+
+private:
     static_assert(mtl::count_if_v<entries, internal::is_initial> <= 1,
                   "transition_table: at most one initial<STATE> allowed");
 
@@ -250,6 +254,29 @@ public:
 
 namespace internal {
 
+// The table a machine runs for its observers, given as one
+// mtl::typelist: TABLE itself while every feature its states declare
+// is enabled by one of them (and for mtl::nil_type, which disables
+// nothing), else the table rebuilt from the entries with the disabled
+// features removed. Lazy: a table with nothing to remove is never
+// rebuilt, and keeps its name
+template<typename TABLE, typename OBSERVER_LIST,
+         bool FILTERED = has_disabled_features_v<typename TABLE::entries, OBSERVER_LIST>>
+struct enabled_table : std::type_identity<TABLE> {};
+
+template<typename TABLE, typename OBSERVER_LIST>
+struct enabled_table<TABLE, OBSERVER_LIST, true>
+    : std::type_identity<
+          mtl::rebind_t<without_disabled_features_t<typename TABLE::entries, OBSERVER_LIST>,
+                        transition_table>> {};
+
+} // namespace internal
+
+template<concepts::transition_table TABLE, typename OBSERVER_LIST = mtl::nil_type>
+using enabled_table_t = typename internal::enabled_table<TABLE, OBSERVER_LIST>::type;
+
+namespace internal {
+
 // Whether STATE can reach a wildcard for EVENT: an unguarded own entry
 // always fires first and overrides it
 template<typename TABLE, typename STATE, typename EVENT>
@@ -315,8 +342,9 @@ struct member_of {
 // The checks on a parent_contexts declaration, each a trait so a
 // failing one can be asked per state: only a composite has a child to
 // inherit; the child inherits what the machine holds (CONTEXTS: the
-// machine's own and inherited contexts); and some state below declares
-// every inherited type - one nobody uses is a dead declaration
+// machine's own and inherited contexts); and some state of the
+// submachine declares every inherited type - one nobody uses is a dead
+// declaration
 template<typename STATE>
 struct parent_contexts_on_composite
     : std::bool_constant<!declares_parent_contexts<STATE> || composite<STATE>> {};
@@ -365,41 +393,51 @@ struct inherited_contexts<nested<TABLE, DEPTH, INHERITED>> : std::type_identity<
 template<typename TABLE>
 using inherited_contexts_t = typename inherited_contexts<TABLE>::type;
 
-// The number of machine levels below a state: none for a plain state,
-// the levels of its submachine for a composite one
+// The number of machine levels a state's submachine spans: none for a
+// plain state, the levels of its submachine table for a composite one
 template<typename TABLE>
 struct levels;
 
 template<typename STATE>
-struct levels_below : std::integral_constant<std::size_t, 0> {};
+struct submachine_levels : std::integral_constant<std::size_t, 0> {};
 
 template<composite STATE>
-struct levels_below<STATE> : levels<submachine_t<STATE>> {};
+struct submachine_levels<STATE> : levels<submachine_t<STATE>> {};
 
 template<typename... STATEs>
-constexpr std::size_t maxLevelsBelow(mtl::typelist<STATEs...>)
+constexpr std::size_t deepestSubmachine(mtl::typelist<STATEs...>)
 {
-    return std::max({std::size_t{0}, levels_below<STATEs>::value...});
+    return std::max({std::size_t{0}, submachine_levels<STATEs>::value...});
 }
 
 template<typename TABLE>
 struct levels
-    : std::integral_constant<std::size_t, 1 + maxLevelsBelow(typename TABLE::states{})> {};
+    : std::integral_constant<std::size_t, 1 + deepestSubmachine(typename TABLE::states{})> {};
 
-// TABLE and every table nested below it, TABLE first
-template<typename TABLE>
+// TABLE and every submachine table nested in it, TABLE first, each as
+// the observers enable it (OBSERVER_LIST: an mtl::typelist of them, or
+// mtl::nil_type for every state in view)
+template<typename TABLE, typename OBSERVER_LIST>
 struct nested_tables;
 
-template<typename STATE>
-struct tables_below : std::type_identity<mtl::typelist<>> {};
+// The tables of a state's submachine - the submachine's own and those
+// of the composites inside it; none for a plain state
+template<typename OBSERVER_LIST>
+struct submachine_tables_for {
+    template<typename STATE>
+    struct of : std::type_identity<mtl::typelist<>> {};
 
-template<composite STATE>
-struct tables_below<STATE> : nested_tables<submachine_t<STATE>> {};
+    template<composite STATE>
+    struct of<STATE>
+        : nested_tables<enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>, OBSERVER_LIST> {};
+};
 
-template<typename TABLE>
+template<typename TABLE, typename OBSERVER_LIST>
 struct nested_tables
     : std::type_identity<mtl::unique_t<mtl::prepend_t<
-          TABLE, mtl::linearize_t<mtl::transform_t<typename TABLE::states, tables_below>>>>> {};
+          TABLE, mtl::linearize_t<mtl::transform_t<
+                     typename TABLE::states, submachine_tables_for<OBSERVER_LIST>::template of>>>>> {
+};
 
 template<typename TABLE>
 struct states_of : std::type_identity<typename TABLE::states> {};
@@ -417,38 +455,43 @@ template<concepts::transition_table TABLE>
 inline constexpr std::size_t levels_v = internal::levels<TABLE>::value;
 
 // TABLE followed by every sub-table it nests, recursively, each once:
-// what a table-wide proof walks when it has to cover the whole machine
-template<concepts::transition_table TABLE>
-using nested_tables_t = typename internal::nested_tables<TABLE>::type;
+// what a table-wide proof walks when it has to cover the whole machine.
+// With the machine's observers as an mtl::typelist, every level is the
+// table that machine runs (enabled_table_t); without, every state is
+// in view
+template<concepts::transition_table TABLE, typename OBSERVER_LIST = mtl::nil_type>
+using nested_tables_t =
+    typename internal::nested_tables<enabled_table_t<TABLE, OBSERVER_LIST>, OBSERVER_LIST>::type;
 
-// The states of TABLE and of every table nested below it, in that order
-template<concepts::transition_table TABLE>
-using all_states_t =
-    mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE>, internal::states_of>>;
+// The states of TABLE and of every submachine table nested in it, in
+// that order
+template<concepts::transition_table TABLE, typename OBSERVER_LIST = mtl::nil_type>
+using all_states_t = mtl::linearize_t<
+    mtl::transform_t<nested_tables_t<TABLE, OBSERVER_LIST>, internal::states_of>>;
 
 // Every event any level of the machine reacts to, each once: the
 // alternatives of a queued machine's event storage
-template<concepts::transition_table TABLE>
+template<concepts::transition_table TABLE, typename OBSERVER_LIST = mtl::nil_type>
 using nested_events_t = mtl::unique_t<
-    mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE>, internal::events_of_table>>>;
+    mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE, OBSERVER_LIST>, internal::events_of_table>>>;
 
 namespace internal {
 
-// The contexts declared anywhere below a composite state: what its
-// child can usefully inherit
+// The contexts declared by the states of a composite's submachine, at
+// any level: what its child can usefully inherit
 template<typename STATE>
-struct contexts_below : std::type_identity<mtl::typelist<>> {};
+struct submachine_contexts : std::type_identity<mtl::typelist<>> {};
 
 template<composite STATE>
-struct contexts_below<STATE>
+struct submachine_contexts<STATE>
     : std::type_identity<mtl::unique_t<mtl::linearize_t<
           mtl::transform_t<all_states_t<submachine_t<STATE>>, contexts_of>>>> {};
 
 template<typename STATE>
-struct parent_contexts_declared_below
+struct parent_contexts_declared_in_submachine
     : std::bool_constant<
           mtl::all_of_v<parent_contexts_t<STATE>,
-                        member_of<typename contexts_below<STATE>::type>::template pred>> {};
+                        member_of<typename submachine_contexts<STATE>::type>::template pred>> {};
 
 } // namespace internal
 

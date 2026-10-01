@@ -18,12 +18,12 @@ traced, so `tools/fsmview` shows the whole thing live.
 | Internal transitions | `emergency` counts readings finishing while stopped, in place |
 | Sub state machine as an observer | `LedController` picks the `led_pattern` element of each state's annotation set and runs the LED machine (led.hpp) |
 | Annotation sets, value observers with per-element change suppression | states carry `fsm::annotate(led_pattern, sensor_power)`; `LedController` and `PowerRail` consume one element each through their `notifyEntry` overloads; each annotation lives on the level where it changes - the sub-states of `measuring` carry the LED pattern, `measuring` itself the power rail, so the rail is notified once per measurement and the LED per attempt; `LedDriver` observes the LED machine's `lit` member (`observe_static`) |
-| Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; `sensor_table<OBSERVERs...>` is the full list minus every feature none of the injected observers enables (`fsm::remove_disabled_features_t`; `CONFIG_SAMPLE_CALIBRATION`) |
+| Feature enabled by an observer, tagged | `calibrating` declares `using feature = calibration_feature`, `Calibrator` declares `using enables = calibration_feature`; the machine runs `sensor_table` minus every feature none of its injected observers enables, submachines included (`fsm::enabled_table_t`; `CONFIG_SAMPLE_CALIBRATION`) |
 | Explicit initial state, timeouts, wildcard sharing | `led_table`; `fsm::timed` on both machines; the button's `any_state` transition changes the state through one shared body; `fsm::timed`'s one-state hooks and the value observers' entries run once (a pattern or rail level is re-notified there), their exits and the tracer's line use the edge and pay one body per source |
 | Tracing | `mtl::zephyr::TraceLogger` on both machines, module `mtl_fsm` |
-| The machine in one declaration, queued, on a shared workqueue | both machines are `mtl::zephyr::StateMachineOnSharedWorkqueue`: each brings its timeout timer and its event buffer, and both drain on one `mtl::zephyr::WorkQueue<2048, 5> fsm_queue` handed over after the table (the plain `mtl::zephyr::StateMachine` owns a thread each). `monitor` names its table with `table_for<sensor::sensor_table>` because the table is a template over the deduced observers; the LED machine is a class member, where deduction is unavailable, so its table and observers are named. The button ISR, the `k_timer` expiries, the sensor's work items on the system workqueue and `LedController` from inside the sensor machine's hook all just `process()` - the observers report through `reportReading()` and friends instead of holding a machine pointer |
+| The machine in one declaration, queued, on a shared workqueue | both machines are `mtl::zephyr::StateMachineOnSharedWorkqueue`: each brings its timeout timer and its event buffer, and both drain on one `mtl::zephyr::WorkQueue<2048, 5> fsm_queue` handed over after the table (the plain `mtl::zephyr::StateMachine` owns a thread each). `monitor` names its table with `table<sensor::sensor_table>` and deduces the observers; the LED machine is a class member, where deduction is unavailable, so its table and observers are named. The button ISR, the `k_timer` expiries, the sensor's work items on the system workqueue and `LedController` from inside the sensor machine's hook all just `process()` - the observers report through `reportReading()` and friends instead of holding a machine pointer |
 
-The tables (`sensor_table<OBSERVERs...>`, filtered by the observers, and `led_table`) are
+The tables (`sensor_table`, `measuring_table` and `led_table`) are
 Zephyr-free headers, so the graph generator builds them on the host.
 
 ## Build
@@ -34,14 +34,14 @@ west build -b nucleo_g474re modules/mtl/zephyr/samples/sensor -- -DCONFIG_SAMPLE
 ```
 
 The second form leaves the calibrator out: no observer enables the
-feature, so the machine is built on `sensor_table`, which has no
-`calibrating` state at all. Boards without `led0` or `sw0` run without
-the LED driver or the emergency stop.
+feature, so the machine runs `sensor_table` without its `calibrating`
+state and the entries touching it. Boards without `led0` or `sw0` run
+without the LED driver or the emergency stop.
 
 ## Watch it live
 
 ```sh
-west build -t dot        # sensor_table.dot (the configured variant), measuring_table.dot, led_table.dot in build/
+west build -t dot        # sensor_table.dot (every feature in view), measuring_table.dot, led_table.dot in build/
 west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/
 ```
 
