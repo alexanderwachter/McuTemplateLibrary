@@ -144,4 +144,69 @@ template<typename OBSERVER, typename TABLE, typename EXCEPTIONS = mtl::typelist<
 inline constexpr bool all_states_notified_v =
     all_states_notified<OBSERVER, TABLE, EXCEPTIONS>::value;
 
+namespace internal {
+
+template<typename T, typename EXCEPTIONS>
+struct carrying_unless {
+    template<typename STATE>
+    struct pred : std::bool_constant<carrying<T>::template pred<STATE>::value ||
+                                     mtl::has_a_v<EXCEPTIONS, STATE>> {};
+};
+
+// Every event REQUIRED_EVENTS<STATE>::type names has a transition
+// from STATE in TABLE - the state's own table, a sub-state's row
+// counts only there
+template<typename TABLE, template<typename> typename REQUIRED_EVENTS>
+struct handles_required_in {
+    template<typename STATE>
+    struct handled_by {
+        template<typename EVENT>
+        struct pred : handles_event<TABLE, STATE, EVENT> {};
+    };
+
+    template<typename STATE>
+    struct pred : std::bool_constant<mtl::all_of_v<typename REQUIRED_EVENTS<STATE>::type,
+                                                   handled_by<STATE>::template pred>> {};
+};
+
+template<template<typename> typename REQUIRED_EVENTS>
+struct table_handles_required {
+    template<typename TABLE>
+    struct pred : std::bool_constant<mtl::all_of_v<
+                      typename TABLE::states,
+                      handles_required_in<TABLE, REQUIRED_EVENTS>::template pred>> {};
+};
+
+} // namespace internal
+
+// Proves every state of the table, sub-tables included, carries the
+// annotation T - in its static set or its instance values - so an
+// observer consuming T hears about every entry. States in EXCEPTIONS
+// may go without. One element at a time: a driver applying two
+// elements asks twice, and a state carrying only one of them fails
+// the other question (one observer accepting both would pass it)
+template<typename TABLE, typename T, typename EXCEPTIONS = mtl::typelist<>>
+struct all_states_carry
+    : std::bool_constant<mtl::all_of_v<all_states_t<TABLE>,
+                                       internal::carrying_unless<T, EXCEPTIONS>::template pred>> {
+};
+
+template<typename TABLE, typename T, typename EXCEPTIONS = mtl::typelist<>>
+inline constexpr bool all_states_carry_v = all_states_carry<TABLE, T, EXCEPTIONS>::value;
+
+// Proves every state handles the events it owes: REQUIRED_EVENTS<STATE>
+// ::type is the mtl::typelist of events STATE must have a transition
+// for in its own table (empty for a state owing nothing) - an
+// environment report the table would silently drop is a bug, a lost
+// detach at worst. Walks the sub-tables too, each state against its
+// own table
+template<concepts::transition_table TABLE, template<typename> typename REQUIRED_EVENTS>
+struct all_states_handle
+    : std::bool_constant<mtl::all_of_v<
+          nested_tables_t<TABLE>,
+          internal::table_handles_required<REQUIRED_EVENTS>::template pred>> {};
+
+template<concepts::transition_table TABLE, template<typename> typename REQUIRED_EVENTS>
+inline constexpr bool all_states_handle_v = all_states_handle<TABLE, REQUIRED_EVENTS>::value;
+
 } // namespace fsm

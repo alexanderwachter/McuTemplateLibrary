@@ -187,7 +187,8 @@
  *   Observing.hpp   annotation sets, fsm::observing
  *   Observer.hpp    the hook forms, their delivery, ObserverGroup
  *   Feature.hpp     features as tags and the filter removing one
- *   Traits.hpp      reachability, observer coverage
+ *   Traits.hpp      reachability, observer and annotation coverage,
+ *                   event coverage - the table-wide proofs
  *   Core.hpp        the state machine and its dispatch
  *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
  *                   through a bounded FIFO + WORK policy; QueuedTimer

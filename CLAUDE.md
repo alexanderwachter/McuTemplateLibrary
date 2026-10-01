@@ -276,7 +276,21 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   that are). Timer-range maps are still filtered by hand with
   `remove_disabled_features_t`. Origin: the USB-C firmware's `pe::`
   machinery. Tests: namespaces `Features` and `Nested` in
-  tests/statemachine.cpp.
+  tests/statemachine.cpp. `fsm::feature_enabler_t<TAG, OBSERVER_LIST>`
+  is the first observer enabling TAG either way (nil_type: none) -
+  how a facade finds the feature's voice.
+- Table-wide proofs a user asks (Traits.hpp), all walking the
+  sub-tables: `all_states_notified<OBSERVER, TABLE, EXCEPTIONS>`,
+  `all_states_carry<TABLE, T, EXCEPTIONS>` (every state carries the
+  annotation T - one element at a time, a probe observer per element
+  was the firmware's workaround), `all_states_handle<TABLE,
+  REQUIRED_EVENTS>` (every state has a transition for each event
+  `REQUIRED_EVENTS<STATE>::type` lists, in its own table - event
+  coverage: an environment report never silently dropped),
+  `all_states_reachable`, `timeouts_within_bounds`. Rule agreed with
+  the firmware (2026-10-01): a user of fsm never writes traits over
+  tables, states or observers to work around something missing here -
+  the trait is added here instead.
 - `fsm::writeDot<TABLE>(out, name)` writes `// table: <short name>` as
   the first line inside the digraph, writes node labels as HTML-like
   tables (`label=<<table ...>`, text HTML-escaped) with an `<hr/>` rule

@@ -747,6 +747,15 @@ namespace Features {
     static_assert(std::is_same_v<fsm::StateMachine<asked_table, bystander>::table, asked_table>);
     static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, mtl::typelist<answering_policy>>,
                                  asked_table>);
+    // the feature's voice among the observers, either way of enabling
+    static_assert(std::is_same_v<
+                  fsm::feature_enabler_t<swap_feature, mtl::typelist<bystander, swap_policy>>,
+                  swap_policy>);
+    static_assert(std::is_same_v<fsm::feature_enabler_t<vconn_feature, mtl::typelist<bystander>>,
+                                 mtl::nil_type>);
+    static_assert(std::is_same_v<fsm::feature_enabler_t<asked_swap_feature,
+                                                        mtl::typelist<bystander, answering_policy>>,
+                                 answering_policy>);
 } // namespace Features
 
 namespace SharedWildcard {
@@ -1108,6 +1117,25 @@ struct level_watcher : fsm::observing<level_watcher> {
 using nested_machine = fsm::StateMachine<outer_table, recorder, level_watcher>;
 static_assert(nested_machine::depth == 0);
 static_assert(std::is_same_v<nested_machine::table, outer_table>);
+
+// annotation completeness per element, sub-states included
+static_assert(fsm::all_states_carry_v<inner_table, lamp>);
+static_assert(!fsm::all_states_carry_v<outer_table, power>); // done, low and high carry none
+static_assert(fsm::all_states_carry_v<outer_table, power, mtl::typelist<done, low, high>>);
+
+// event coverage: every state handles the events it owes in its own table
+template<typename STATE>
+struct owes_tick : std::type_identity<mtl::typelist<>> {};
+template<>
+struct owes_tick<low> : std::type_identity<mtl::typelist<tick>> {};
+template<>
+struct owes_tick<high> : std::type_identity<mtl::typelist<tick>> {}; // a guarded row counts
+static_assert(fsm::all_states_handle_v<outer_table, owes_tick>);
+template<typename STATE>
+struct owes_stop : std::type_identity<mtl::typelist<>> {};
+template<>
+struct owes_stop<low> : std::type_identity<mtl::typelist<stop>> {}; // the parent's row is not low's
+static_assert(!fsm::all_states_handle_v<outer_table, owes_stop>);
 
 // a composite without a timeout of its own: the table is timed through its child
 struct wrapper {

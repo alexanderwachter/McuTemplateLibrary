@@ -92,11 +92,30 @@ struct observer_answers_for<TAG, OBSERVER> : std::true_type {};
 template<typename TAG, typename OBSERVER>
 inline constexpr bool observer_answers_for_v = observer_answers_for<TAG, OBSERVER>::value;
 
+namespace internal {
+
+// An observer enabling TAG, by declaring it or by answering its guard
+template<typename TAG>
+struct enabling {
+    template<typename OBSERVER>
+    struct pred : std::bool_constant<observer_enables_v<OBSERVER, TAG> ||
+                                     observer_answers_for_v<TAG, OBSERVER>> {};
+};
+
+} // namespace internal
+
 // Whether any of the observers enables TAG: by declaring it, or by
 // answering the guard it is enabled by
 template<typename TAG, typename... OBSERVERs>
 inline constexpr bool feature_enabled_v =
-    (observer_enables_v<OBSERVERs, TAG> || ...) || (observer_answers_for_v<TAG, OBSERVERs> || ...);
+    (internal::enabling<TAG>::template pred<OBSERVERs>::value || ...);
+
+// The first of the observers (an mtl::typelist) enabling TAG,
+// mtl::nil_type when none does: how a facade finds the object that is
+// the feature's voice, to hold it to the feature's contract or hand
+// it the hardware
+template<typename TAG, mtl::concepts::typelist OBSERVER_LIST>
+using feature_enabler_t = mtl::find_if_t<OBSERVER_LIST, internal::enabling<TAG>::template pred>;
 
 // A feature following a compile-time condition rather than an
 // observer's own say - a policy answering a guard, a configuration
