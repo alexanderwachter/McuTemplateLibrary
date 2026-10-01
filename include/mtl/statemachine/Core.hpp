@@ -159,9 +159,12 @@ private:
                   "StateMachine: an annotation of a composite state may not recur in its "
                   "submachine - annotate at the level where the value changes");
 
+    // The child of STATE: its sub-table one level down, with the
+    // contexts STATE lends it
     template<typename STATE>
     using submachine_of =
-        StateMachine<internal::nested<internal::submachine_t<STATE>, StateMachine::depth + 1>,
+        StateMachine<internal::nested<internal::submachine_t<STATE>, StateMachine::depth + 1,
+                                      internal::parent_contexts_t<STATE>>,
                      OBSERVERs...>;
 
     template<typename STATE>
@@ -174,21 +177,60 @@ private:
         std::conditional_t<StateMachine::has_composites, submachine_variant, mtl::nil_type>;
 
 public:
-    // Every context type any state declares, deduplicated: states naming
-    // the same type share one instance
-    using context_types = mtl::unique_t<
-        mtl::linearize_t<mtl::transform_t<typename TRANSITIONS::states, internal::contexts_of>>>;
-    using context_tuple = mtl::rebind_t<context_types, std::tuple>;
+    // The contexts this machine holds: the ones lent by the composite
+    // state above (inherited_contexts - references to the parent's
+    // instances, the parent's lifetime) and every other type its
+    // states declare (own_contexts - one instance each, this machine's
+    // lifetime). States naming the same type share one instance
+    using inherited_contexts = internal::inherited_contexts_t<TRANSITION_TABLE>;
+    using own_contexts =
+        mtl::remove_if_t<internal::table_contexts_t<TRANSITIONS>,
+                         internal::member_of<inherited_contexts>::template pred>;
+    using context_types = mtl::concat_t<own_contexts, inherited_contexts>;
 
-    static_assert(mtl::all_of_v<context_types, std::is_default_constructible>,
+private:
+    using own_context_tuple = mtl::rebind_t<own_contexts, std::tuple>;
+    using lent_context_tuple =
+        mtl::rebind_t<mtl::transform_t<inherited_contexts, std::add_lvalue_reference>, std::tuple>;
+    using context_tuple =
+        decltype(std::tuple_cat(own_context_tuple{}, std::declval<lent_context_tuple>()));
+
+    static_assert(mtl::all_of_v<own_contexts, std::is_default_constructible>,
                   "StateMachine: context types must be default constructible");
     static_assert(mtl::all_of_v<typename TRANSITIONS::states, internal::context_constructible>,
                   "StateMachine: a state must be constructible from its declared contexts "
                   "alone, in their order (default constructible without any)");
 
+    // What a composite state lends its child it must hold itself, and
+    // some state below must declare it; a plain state has no child to
+    // lend to
+    static_assert(mtl::all_of_v<typename TRANSITIONS::states, internal::lender_is_composite>,
+                  "StateMachine: parent_contexts is declared by a state without a submachine");
+    static_assert(mtl::all_of_v<composites, internal::lends_from<context_types>::template pred>,
+                  "StateMachine: a composite state lends a context its machine does not hold - "
+                  "a state of this table declares it, or the composite above lends it");
+    static_assert(mtl::all_of_v<composites, internal::lent_contexts_declared_below>,
+                  "StateMachine: a composite state lends a context no state of its submachine "
+                  "(or of the tables below it) declares");
+
 public:
     explicit StateMachine(OBSERVERs&... observers)
         : observers_(observers...),
+          current_(std::make_from_tuple<state_variant>(
+              internal::initialArgs<initial_state>(contexts_)))
+    {
+        this->beginProcessing();
+        this->template enter<mtl::nil_type, initial_state>();
+        this->template enterSubmachine<initial_state>();
+        this->endProcessing();
+    }
+
+    // A child machine, built by its parent: the contexts the composite
+    // state lends are references into the parent, behind this machine's
+    // own instances. A machine with inherited contexts has no other
+    // constructor
+    StateMachine(lent_context_tuple const& lent, OBSERVERs&... observers)
+        : contexts_(std::tuple_cat(own_context_tuple{}, lent)), observers_(observers...),
           current_(std::make_from_tuple<state_variant>(
               internal::initialArgs<initial_state>(contexts_)))
     {
@@ -295,7 +337,7 @@ public:
     template<typename T>
     [[nodiscard]] T const& context() const
     {
-        return std::get<T>(contexts_);
+        return internal::contextOf<T>(contexts_);
     }
 
     // The child machine of the composite state STATE while STATE is
@@ -569,8 +611,19 @@ private:
     void construct(ARGs const&... args)
     {
         [&]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
-            current_.template emplace<NEW_STATE>(args..., std::get<CONTEXTs>(contexts_)...);
+            current_.template emplace<NEW_STATE>(args...,
+                                                 internal::contextOf<CONTEXTs>(contexts_)...);
         }(internal::contexts_of_t<NEW_STATE>{});
+    }
+
+    // The references a composite state STATE hands its child: this
+    // machine's instances of the lent types, own or inherited in turn
+    template<typename STATE>
+    auto lentContexts()
+    {
+        return [this]<typename... LENTs>(mtl::typelist<LENTs...>) {
+            return std::tie(internal::contextOf<LENTs>(contexts_)...);
+        }(internal::parent_contexts_t<STATE>{});
     }
 
     // Innermost first: a composite's child is left before the state itself
@@ -594,17 +647,19 @@ private:
     // Entering a composite state constructs its child machine, after the
     // state's own entry and transition hooks ran: the child's initial
     // state is entered by the child's constructor, hooks included, so a
-    // trace reads parent line, then child line. Leaving a composite
-    // state leaves the child's active state through the child's private
-    // leave path - its exit hooks, then the destruction - before the
-    // state's own exit hooks
+    // trace reads parent line, then child line. The child receives the
+    // lent contexts by reference - they live in this machine, which
+    // outlives the child. Leaving a composite state leaves the child's
+    // active state through the child's private leave path - its exit
+    // hooks, then the destruction - before the state's own exit hooks
     template<typename STATE>
     void enterSubmachine()
     {
         if constexpr (internal::composite<STATE>) {
             std::apply(
                 [this](auto&... observer) {
-                    sub_.template emplace<submachine_of<STATE>>(observer...);
+                    sub_.template emplace<submachine_of<STATE>>(
+                        this->template lentContexts<STATE>(), observer...);
                 },
                 observers_);
         }
@@ -670,7 +725,7 @@ private:
 #endif
     }
 
-    context_tuple contexts_{}; // one shared instance per distinct context type
+    context_tuple contexts_{}; // one instance per own context type, then the lent references
     std::tuple<OBSERVERs&...> observers_;
 #if MTL_FSM_CHECKS
     bool processing_ = false;

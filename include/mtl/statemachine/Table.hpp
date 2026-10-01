@@ -277,21 +277,72 @@ using submachine_t = typename submachine<STATE>::type;
 template<typename STATE>
 struct is_composite : std::bool_constant<composite<STATE>> {};
 
+// Every context type the states of TABLE declare, deduplicated, in
+// order of first appearance
+template<typename TABLE>
+using table_contexts_t =
+    mtl::unique_t<mtl::linearize_t<mtl::transform_t<typename TABLE::states, contexts_of>>>;
+
+// A composite state lends contexts of its own machine to its
+// submachine:
+//   using parent_contexts = mtl::typelist<line_status>;
+// A sub-state declaring a lent type binds to the parent machine's
+// instance instead of a fresh one - the same lifetime as the parent's;
+// every other context type of the sub-table is the child's own, fresh
+// on each entry of the composite. A lent type the submachine does not
+// use itself may be lent further down by a composite of the sub-table
+template<typename STATE>
+concept context_lender = requires { typename STATE::parent_contexts; } &&
+                         mtl::concepts::typelist<typename STATE::parent_contexts>;
+
+template<typename STATE>
+struct parent_contexts_of : std::type_identity<mtl::typelist<>> {};
+
+template<context_lender STATE>
+struct parent_contexts_of<STATE> : std::type_identity<typename STATE::parent_contexts> {};
+
+template<typename STATE>
+using parent_contexts_t = typename parent_contexts_of<STATE>::type;
+
+// Membership of a list, as a predicate
+template<typename LIST>
+struct member_of {
+    template<typename T>
+    struct pred : std::bool_constant<mtl::has_a_v<LIST, T>> {};
+};
+
+// The checks on a lending state, each a trait so a failing one can be
+// asked per state: only a composite lends; it lends what its machine
+// holds (CONTEXTS: the machine's own and inherited contexts); and what
+// it lends, some state below it declares - a lent type nobody uses is
+// a dead declaration
+template<typename STATE>
+struct lender_is_composite : std::bool_constant<!context_lender<STATE> || composite<STATE>> {};
+
+template<typename CONTEXTS>
+struct lends_from {
+    template<typename STATE>
+    struct pred : std::bool_constant<mtl::all_of_v<parent_contexts_t<STATE>,
+                                                   member_of<CONTEXTS>::template pred>> {};
+};
+
 // The table a parent machine builds its child machine from: the
 // sub-table itself plus the child's nesting depth (the root is 0),
-// which the timer observers use to pick their timer slot. Every
-// user-facing alias (StateMachine::table, trace names, validate)
-// sees the plain table
-template<concepts::transition_table TABLE, std::size_t DEPTH>
+// which the timer observers use to pick their timer slot, and the
+// contexts the composite lends it. Every user-facing alias
+// (StateMachine::table, trace names, validate) sees the plain table
+template<concepts::transition_table TABLE, std::size_t DEPTH,
+         mtl::concepts::typelist INHERITED = mtl::typelist<>>
 struct nested : TABLE {
     static constexpr std::size_t depth = DEPTH;
+    using inherited_contexts            = INHERITED;
 };
 
 template<typename TABLE>
 struct plain_table : std::type_identity<TABLE> {};
 
-template<typename TABLE, std::size_t DEPTH>
-struct plain_table<nested<TABLE, DEPTH>> : std::type_identity<TABLE> {};
+template<typename TABLE, std::size_t DEPTH, typename INHERITED>
+struct plain_table<nested<TABLE, DEPTH, INHERITED>> : std::type_identity<TABLE> {};
 
 template<typename TABLE>
 using plain_table_t = typename plain_table<TABLE>::type;
@@ -299,8 +350,18 @@ using plain_table_t = typename plain_table<TABLE>::type;
 template<typename TABLE>
 inline constexpr std::size_t table_depth_v = 0;
 
-template<typename TABLE, std::size_t DEPTH>
-inline constexpr std::size_t table_depth_v<nested<TABLE, DEPTH>> = DEPTH;
+template<typename TABLE, std::size_t DEPTH, typename INHERITED>
+inline constexpr std::size_t table_depth_v<nested<TABLE, DEPTH, INHERITED>> = DEPTH;
+
+// The contexts a machine inherits from its parent: none for a root
+template<typename TABLE>
+struct inherited_contexts : std::type_identity<mtl::typelist<>> {};
+
+template<typename TABLE, std::size_t DEPTH, typename INHERITED>
+struct inherited_contexts<nested<TABLE, DEPTH, INHERITED>> : std::type_identity<INHERITED> {};
+
+template<typename TABLE>
+using inherited_contexts_t = typename inherited_contexts<TABLE>::type;
 
 // The number of machine levels below a state: none for a plain state,
 // the levels of its submachine for a composite one
@@ -368,5 +429,25 @@ using all_states_t =
 template<concepts::transition_table TABLE>
 using nested_events_t = mtl::unique_t<
     mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE>, internal::events_of_table>>>;
+
+namespace internal {
+
+// The contexts declared anywhere below a composite state: what it may
+// usefully lend
+template<typename STATE>
+struct contexts_below : std::type_identity<mtl::typelist<>> {};
+
+template<composite STATE>
+struct contexts_below<STATE>
+    : std::type_identity<mtl::unique_t<mtl::linearize_t<
+          mtl::transform_t<all_states_t<submachine_t<STATE>>, contexts_of>>>> {};
+
+template<typename STATE>
+struct lent_contexts_declared_below
+    : std::bool_constant<
+          mtl::all_of_v<parent_contexts_t<STATE>,
+                        member_of<typename contexts_below<STATE>::type>::template pred>> {};
+
+} // namespace internal
 
 } // namespace fsm

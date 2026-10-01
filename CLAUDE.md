@@ -163,9 +163,25 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `internal::annotation_levels_exclusive` static_asserts that a
   composite's annotation type does not recur below it (a refining child
   would leave observers and query disagreeing). No history: entering a
-  composite restarts the child at its initial state; contexts are per
-  machine (a child's context is fresh on every entry); features are not
-  filtered inside sub-tables. Tests: namespace `Nested`.
+  composite restarts the child at its initial state. Contexts are per
+  machine - a child's own context is fresh on every entry - unless the
+  composite lends them: `using parent_contexts = mtl::typelist<T...>;`
+  on the composite (`internal::context_lender`, `parent_contexts_t`;
+  never on a sub-state, which must stay usable at a root). The lent
+  list rides on the nesting wrapper (`internal::nested<TABLE, DEPTH,
+  INHERITED>`, `inherited_contexts_t`); the child's
+  `inherited_contexts` are held as references in its context tuple
+  behind its `own_contexts` (declared minus inherited; `context_types`
+  = own ++ inherited), `internal::contextOf<T>(tuple)` resolves either
+  (`holds_lent_context`), and the parent constructs the child through
+  the second constructor `StateMachine(lent_context_tuple const&,
+  OBSERVERs&...)` with `lentContexts<STATE>()` - a std::tie of its own
+  resolved instances, so a middle machine lends on what it inherited.
+  Static checks per composite: `lender_is_composite`, `lends_from<
+  context_types>` (the parent holds it), `lent_contexts_declared_below`
+  (some state of the sub-table or the tables below declares it).
+  Features are not filtered inside sub-tables. Tests: namespace
+  `Nested`.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine
@@ -289,6 +305,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   annotation type recurs in its submachine -> static_assert; a
   `fsm::timed`/`deadlined` with fewer levels than `fsm::levels_v<table>`
   -> static_assert from its validate
+- `parent_contexts` on a state without a submachine, lending a type
+  the machine does not hold, or lending a type no state below declares
+  -> static_assert
 
 - `fsm::any_state` in `from<>` matches every state and is the last
   alternative: `transitions_for` is the exact (FROM, EVENT) group

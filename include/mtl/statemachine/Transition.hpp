@@ -85,6 +85,28 @@ inline constexpr bool payload_constructible_v =
 template<typename STATE>
 struct context_constructible : constructible_with<STATE, contexts_of_t<STATE>> {};
 
+// Whether a machine's context tuple holds T as a reference into the
+// parent machine (a lent context) rather than as an own instance
+template<typename T, typename CONTEXT_TUPLE>
+struct holds_lent_context;
+
+template<typename T, typename... ELEMENTs>
+struct holds_lent_context<T, std::tuple<ELEMENTs...>>
+    : std::disjunction<std::is_same<T&, ELEMENTs>...> {};
+
+// The instance of context type T in a machine's context tuple: an own
+// instance held by value, or the parent machine's behind the lent
+// reference
+template<typename T, typename CONTEXT_TUPLE>
+constexpr auto& contextOf(CONTEXT_TUPLE& contexts)
+{
+    if constexpr (holds_lent_context<T, std::remove_cv_t<CONTEXT_TUPLE>>::value) {
+        return std::get<T&>(contexts);
+    } else {
+        return std::get<T>(contexts);
+    }
+}
+
 // Arguments constructing STATE in place inside a variant: the
 // in_place tag and its contexts. The tuple round-trip through
 // make_from_tuple is free: its prvalue is elided into the variant
@@ -93,7 +115,7 @@ template<typename STATE, typename CONTEXT_TUPLE>
 constexpr auto initialArgs(CONTEXT_TUPLE& contexts)
 {
     return [&]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
-        return std::forward_as_tuple(std::in_place_type<STATE>, std::get<CONTEXTs>(contexts)...);
+        return std::forward_as_tuple(std::in_place_type<STATE>, contextOf<CONTEXTs>(contexts)...);
     }(contexts_of_t<STATE>{});
 }
 
