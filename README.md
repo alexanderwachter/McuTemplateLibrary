@@ -115,7 +115,9 @@ whether a transition fired.
   different types, so a state resets one by assignment and declares
   only what it touches.
 - **Features as tags.** A state declares `using feature = tag;`, an
-  observer `using enables = tag;` (or a typelist of tags). The machine
+  observer `using enables = tag;` (or a typelist of tags) - or the tag
+  declares `using enabled_by = guard;` and whoever answers that guard
+  question enables it. The machine
   runs its table minus every feature no injected observer enables -
   the tagged states and every entry touching them, `initial<>`
   included - at every level of a hierarchy, so the table shrinks with

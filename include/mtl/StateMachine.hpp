@@ -112,7 +112,12 @@
  *
  * Optional features: a state declaring `using feature = TAG;` belongs
  * to the feature TAG, and an observer declaring `using enables = TAG;`
- * (or an mtl::typelist of tags) switches it on. The machine runs the
+ * (or an mtl::typelist of tags) switches it on - or the tag declares
+ * `using enabled_by = GUARD;` and any injected object answering that
+ * guard (check(GUARD)) switches it on: the feature's states ask the
+ * question, whoever answers brings them in. fsm::feature_switch<
+ * fsm::enabled<TAG, CONDITION>...> is an observer enabling tags by
+ * compile-time conditions, for configuration symbols. The machine runs the
  * table minus every feature none of its injected observers enables -
  * the tagged states and every entry touching them, initial<> included
  * (then the next entry's source leads) - and a child machine filters

@@ -706,6 +706,47 @@ namespace Features {
     static_assert(std::is_same_v<for_bystander::transitions, mtl::typelist<plain_self>>);
     // the machine filters by its own observers and keeps the table's name
     static_assert(std::is_same_v<fsm::StateMachine<full_table, bystander>::table, full_table>);
+
+    // a switch enables the tags whose condition holds, nothing else
+    using swap_only = fsm::feature_switch<fsm::enabled<swap_feature, true>,
+                                          fsm::enabled<vconn_feature, false>>;
+    static_assert(std::is_same_v<swap_only::enables, mtl::typelist<swap_feature>>);
+    static_assert(fsm::observer_enables_v<swap_only, swap_feature>);
+    static_assert(!fsm::observer_enables_v<swap_only, vconn_feature>);
+    static_assert(std::is_same_v<fsm::feature_switch<>::enables, mtl::typelist<>>);
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, mtl::typelist<swap_only>>,
+                                 full_table>);
+    static_assert(std::is_same_v<
+                  fsm::enabled_table_t<full_table, mtl::typelist<fsm::feature_switch<>>>::states,
+                  mtl::typelist<plain>>);
+
+    // a tag enabled by a guard: answering the question is what brings
+    // the feature in, declaring the tag still works too
+    struct swap_allowed {};
+    struct asked_swap_feature {
+        using enabled_by = swap_allowed;
+    };
+    struct answering_policy {
+        bool check(swap_allowed) { return true; }
+    };
+    struct asked_swapping {
+        using feature = asked_swap_feature;
+    };
+    static_assert(fsm::observer_answers_for_v<asked_swap_feature, answering_policy>);
+    static_assert(!fsm::observer_answers_for_v<asked_swap_feature, bystander>);
+    static_assert(!fsm::observer_answers_for_v<swap_feature, answering_policy>); // no enabled_by
+    static_assert(fsm::feature_enabled_v<asked_swap_feature, bystander, answering_policy>);
+    static_assert(!fsm::feature_enabled_v<asked_swap_feature, bystander>);
+    using asked_entries = mtl::typelist<
+        fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<asked_swapping>, fsm::guard<swap_allowed>>,
+        fsm::transition<fsm::from<asked_swapping>, fsm::on<go>, fsm::to<plain>>, plain_self>;
+    struct asked_table : mtl::rebind_t<asked_entries, fsm::transition_table> {};
+    // the guard on the removed row needs no answerer: the machine builds without one
+    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, mtl::typelist<bystander>>::transitions,
+                                 mtl::typelist<plain_self>>);
+    static_assert(std::is_same_v<fsm::StateMachine<asked_table, bystander>::table, asked_table>);
+    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, mtl::typelist<answering_policy>>,
+                                 asked_table>);
 } // namespace Features
 
 namespace SharedWildcard {

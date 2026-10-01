@@ -245,7 +245,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   tool still resolves `any_state` for older logs).
 - Features as tags (Feature.hpp): a state declares `using feature =
   TAG;`, an observer `using enables = TAG;` (or an `mtl::typelist` of
-  tags). `fsm::observer_enables_v`, `state_in_feature_v`,
+  tags) - or the tag itself declares `using enabled_by = GUARD;` and
+  an injected object answering `check(GUARD)` enables it
+  (`observer_answers_for_v`; the firmware's swap features are enabled
+  by the policy answering `pr_swap_allowed` etc., nothing else
+  declared). `fsm::feature_switch<fsm::enabled<TAG, bool>...>` is an
+  observer enabling tags by conditions (`enabled_features_t` is its
+  list) - for config symbols and the firmware's compliance variants.
+  `fsm::observer_enables_v`, `state_in_feature_v`,
   `feature_enabled_v<TAG, OBSERVERs...>`; `remove_features_t<LIST,
   typelist<TAGs...>>` / `remove_feature_t` remove the tagged states'
   entries in one pass - transitions from/to, `initial<>` (the next

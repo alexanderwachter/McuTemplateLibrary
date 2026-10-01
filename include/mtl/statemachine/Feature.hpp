@@ -69,9 +69,62 @@ struct state_in_feature<STATE, TAG> : std::is_same<typename STATE::feature, TAG>
 template<typename STATE, typename TAG>
 inline constexpr bool state_in_feature_v = state_in_feature<STATE, TAG>::value;
 
-// Whether any of the observers enables TAG
+// A feature tag may carry its own condition: `using enabled_by =
+// GUARD;` - the feature is on when an injected object answers that
+// guard question (check(GUARD)). The rule a policy-driven feature
+// wants: the states ask the question, and whoever answers it brings
+// them in; nobody declares anything twice
+namespace internal {
+
+template<typename TAG>
+concept guard_enabled = requires { typename TAG::enabled_by; };
+
+} // namespace internal
+
+// Whether OBSERVER answers the guard TAG declares itself enabled by
+template<typename TAG, typename OBSERVER>
+struct observer_answers_for : std::false_type {};
+
+template<internal::guard_enabled TAG, typename OBSERVER>
+    requires concepts::answers_stateless_guard<OBSERVER, typename TAG::enabled_by>
+struct observer_answers_for<TAG, OBSERVER> : std::true_type {};
+
+template<typename TAG, typename OBSERVER>
+inline constexpr bool observer_answers_for_v = observer_answers_for<TAG, OBSERVER>::value;
+
+// Whether any of the observers enables TAG: by declaring it, or by
+// answering the guard it is enabled by
 template<typename TAG, typename... OBSERVERs>
-inline constexpr bool feature_enabled_v = (observer_enables_v<OBSERVERs, TAG> || ...);
+inline constexpr bool feature_enabled_v =
+    (observer_enables_v<OBSERVERs, TAG> || ...) || (observer_answers_for_v<TAG, OBSERVERs> || ...);
+
+// A feature following a compile-time condition rather than an
+// observer's own say - a policy answering a guard, a configuration
+// symbol: enabled<TAG, CONDITION> pairs the two, and feature_switch
+// is the observer declaring every tag whose condition holds, to be
+// injected next to the objects the condition is about
+template<typename TAG, bool CONDITION>
+struct enabled {
+    using tag                       = TAG;
+    static constexpr bool condition = CONDITION;
+};
+
+namespace internal {
+
+template<typename ENABLED>
+struct tag_if_enabled
+    : std::conditional<ENABLED::condition, mtl::typelist<typename ENABLED::tag>, mtl::typelist<>> {
+};
+
+} // namespace internal
+
+template<typename... ENABLEDs>
+using enabled_features_t = mtl::linearize_t<mtl::typelist<typename internal::tag_if_enabled<ENABLEDs>::type...>>;
+
+template<typename... ENABLEDs>
+struct feature_switch {
+    using enables = enabled_features_t<ENABLEDs...>;
+};
 
 namespace internal {
 
