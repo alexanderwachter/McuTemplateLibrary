@@ -173,7 +173,7 @@ struct LedDriver : fsm::observing<LedDriver> {
 // overload's type alone; declaring the type makes the machine check
 // that some state carries it
 struct LedController : fsm::observing<LedController> {
-    using observes = mtl::typelist<sensor::led_pattern>;
+    using observes = fsm::annotations<sensor::led_pattern>;
 
     // Called from inside the sensor machine's hook: the LED machine's
     // process() only queues, its own drain follows on the workqueue
@@ -212,7 +212,7 @@ struct AlarmPolicy {
 // reading -> retrying changes the LED but not the rail, so only the LED
 // is notified there
 struct PowerRail : fsm::observing<PowerRail> {
-    using observes = mtl::typelist<sensor::sensor_power>;
+    using observes = fsm::annotations<sensor::sensor_power>;
 
     void notifyEntry(sensor::sensor_power power)
     {

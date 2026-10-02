@@ -159,11 +159,22 @@ expecting the specific `static_assert` message - a class template's
   parser and its tests together.
 - DOT output (`StateMachineDot.hpp`, read by `fsmview.py` and
   `dotgen.py`): `// table: <short name>` as the first line inside the
-  digraph, edge ids `<from>__<event>__<to>__<index>`. `tests/dot.cpp`
-  pins the exact text.
-- Machine id = the table's short type name: tables are named structs
-  (`struct my_table : fsm::transition_table<...> {}`); an alias reads
-  `transition_table`, template instantiations read alike.
+  digraph, the graph's name as its visible title (`label`, `labelloc=t`),
+  edge ids `<from>__<event>__<to>__<index>`. `tests/dot.cpp` pins the
+  exact text.
+- Machine id = the table's short type name: the table a machine runs is
+  a named struct (`struct my_table : fsm::transition_table<...> {}`,
+  enforced by a static_assert in the machine); template instantiations
+  read alike. An unnamed `fsm::transition_table<...>` is a building
+  block: among another table's entries it stands for its own.
+- A template parameter is declared by its concept, internal traits and
+  predicates included (`concepts::state`, `event`, `guard`,
+  `guard_part`, `transition`, `transition_table`, `observer`,
+  `observer_list`, `context`, `annotation`, `feature_tag`,
+  `timer_range_entry`); a role without a concept gets one. `typename`
+  stays only where the language asks for it: a `concept` definition's
+  own parameters, a hook's `MACHINE` (probed while the machine class is
+  incomplete), and parameters taking any type.
 - Tables that a Zephyr sample wants graphed live in Zephyr-free headers
   so the host compiler can build the generator (`traffic_light.hpp`,
   `sensor.hpp`, `led.hpp`); kernel calls go behind a declared function.

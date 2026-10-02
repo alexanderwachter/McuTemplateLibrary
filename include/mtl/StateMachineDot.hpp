@@ -9,7 +9,9 @@
  * non-structural element by its type name), and a state's optional
  * static dot_note and dot_action strings. Every transition is one
  * labeled edge (guards in brackets), the initial state gets an entry
- * marker, and an any_state wildcard source is shown as a dashed node. A
+ * marker, a final state a double border, and an any_state wildcard
+ * source is shown as a dashed node. A state emitting an event to the
+ * machine above names it in its label. A
  * composite state names its submachine's table in its label; the
  * sub-table is a graph of its own (write it separately - tools/dotgen
  * finds every named table).
@@ -103,20 +105,26 @@ void writeDotAnnotations(std::ostream& out)
 }
 
 // The label is an HTML-like table so that a rule separates the
-// sections: the name, the timeout, the submachine, the annotation set,
-// the notes
+// sections: the name, the timeout, the submachine, the event the state
+// emits, the annotation set, the notes. A final state is drawn with a
+// double border
 template<typename STATE>
-void writeDotNode(std::ostream& out)
+void writeDotNode(std::ostream& out, bool final_state)
 {
     constexpr bool timed     = has_timeout_v<STATE>;
     constexpr bool nesting   = internal::composite<STATE>;
+    constexpr bool emitting  = internal::emitting<STATE>;
     constexpr bool annotated = internal::annotated<STATE>;
     constexpr bool noted     = requires { std::string_view{STATE::dot_note}; };
     constexpr bool acting    = requires { std::string_view{STATE::dot_action}; };
+    constexpr bool labelled  = timed || nesting || emitting || annotated || noted || acting;
 
     out << "    \"" << label<STATE>() << '"';
-    if constexpr (timed || nesting || annotated || noted || acting) {
-        out << " [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">";
+    if (labelled || final_state) {
+        out << " [";
+    }
+    if constexpr (labelled) {
+        out << "label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">";
         writeDotNameRow(out, label<STATE>());
         if constexpr (timed) {
             auto const ms = std::chrono::ceil<std::chrono::milliseconds>(STATE::timeout).count();
@@ -125,6 +133,10 @@ void writeDotNode(std::ostream& out)
         if constexpr (nesting) {
             out << "<hr/>";
             writeDotRow(out, "submachine " + std::string{label<submachine_t<STATE>>()});
+        }
+        if constexpr (emitting) {
+            out << "<hr/>";
+            writeDotRow(out, "emits " + std::string{label<emitted_t<STATE>>()});
         }
         if constexpr (annotated) {
             out << "<hr/>";
@@ -139,7 +151,16 @@ void writeDotNode(std::ostream& out)
         if constexpr (acting) {
             writeDotRow(out, std::string_view{STATE::dot_action});
         }
-        out << "</table>>]";
+        out << "</table>>";
+        if (final_state) {
+            out << ' ';
+        }
+    }
+    if (final_state) {
+        out << "peripheries=2";
+    }
+    if (labelled || final_state) {
+        out << ']';
     }
     out << ";\n";
 }
@@ -189,7 +210,7 @@ void writeDotEdge(std::ostream& out)
     out << "];\n";
 }
 
-template<typename STATES, typename TRANSITIONS>
+template<typename STATES, typename TRANSITIONS, typename FINAL_STATES>
 struct dot_writer;
 
 // One comment per composite state, naming the graph its child lives
@@ -203,13 +224,13 @@ void writeDotSubmachine(std::ostream& out)
     }
 }
 
-template<typename... STATEs, typename... TRANSITIONs>
-struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
+template<typename... STATEs, typename... TRANSITIONs, typename FINAL_STATES>
+struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>, FINAL_STATES> {
     static void writeSubmachines(std::ostream& out) { (writeDotSubmachine<STATEs>(out), ...); }
 
     static void write(std::ostream& out)
     {
-        (writeDotNode<STATEs>(out), ...);
+        (writeDotNode<STATEs>(out, mtl::has_a_v<FINAL_STATES, STATEs>), ...);
         [&out]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             (writeDotEdge<INDEXs, TRANSITIONs>(out), ...);
         }(std::index_sequence_for<TRANSITIONs...>{});
@@ -224,13 +245,16 @@ struct dot_writer<mtl::typelist<STATEs...>, mtl::typelist<TRANSITIONs...>> {
 template<concepts::transition_table TABLE>
 void writeDot(std::ostream& out, std::string_view name = "fsm")
 {
-    using writer  = internal::dot_writer<typename TABLE::states, typename TABLE::transitions>;
+    using writer  = internal::dot_writer<typename TABLE::states, typename TABLE::transitions,
+                                         typename TABLE::final_states>;
     using initial = mtl::front_t<typename TABLE::states>;
 
     out << "digraph \"" << name << "\" {\n"
         << "    // table: " << internal::label<TABLE>() << '\n';
     writer::writeSubmachines(out);
     out << "    rankdir=LR;\n"
+        << "    label=\"" << name << "\";\n"
+        << "    labelloc=t;\n"
         << "    node [shape=box, style=rounded];\n"
         << "    __initial [shape=point];\n";
     if constexpr (writer::uses_wildcard) {

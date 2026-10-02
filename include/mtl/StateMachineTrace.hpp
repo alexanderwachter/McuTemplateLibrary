@@ -16,9 +16,9 @@
  * before "fsm[" (a logger's timestamp and module prefix):
  *   fsm[<machine>] -> <state>                  initial state, on construction
  *   fsm[<machine>] <from> -(<event>)-> <to>    a fired transition
- * <machine> is the short name of the machine's transition table: give the
- * table a name (struct my_table : fsm::transition_table<...> {}) - an
- * alias reads "transition_table". <to> is internal_target when the state
+ * <machine> is the short name of the machine's transition table, the
+ * struct the machine is declared with (struct my_table :
+ * fsm::transition_table<...> {}). <to> is internal_target when the state
  * handled the event in place. The line names the real source of a
  * wildcard transition too: tracing uses the edge form of the transition
  * hook and pays one line body per possible source there. The
@@ -57,7 +57,7 @@ inline constexpr char const* transition_printf = MTL_FSM_TRACE_TRANSITION_PRINTF
 template<typename DERIVED>
 struct tracing {
     // Construction only
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
         requires std::is_same_v<OLD_STATE, mtl::nil_type>
     void onEnterFrom(MACHINE&)
     {
@@ -67,7 +67,8 @@ struct tracing {
         }
     }
 
-    template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
+    template<concepts::state FROM_STATE, concepts::event EVENT, concepts::state TO_STATE,
+             typename MACHINE>
     void onTransitionFrom(MACHINE&)
     {
         auto& self = static_cast<DERIVED&>(*this);

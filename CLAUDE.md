@@ -41,10 +41,39 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   "Transition" is the only name for a table entry - no "row" terminology.
   `fsm::internal_transition<from<S>, on<E>>` handles E in S in place via
   `S::handle(E const&)`; its `to` alias is `fsm::internal_target`.
-- Constrain template parameters with concepts wherever applicable; prefer
-  concepts over SFINAE. `fsm::concepts`: `state`, `guard_for<G, STATE>`
-  (precise guard contract), `transition`, `transition_role`,
-  `transition_table_entry`, `transition_table`, `timer`.
+- Concepts are the types of metaprogramming (the author's rule,
+  2026-10-02): every template parameter with a role is declared by its
+  concept - public traits, machine members, observer hooks, internal
+  traits and the predicates handed to mtl algorithms alike (a typed
+  predicate binds to an untyped `template<typename> typename`
+  parameter: host GCC 15.2, ARM GCC 12.2, clang 21.1). `fsm::concepts`:
+  `state`, `event`, `guard`, `guard_part` (a guard or `not_<guard>`),
+  `guard_for<G, STATE>` (precise guard contract), `transition`,
+  `transition_role`, `transition_table_entry`, `entry_or_table`,
+  `transition_table`, `observer`, `observer_list` (`fsm::observers<...>`
+  or `mtl::nil_type`), `context`, `annotation`, `feature_tag`,
+  `feature_condition`, `timer_range_entry`, `timed_by_or_timer_ranges`,
+  `timer`. A refining concept names what it refines (`composite`,
+  `emitting`, `featured`, `annotated`, `valued` start with
+  `concepts::state<STATE> &&`) so a specialization on it is more
+  constrained than a primary on `concepts::state`. `typename` stays
+  where the language asks for it: a `concept` definition's own
+  parameters; a hook's `MACHINE`/`ROOT` (probed while the machine class
+  is incomplete - a constraint reading its members would silently hide
+  the hook); parameters that take any type (`is_unnamed_table<T>`,
+  `member_of<LIST>::pred<T>`, `annotation_set<Ts...>` whose elements may
+  be references); and the context helpers in Transition.hpp that
+  `concepts::state` is defined from. A wrong guard is a failed
+  `concepts::guard_part` on `fsm::guard<...>` (was a static_assert in
+  the transition).
+- The lists an author writes have fsm names with the concept on their
+  arguments: `fsm::contexts<...>` (contexts, parent_contexts),
+  `fsm::annotations<...>` (an observer's `observes`), `fsm::events<...>`
+  (what a state owes), `fsm::observers<...>` (the observer list of
+  `enabled_table_t` / `feature_enabler_t`), `fsm::timer_ranges<...>` (a
+  timer-range map; takes other maps in place of their entries). All are
+  aliases of `mtl::typelist`. No generic `fsm::list`: a list that is
+  only a list stays `mtl::typelist`.
 - Optional `guard<G>` role (`mtl::count_if` allows 0 or 1; `transition::guard`
   is `mtl::nil_type` when absent). G is a question, a default-constructible
   class: answered by its own static `check(FROM const&, EVENT const&)`,
@@ -73,9 +102,19 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   optional `fsm::initial<STATE>` table role (0 or 1, anywhere in the pack,
   filtered out of `transitions` via `mtl::remove_if`) prepends STATE so it
   becomes the front/initial state; it must be a state of the table.
-  Give tables a name (`struct my_table : fsm::transition_table<...> {}`):
-  the short type name is the machine id in trace lines and DOT graphs, an
-  alias reads "transition_table". `StateMachine` exposes it as `table`.
+  The table a machine runs is a named struct (`struct my_table :
+  fsm::transition_table<...> {}`), enforced by a static_assert in the
+  machine (`internal::is_unnamed_table`, also for a `submachine`): the
+  short type name is the machine id in trace lines and DOT graphs and
+  stands for the table in every symbol. `StateMachine` exposes it as
+  `table`. An unnamed `fsm::transition_table<...>` among a table's
+  entries contributes its entries in place, to any depth
+  (`internal::declared_entries` / `entries_of`; `transition_table::
+  entries` is the flat list): shared transitions are written as unnamed
+  tables, user code needs no `mtl::typelist`, `concat_t`, `linearize_t`
+  or `rebind_t`. The unnamed table is matched by its arguments and never
+  instantiated by itself, so it runs no table check of its own (test
+  namespace `Composition`); a named struct is not accepted as an entry.
 - States are classes, constructed on entry and destroyed on exit: the
   constructor and destructor are the entry and exit hooks (no
   `onEntry()`/`onExit()` members - anything else on an edge is an
@@ -142,15 +181,22 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   table), constructs it in `enterSubmachine<STATE>` after the entry and
   transition hooks (constructor, `doTransition`, `changeShared`), and
   tears it down first thing in `leave<OLD, NEW>` via the child's private
-  `leaveCurrent()` - the active state left with `TO = nil_type`,
+  `leaveActiveState()` - the active state left with `TO = nil_type`,
   innermost first (`StateMachine` befriends all its specializations).
-  A root's destructor still runs no hooks. Dispatch step 0 in
-  `process`: a composite offers the event to `submachineOf<STATE>()`
-  first, `true` is `fired` without touching the parent, `false` falls
-  through to the own group and the wildcards. `fsm::is_local_event`
-  (`timeout`, `deadline`, user-specializable) never descends: the timed
-  observer injects an expiry into the machine it armed for, and a timed
-  sub-state would otherwise swallow the root's. `StateMachine::table` is
+  A root's destructor still runs no hooks. Dispatch: public `process`
+  is `react(event) != reaction::none`; `react` = `reactInSubmachine`
+  (the active composite's child `react`s first) then `reactInOwnTable`
+  (guarded, unguarded, wildcards). `internal::reaction {none, in_place,
+  state_entered}` is the child's answer to its parent. Every event
+  enters at the root, timer expiries included: `fsm::is_local_event`
+  (`timeout`, `deadline`, user-specializable) belongs to one level and
+  never descends from it, and a sub-state's expiry arrives decorated
+  once per level (`fsm::for_submachine<EVENT>`, `fsm::for_level_t<EVENT,
+  LEVEL>`); `internal::passedDown` strips one decoration per level, no
+  table names the decorated type so the machines on the way ignore it.
+  There is no parent link and no `processAt` (both tried 2026-10-01 and
+  dropped: the link had the child destroyed under its own call, the
+  level-addressed entry doubled the dispatch). `StateMachine::table` is
   the plain table (`plain_table_t`: trace names, DOT, validate see the
   user's type), `StateMachine::depth` the level. Observers' `validate`
   runs once at the root (`observersValidated`), the guard static_asserts
@@ -165,7 +211,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   would leave observers and query disagreeing). No history: entering a
   composite restarts the child at its initial state. Contexts are per
   machine - a child's own context is fresh on every entry - unless the
-  child inherits them: `using parent_contexts = mtl::typelist<T...>;`
+  child inherits them: `using parent_contexts = fsm::contexts<T...>;`
   on the composite (`internal::declares_parent_contexts`,
   `parent_contexts_t`; never on a sub-state, which must stay usable
   at a root). One word for it everywhere: the child *inherits*. The
@@ -184,22 +230,66 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `parent_contexts_declared_in_submachine` (some state of the
   sub-table or the submachines inside it declares it). Tests:
   namespace `Nested`.
+- Final states and emitted events (2026-10-01): `fsm::final<STATE>` is
+  a table entry like `initial<>` (`internal::is_final_role`,
+  `is_table_role`; `transition_table::final_states`,
+  `fsm::final_states_t`). Nothing leaves a final state: table
+  static_asserts (no transition from it, no submachine, not the
+  initial state, a state of the table), `transitions_for` is empty for
+  it and `wildcard_source_v` false - `from<any_state>` skips it.
+  `isFinished()` on the machine (forwarded by `QueuedMachine`). The
+  feature filter drops a `final<>` entry with its state
+  (`internal::refers_to_state_where`, formerly `entry_touching`).
+  Independent of that, any state of a submachine may declare `using
+  emits = EVENT;` (`internal::emitting`, `emitted_t`,
+  `fsm::emitted_events_t`): when a child's `react` answers
+  `state_entered`, the parent's `reactToEmittedEvent<COMPOSITE>` finds
+  the emitting state the child is in and runs `reactInOwnTable` with
+  the default-constructed event - own rows with their guards, then
+  wildcards, not offered back to the child. So the parent's table
+  decides whether the composite is left; an internal transition in the
+  emitting state does not emit again (`in_place`). Static checks in
+  the machine: the composite has a transition for every emitted event
+  (`emitted_events_taken_in`), the submachine's initial state emits
+  none (`submachine_starts_silent`), the event is default
+  constructible. The queued ring leaves emitted events out. Tests:
+  namespace `Final`. DOT: `peripheries=2` on a final state, an
+  "emits X" row.
+- Core.hpp readability pass (2026-10-01, on the author's request:
+  many comments = code not self-explaining): the table checks sit in
+  one block at the end of the class, names say what a function does
+  (`react*`, `fire`, `fireFirstAllowed`, `exitForFirstAllowed`,
+  `enterTargetOf`, `enterShared`, `forStateLeft`, `guardsHold`,
+  `partHolds`, `answerTo`). One measured limit: the visitor of the
+  active state must answer with ONE value (a reaction, or
+  `exited_for_wildcard + index`) - passing the wildcard index out
+  through a captured local cost +432 B on pd_drp.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine
   level (`internal::timer_slots`, `timer(level)`; the reference form
   `timed<TIMER&, N>` takes N caller-owned timers), armed in its
   `onEnter<STATE>` hook on slot `MACHINE::depth`, stopped in
-  `onExit<STATE>` when a timed state is left. The callback injects
-  `fsm::timeout` into the machine whose state was armed. Its
+  `onExit<STATE>` when a timed state is left. The expiry is
+  `fsm::timeout` for the slot's level and enters at the root
+  (`internal::processForLevel<EVENT, LEVELS>(root, level)` maps the
+  run-time slot to the decorated type): a one-level observer calls the
+  machine directly, one serving more levels remembers the root when
+  the root's initial state is entered (`timer_slots::rememberRoot`,
+  two pointers, `remembers_root`), and a timer policy declaring
+  `static constexpr bool delivered_by_owner = true` (`QueuedTimer`) is
+  armed with a null callback - its queue delivers. Its
   `validate<TABLE>()` static_asserts `LEVELS >= levels_v<TABLE>` and that
   every timed state of every level has an unguarded `fsm::timeout`
   transition in its own table. Place it before value observers so timers
   are armed before they are notified. `process()` is not re-entrant;
-  serialization is the policy user's job. `QueuedTimerBase` keeps the
-  armed callback/context and `deliver()`s them from the drain (one
-  channel per level, outer first); `QueuedMachine`'s ring takes
-  `nested_events_t`.
+  serialization is the policy user's job. `QueuedTimerBase` is only
+  the latch (`takeExpiry()`; the callback/context it used to keep are
+  gone, -8 B per channel): the drain's `deliverAny<EVENT>` takes the
+  first pending channel, outer level first, and calls
+  `processForLevel` on the root with the channel's index;
+  `QueuedMachine`'s ring takes `nested_events_t` minus the timer
+  events and the emitted events.
 - Observers are injected BY REFERENCE (`std::tuple<OBSERVERs&...>`) and
   must outlive the machine. Value observation lives in the
   `fsm::observing<DERIVED>` CRTP base: derived provides
@@ -226,7 +316,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   traits (`is_observed_v`, `is_notified_of_v`) include set elements and
   instance values.
   `observing::validate<TABLE>()` static_asserts that every type in an
-  optional `using observes = mtl::typelist<...>;` is carried by a state
+  optional `using observes = fsm::annotations<...>;` is carried by a state
   (`annotation_in_table_v`); no declaration, no check - the firmware
   hands the same observers to every machine it owns, so an automatic
   "notified of at least one state" rule is wrong there (tried, dropped).
@@ -281,18 +371,28 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   how a facade finds the feature's voice.
 - Table-wide proofs a user asks (Traits.hpp), all walking the
   sub-tables: `all_states_notified<OBSERVER, TABLE, EXCEPTIONS>`,
-  `all_states_carry<TABLE, T, EXCEPTIONS>` (every state carries the
-  annotation T - one element at a time, a probe observer per element
-  was the firmware's workaround), `all_states_handle<TABLE,
+  `all_states_carry<TABLE, T, EXCEPTIONS>` (the annotation T is in
+  force on every active path - one element at a time, a probe observer
+  per element was the firmware's workaround; over a hierarchy
+  (`internal::carried_throughout`, 2026-10-01) a composite carrying T
+  covers its whole submachine and a composite without T is covered by
+  its sub-states - before that a table with a composite could never
+  pass), `all_states_handle<TABLE,
   REQUIRED_EVENTS>` (every state has a transition for each event
   `REQUIRED_EVENTS<STATE>::type` lists, in its own table - event
   coverage: an environment report never silently dropped),
-  `all_states_reachable`, `timeouts_within_bounds`. Rule agreed with
+  `all_states_reachable` (per nested table, each from its own initial
+  state), `timeouts_within_bounds` / `deadlines_within_bounds` (over
+  `all_states_t`: a map entry may name a sub-state, a timed sub-state
+  needs one). Rule agreed with
   the firmware (2026-10-01): a user of fsm never writes traits over
   tables, states or observers to work around something missing here -
   the trait is added here instead.
 - `fsm::writeDot<TABLE>(out, name)` writes `// table: <short name>` as
-  the first line inside the digraph, writes node labels as HTML-like
+  the first line inside the digraph, titles the graph with `name`
+  (`label="<name>"; labelloc=t;` - visible in a rendered PNG/SVG, a
+  `<text>` directly in the graph's group that fsmview's node and edge
+  selectors do not touch), writes node labels as HTML-like
   tables (`label=<<table ...>`, text HTML-escaped) with an `<hr/>` rule
   between the sections name / timeout / annotation set / notes
   (Graphviz renders the rules as `<polygon>`s inside the node's `<g>`, so
@@ -417,8 +517,8 @@ the budget timeout on the parent, guarded alternatives, payload guard,
 sub-machine inside an `fsm::observing` observer (an orthogonal region
 driven by annotations, deliberately not a composite), the calibration feature
 present only when the `Calibrator` observer is injected -
-`CONFIG_SAMPLE_CALIBRATION`, table composed from typelists with
-`mtl::concat_t`/`mtl::rebind_t`). Build check from the firmware
+`CONFIG_SAMPLE_CALIBRATION`, the table a named struct deriving from the
+`sensor_transitions` alias of its unnamed table). Build check from the firmware
 workspace with the repo's own venv (`build-venv/`, git-ignored; never
 install into the user's venvs):
 ```
@@ -429,11 +529,15 @@ cd ~/Documents/Firmware/UsbTypeC && PATH=<repo>/build-venv/bin:$PATH <repo>/buil
 ## tools/dotgen
 `tools/dotgen/dotgen.py` (also `west fsm_dotgen`, registered through
 `zephyr/scripts/west-commands.yml`) crawls headers for named
-non-template tables (`struct X : ... fsm::transition_table<...>`, namespaces
-tracked, comments/strings blanked), generates a C++ program calling
+non-template tables (`struct X : ... fsm::transition_table<...>`, or
+`struct X : Y` where any scanned header declares `using Y =
+fsm::transition_table<...>` - `table_aliases`, `derives_from_table`;
+namespaces tracked, comments/strings blanked), generates a C++ program calling
 `fsm::writeDot` per table, builds it with the host compiler against
 `include/`, runs it: one `<table>.dot` per table. Templated tables are
-skipped with a hint; `--table NS::T<args>=name` renders instantiations.
+skipped with a hint; `--table NS::T<args>=name` renders instantiations,
+and naming a scanned table that way renames it (two tables sharing a
+struct name in different namespaces).
 Table headers must be host-compilable (the Zephyr sample keeps its table
 in `traffic_light.hpp` behind a declared `uptimeMs()`). The sample's
 `west build -t dot` target calls the script. Tests:

@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <mtl/statemachine/Table.hpp>
+
 #include <tuple>
 #include <utility>
 
@@ -16,7 +18,7 @@ namespace fsm {
 
 namespace internal {
 
-template<typename OBSERVER, typename TABLE>
+template<concepts::observer OBSERVER, concepts::transition_table TABLE>
 constexpr bool validated()
 {
     if constexpr (requires { OBSERVER::template validate<TABLE>(); }) {
@@ -60,7 +62,7 @@ concept has_transition = requires(OBSERVER observer, MACHINE& machine) {
 // An edge with a known source: the edge form when defined, else the
 // one-state form - of the state left for the exit, of the state
 // entered for the entry
-template<typename FROM, typename TO, typename OBSERVER, typename MACHINE>
+template<concepts::state FROM, concepts::state TO, concepts::observer OBSERVER, typename MACHINE>
 void exitHook(OBSERVER& observer, MACHINE& machine)
 {
     if constexpr (has_exit_from<OBSERVER, FROM, TO, MACHINE>) {
@@ -70,7 +72,7 @@ void exitHook(OBSERVER& observer, MACHINE& machine)
     }
 }
 
-template<typename FROM, typename TO, typename OBSERVER, typename MACHINE>
+template<concepts::state FROM, concepts::state TO, concepts::observer OBSERVER, typename MACHINE>
 void enterHook(OBSERVER& observer, MACHINE& machine)
 {
     if constexpr (has_enter_from<OBSERVER, FROM, TO, MACHINE>) {
@@ -80,7 +82,8 @@ void enterHook(OBSERVER& observer, MACHINE& machine)
     }
 }
 
-template<typename FROM, typename EVENT, typename TO, typename OBSERVER, typename MACHINE>
+template<concepts::state FROM, concepts::event EVENT, concepts::state TO,
+         concepts::observer OBSERVER, typename MACHINE>
 void transitionHook(OBSERVER& observer, MACHINE& machine)
 {
     if constexpr (has_transition_from<OBSERVER, FROM, EVENT, TO, MACHINE>) {
@@ -97,12 +100,12 @@ void transitionHook(OBSERVER& observer, MACHINE& machine)
 // nonstatic observation per observer; a group bundles several such
 // observers so they can be injected into the machine as one, letting a
 // library predefine a cohesive set behind a single reference
-template<typename... OBSERVERs>
+template<concepts::observer... OBSERVERs>
 class ObserverGroup {
 public:
     explicit ObserverGroup(OBSERVERs&... members) : members_(members...) {}
 
-    template<typename TABLE>
+    template<concepts::transition_table TABLE>
     static constexpr void validate()
     {
         static_assert((internal::validated<OBSERVERs, TABLE>() && ...));
@@ -111,14 +114,14 @@ public:
     // The From forms forward the source to each member's preferred form;
     // a plain form exists only when every member has it, so a member
     // asking for the source is never left without one
-    template<typename FROM, typename TO, typename MACHINE>
+    template<concepts::state FROM, concepts::state TO, typename MACHINE>
     void onExitFrom(MACHINE& machine)
     {
         std::apply([&machine](auto&... member) { (internal::exitHook<FROM, TO>(member, machine), ...); },
                    members_);
     }
 
-    template<typename TO, typename MACHINE>
+    template<concepts::state TO, typename MACHINE>
         requires(internal::has_exit<OBSERVERs, TO, MACHINE> && ...)
     void onExit(MACHINE& machine)
     {
@@ -126,14 +129,14 @@ public:
                    members_);
     }
 
-    template<typename FROM, typename TO, typename MACHINE>
+    template<concepts::state FROM, concepts::state TO, typename MACHINE>
     void onEnterFrom(MACHINE& machine)
     {
         std::apply([&machine](auto&... member) { (internal::enterHook<FROM, TO>(member, machine), ...); },
                    members_);
     }
 
-    template<typename TO, typename MACHINE>
+    template<concepts::state TO, typename MACHINE>
         requires(internal::has_enter<OBSERVERs, TO, MACHINE> && ...)
     void onEnter(MACHINE& machine)
     {
@@ -141,7 +144,7 @@ public:
                    members_);
     }
 
-    template<typename FROM, typename EVENT, typename TO, typename MACHINE>
+    template<concepts::state FROM, concepts::event EVENT, concepts::state TO, typename MACHINE>
     void onTransitionFrom(MACHINE& machine)
     {
         std::apply(
@@ -151,7 +154,7 @@ public:
             members_);
     }
 
-    template<typename EVENT, typename TO, typename MACHINE>
+    template<concepts::event EVENT, concepts::state TO, typename MACHINE>
         requires(internal::has_transition<OBSERVERs, EVENT, TO, MACHINE> && ...)
     void onTransition(MACHINE& machine)
     {

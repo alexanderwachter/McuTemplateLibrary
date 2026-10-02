@@ -25,10 +25,11 @@
  * with one channel per machine level (fsm::timed<TIMER, LEVELS>).
  * The expiry callback (any context, ISRs included) only latches the
  * channel's pending flag and triggers WORK - the drain finds the flag
- * and delivers the callback the observer armed the channel with, to
- * the machine it armed it for: the root's fsm::timeout, or a
- * submachine's, which never passes the parent's dispatch. So timed
- * and deadlined work unchanged on top. The latch, not the
+ * and delivers the expiry itself, as the event for the channel's
+ * level: it enters at the root like every event (decorated for a
+ * level below, fsm::for_level_t), so a machine above sees what its
+ * submachine did with it. So timed and deadlined work unchanged on
+ * top. The latch, not the
  * FIFO, carries expiries: stop() and start() clear it, which retracts
  * a stale expiry exactly when the arming that produced it is gone (a
  * queued event that leaves a timed state stops the timer before the
@@ -102,33 +103,33 @@ struct no_lock {
     void unlock() {}
 };
 
-// One timer channel: the latch plus the callback it stands for, free
-// of the TIMER type. bind() and deliver() are the QueuedMachine's
+// One timer channel: the latch of one machine level's timer, free of
+// the TIMER type. bind() and takeExpiry() are the QueuedMachine's
 // wiring, not for users
 class QueuedTimerBase {
 public:
+    // The queue delivers the expiry itself, as the event for the
+    // channel's level: an observer's callback is not used
+    static constexpr bool delivered_by_owner = true;
+
     void bind(void* queue, work_callback notify)
     {
         queue_  = queue;
         notify_ = notify;
     }
 
-    // Deliver a pending expiry: true once per expiry, having run the
-    // callback the observer armed the channel with - the machine's
-    // process(fsm::timeout) or process(fsm::deadline), the machine
-    // being the level whose state was armed. Serialized context only.
-    // The latch is loaded and cleared, not exchanged: a new expiry
-    // needs a re-arm, which happens in this same context - nothing can
-    // set the latch between the two (and Cortex-M0-class cores inline
-    // atomic loads and stores but need a library call for
-    // read-modify-write)
-    bool deliver()
+    // Take a pending expiry: true once per expiry, which the queue
+    // then delivers. Serialized context only. The latch is loaded and
+    // cleared, not exchanged: a new expiry needs a re-arm, which
+    // happens in this same context - nothing can set the latch between
+    // the two (and Cortex-M0-class cores inline atomic loads and
+    // stores but need a library call for read-modify-write)
+    bool takeExpiry()
     {
         if (!pending_.load(std::memory_order_acquire)) {
             return false;
         }
         pending_.store(false, std::memory_order_relaxed);
-        callback_(context_);
         return true;
     }
 
@@ -138,10 +139,8 @@ public:
 protected:
     QueuedTimerBase() = default;
 
-    void* queue_             = nullptr;
-    work_callback notify_    = nullptr;
-    timer_callback callback_ = nullptr;
-    void* context_           = nullptr;
+    void* queue_          = nullptr;
+    work_callback notify_ = nullptr;
     std::atomic<bool> pending_{false};
 };
 
@@ -154,15 +153,13 @@ class QueuedTimer : public QueuedTimerBase {
 public:
     explicit QueuedTimer(TIMER& timer) : timer_(timer) {}
 
-    // The callback and context the observer arms with are kept for
-    // the drain: behind a queue the expiry is delivered from the
-    // serialized context, to the machine the observer armed for
-    void start(std::chrono::milliseconds duration, timer_callback callback, void* context)
+    // Behind a queue the expiry is delivered from the serialized
+    // context, by the queue (delivered_by_owner): the callback and
+    // context of the timer policy contract are not used
+    void start(std::chrono::milliseconds duration, timer_callback, void*)
     {
         timer_.stop(); // an expiry of the previous arming must not leak into this one
         pending_.store(false, std::memory_order_relaxed);
-        callback_ = callback;
-        context_  = context;
         timer_.start(duration, &QueuedTimer::expired, this);
     }
 
@@ -188,7 +185,7 @@ namespace internal {
 
 // Base-from-member: the owned timer exists before the QueuedTimer
 // referring to it
-template<typename TIMER>
+template<concepts::timer TIMER>
 struct timer_holder {
     TIMER platform_timer{};
 
@@ -213,14 +210,14 @@ public:
 
 namespace internal {
 
-template<typename OBSERVER>
+template<concepts::observer OBSERVER>
 struct is_timed_observer : std::false_type {};
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 struct is_timed_observer<timed<TIMER, LEVELS>> : std::true_type {};
 
-template<typename OBSERVER>
+template<concepts::observer OBSERVER>
 struct is_deadlined_observer : std::false_type {};
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 struct is_deadlined_observer<deadlined<TIMER, LEVELS>> : std::true_type {};
 
 // QueuedTimer<TIMER> or a class built on one (OwningQueuedTimer)
@@ -230,24 +227,24 @@ struct is_queued_timer : std::is_base_of<QueuedTimerBase, T> {};
 // A timed/deadlined observer in a queued machine must run on a
 // QueuedTimer - a raw platform timer would fire straight into the
 // machine, outside the queue
-template<typename OBSERVER>
+template<concepts::observer OBSERVER>
 struct queue_compatible : std::true_type {};
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 struct queue_compatible<timed<TIMER, LEVELS>> : is_queued_timer<std::remove_reference_t<TIMER>> {};
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 struct queue_compatible<deadlined<TIMER, LEVELS>>
     : is_queued_timer<std::remove_reference_t<TIMER>> {};
 
-template<typename OBSERVER>
+template<concepts::observer OBSERVER>
 inline constexpr bool queue_compatible_v = queue_compatible<OBSERVER>::value;
 
 // The channels a timer observer brings - one per machine level - and
 // none for any other observer
-template<typename OBSERVER>
+template<concepts::observer OBSERVER>
 inline constexpr std::size_t timer_channels_v = 0;
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 inline constexpr std::size_t timer_channels_v<timed<TIMER, LEVELS>> = LEVELS;
-template<typename TIMER, std::size_t LEVELS>
+template<concepts::timer TIMER, std::size_t LEVELS>
 inline constexpr std::size_t timer_channels_v<deadlined<TIMER, LEVELS>> = LEVELS;
 
 // Timer events never travel through the FIFO - expiries live in the
@@ -255,7 +252,7 @@ inline constexpr std::size_t timer_channels_v<deadlined<TIMER, LEVELS>> = LEVELS
 // delivery arms would duplicate the heaviest per-event dispatch
 // (every timed state and its guards), which the latch path already
 // instantiates (measured ~2.4 kB on the pd_drp sample)
-template<typename EVENT>
+template<concepts::event EVENT>
 struct is_timer_event
     : std::bool_constant<std::is_same_v<EVENT, timeout> || std::is_same_v<EVENT, deadline>> {};
 
@@ -265,17 +262,21 @@ struct is_timer_event
 // fsm::StateMachine, CAPACITY bounds the FIFO (expiries live in the
 // timer channels' latches and cannot overflow it), WORK runs the
 // drain, LOCK guards the FIFO against foreign-context process() calls
-template<typename TABLE, std::size_t CAPACITY, concepts::work_queue WORK = inline_work,
-         concepts::basic_lockable LOCK = no_lock, typename... OBSERVERs>
+template<concepts::transition_table TABLE, std::size_t CAPACITY,
+         concepts::work_queue WORK = inline_work, concepts::basic_lockable LOCK = no_lock,
+         concepts::observer... OBSERVERs>
 class QueuedMachine {
 public:
     using machine_type = StateMachine<TABLE, OBSERVERs...>;
     // Every level's events, disabled features left out: a submachine's
     // are processed at the root and descend. fsm::timeout and
-    // fsm::deadline enter through the latches, never the ring: the
-    // variant leaves them out
-    using queueable_events = mtl::remove_if_t<nested_events_t<TABLE, mtl::typelist<OBSERVERs...>>,
-                                              internal::is_timer_event>;
+    // fsm::deadline enter through the latches, never the ring, and an
+    // event a state emits is taken inside the machine, never from
+    // outside: the variant leaves them out
+    using queueable_events = mtl::remove_if_t<
+        mtl::remove_if_t<nested_events_t<TABLE, mtl::typelist<OBSERVERs...>>,
+                         internal::is_timer_event>,
+        internal::member_of<emitted_events_t<TABLE, mtl::typelist<OBSERVERs...>>>::template pred>;
     using event_variant =
         mtl::rebind_t<mtl::prepend_t<std::monostate, queueable_events>, std::variant>;
 
@@ -319,7 +320,7 @@ public:
     // size CAPACITY for the worst burst; true means fired or queued.
     // An event no transition of the table mentions is ignored, like
     // on the raw machine
-    template<typename EVENT>
+    template<concepts::event EVENT>
     bool process(EVENT const& event)
     {
         if constexpr (!mtl::has_a_v<queueable_events, EVENT>) {
@@ -330,31 +331,33 @@ public:
     }
 
     // Read-only views of the machine, as on fsm::StateMachine
-    template<typename STATE>
+    template<concepts::state STATE>
     [[nodiscard]] bool is() const
     {
         return machine_.template is<STATE>();
     }
 
-    template<typename STATE>
+    [[nodiscard]] bool isFinished() const { return machine_.isFinished(); }
+
+    template<concepts::state STATE>
     [[nodiscard]] STATE const* getIf() const
     {
         return machine_.template getIf<STATE>();
     }
 
-    template<typename T>
+    template<concepts::context T>
     [[nodiscard]] T const& context() const
     {
         return machine_.template context<T>();
     }
 
-    template<typename T>
+    template<concepts::annotation T>
     [[nodiscard]] std::optional<T> annotation() const
     {
         return machine_.template annotation<T>();
     }
 
-    template<typename STATE>
+    template<internal::composite STATE>
     [[nodiscard]] auto const* submachine() const
     {
         return machine_.template submachine<STATE>();
@@ -402,7 +405,7 @@ private:
         draining_ = true;
         while (true) {
             if constexpr (QueuedMachine::has_deadline) {
-                if (QueuedMachine::deliverAny(deadline_)) {
+                if (this->template deliverAny<deadline>(deadline_)) {
                     continue;
                 }
             }
@@ -421,7 +424,7 @@ private:
                 continue;
             }
             if constexpr (QueuedMachine::has_timeout) {
-                if (QueuedMachine::deliverAny(timeout_)) {
+                if (this->template deliverAny<timeout>(timeout_)) {
                     continue;
                 }
             }
@@ -430,14 +433,16 @@ private:
         draining_ = false;
     }
 
-    // The first pending channel of a kind delivers, outer level first:
-    // a parent's expiry leaving its composite state stops the child's
-    // slot, which retracts the child's pending expiry
-    template<std::size_t CHANNELS>
-    static bool deliverAny(std::array<QueuedTimerBase*, CHANNELS>& kind)
+    // The first pending channel of a kind delivers, outer level first
+    // (a parent's expiry leaving its composite state stops the child's
+    // slot, which retracts the child's pending expiry): the expiry
+    // enters the machine at the root as EVENT for the channel's level
+    template<concepts::event EVENT, std::size_t CHANNELS>
+    bool deliverAny(std::array<QueuedTimerBase*, CHANNELS>& kind)
     {
         for (std::size_t level = 0; level < CHANNELS; ++level) {
-            if (kind[level]->deliver()) {
+            if (kind[level]->takeExpiry()) {
+                internal::processForLevel<EVENT, CHANNELS>(machine_, level);
                 return true;
             }
         }
@@ -447,7 +452,7 @@ private:
     // Split so the ring bookkeeping is one shared body: only the
     // event's emplace stays with each per-event instantiation. The
     // lock is held from a successful acquire until the commit
-    template<typename EVENT>
+    template<concepts::event EVENT>
     bool enqueue(EVENT const& event)
     {
         event_variant* const slot = this->acquireSlot();
@@ -494,7 +499,7 @@ private:
     // The timed/deadlined observers are known types: their channels,
     // one per level, are bound to this queue before the machine (and
     // with it the initial state, which may arm them) is constructed
-    template<typename OBSERVER>
+    template<concepts::observer OBSERVER>
     void bindChannels(OBSERVER& observer)
     {
         if constexpr (internal::is_deadlined_observer<OBSERVER>::value) {
@@ -504,7 +509,7 @@ private:
         }
     }
 
-    template<typename OBSERVER, std::size_t CHANNELS>
+    template<concepts::observer OBSERVER, std::size_t CHANNELS>
     void bindLevels(OBSERVER& observer, std::array<QueuedTimerBase*, CHANNELS>& kind)
     {
         for (std::size_t level = 0; level < OBSERVER::levels; ++level) {

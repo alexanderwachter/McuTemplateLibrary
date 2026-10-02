@@ -13,11 +13,21 @@
 #include <mtl/Typelist.hpp>
 
 #include <concepts>
+#include <cstddef>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
 namespace fsm {
+
+namespace concepts {
+
+// An event is the plain type a table names in on<>: a value, never a
+// reference or a const one
+template<typename T>
+concept event = std::is_object_v<T> && std::same_as<T, std::remove_cv_t<T>>;
+
+} // namespace concepts
 
 // Matches every state in from<>; a state's own (state, event) group
 // replaces the wildcard group, even when all its guards refuse
@@ -32,11 +42,11 @@ struct timeout {};
 struct deadline {};
 
 // An event addressed to one machine: a composite state does not offer
-// it to its submachine. Timer expiries are - the observer arming the
-// timer injects them into the machine whose state it armed for, and a
-// timed sub-state (which always handles fsm::timeout) must not swallow
-// its parent's. Specialize for own events with the same nature
-template<typename EVENT>
+// it to its submachine. Timer expiries are - a state's timer is its
+// level's, and a timed sub-state (which always handles fsm::timeout)
+// must not swallow its parent's. Specialize for own events with the
+// same nature
+template<concepts::event EVENT>
 struct is_local_event : std::false_type {};
 
 template<>
@@ -45,14 +55,68 @@ struct is_local_event<timeout> : std::true_type {};
 template<>
 struct is_local_event<deadline> : std::true_type {};
 
-template<typename EVENT>
+template<concepts::event EVENT>
 inline constexpr bool local_event_v = is_local_event<EVENT>::value;
+
+// A local event of a machine further down, on its way through the
+// machines above: every event enters at the root, so a sub-state's
+// expiry is decorated once per level it lies below the root, and each
+// machine hands its submachine the event with one decoration less. No
+// table names the decorated type - the machines on the way do not
+// react to it themselves
+template<concepts::event EVENT>
+struct for_submachine {
+    using event = EVENT;
+};
+
+namespace internal {
+
+template<concepts::event EVENT, std::size_t LEVEL>
+struct for_level : for_level<for_submachine<EVENT>, LEVEL - 1> {};
+
+template<concepts::event EVENT>
+struct for_level<EVENT, 0> : std::type_identity<EVENT> {};
+
+// What a machine hands its submachine: the event as it is, or with
+// one decoration less
+template<concepts::event EVENT>
+constexpr EVENT const& passedDown(EVENT const& event)
+{
+    return event;
+}
+
+template<concepts::event EVENT>
+constexpr EVENT passedDown(for_submachine<EVENT> const&)
+{
+    return {};
+}
+
+} // namespace internal
+
+// EVENT for the machine at nesting depth LEVEL (the root is 0), as it
+// enters at the root: decorated LEVEL times
+template<concepts::event EVENT, std::size_t LEVEL>
+using for_level_t = typename internal::for_level<EVENT, LEVEL>::type;
+
+namespace concepts {
+
+// The machine owns one instance per context type and constructs it
+// by itself
+template<typename T>
+concept context = std::default_initializable<T>;
+
+} // namespace concepts
+
+// The context types a state declares for itself (contexts) or a
+// composite state for its submachine (parent_contexts)
+template<concepts::context... CONTEXTs>
+using contexts = mtl::typelist<CONTEXTs...>;
 
 namespace internal {
 
 // A state opts into machine-owned context by declaring the context
 // types it is constructed with, in order:
-//   using contexts = mtl::typelist<connection, negotiation>;
+//   using contexts = fsm::contexts<connection, negotiation>;
 // Its constructors take (event, connection&, negotiation&) when built
 // from an event and (connection&, negotiation&) otherwise, and keep
 // the references under names of the state's own choosing
@@ -130,84 +194,109 @@ template<typename T>
 concept state = std::is_class_v<T> &&
                 (std::default_initializable<T> || internal::context_holder<T>);
 
+// A guard is a question, named by a tag: a class the machine
+// constructs to pass to the injected object answering it, or one
+// answering itself with a static check. Which of the two it is, the
+// machine decides
+template<typename T>
+concept guard = std::is_class_v<T> && std::default_initializable<T>;
+
 } // namespace concepts
 
 template<concepts::state STATE>
 struct from {};
 
-template<typename EVENT>
+template<concepts::event EVENT>
 struct on {};
 
 template<concepts::state STATE>
 struct to {};
 
-// The row's condition: every part must hold, asked in order with
-// short-circuit; a part not_<G> holds when G does not. A disjunction
-// is another row of the same (state, event) pair
-template<typename... GUARDs>
-struct guard {};
-
-template<typename GUARD>
+// A part of a row's condition that holds when GUARD does not
+template<concepts::guard GUARD>
 struct not_ {};
+
+namespace internal {
+
+// The guard behind a part of a condition
+template<typename PART>
+struct guard_of : std::type_identity<PART> {};
+
+template<concepts::guard GUARD>
+struct guard_of<fsm::not_<GUARD>> : std::type_identity<GUARD> {};
+
+template<typename PART>
+using guard_of_t = typename guard_of<PART>::type;
+
+} // namespace internal
+
+namespace concepts {
+
+// A part of a row's condition: a guard, or not_<guard>
+template<typename T>
+concept guard_part = guard<internal::guard_of_t<T>>;
+
+} // namespace concepts
+
+// The row's condition: every part must hold, asked in order with
+// short-circuit. A disjunction is another row of the same (state,
+// event) pair
+template<concepts::guard_part... PARTs>
+struct guard {};
 
 template<concepts::state STATE>
 struct initial {};
 
+// Marks a state the machine ends in: nothing leaves it, not even a
+// from<any_state> transition. One entry per final state
+template<concepts::state STATE>
+struct final {};
+
 namespace internal {
 
-template<typename T> struct is_from : std::false_type {};
-template<typename S> struct is_from<fsm::from<S>> : std::true_type {};
+template<typename T>         struct is_from : std::false_type {};
+template<concepts::state S>  struct is_from<fsm::from<S>> : std::true_type {};
 
-template<typename T> struct is_on : std::false_type {};
-template<typename E> struct is_on<fsm::on<E>> : std::true_type {};
+template<typename T>         struct is_on : std::false_type {};
+template<concepts::event E>  struct is_on<fsm::on<E>> : std::true_type {};
 
-template<typename T> struct is_to : std::false_type {};
-template<typename S> struct is_to<fsm::to<S>> : std::true_type {};
+template<typename T>         struct is_to : std::false_type {};
+template<concepts::state S>  struct is_to<fsm::to<S>> : std::true_type {};
 
-template<typename T>     struct is_guard : std::false_type {};
-template<typename... Gs> struct is_guard<fsm::guard<Gs...>> : std::true_type {};
+template<typename T>                 struct is_guard : std::false_type {};
+template<concepts::guard_part... Gs> struct is_guard<fsm::guard<Gs...>> : std::true_type {};
 
-template<typename T> struct is_initial : std::false_type {};
-template<typename S> struct is_initial<fsm::initial<S>> : std::true_type {};
+template<typename T>         struct is_initial : std::false_type {};
+template<concepts::state S>  struct is_initial<fsm::initial<S>> : std::true_type {};
 
-template<typename T> struct unwrap;
-template<typename S> struct unwrap<fsm::from<S>>    { using type = S; };
-template<typename E> struct unwrap<fsm::on<E>>      { using type = E; };
-template<typename S> struct unwrap<fsm::to<S>>      { using type = S; };
-template<typename S> struct unwrap<fsm::initial<S>> { using type = S; };
-template<>           struct unwrap<mtl::nil_type>   { using type = mtl::nil_type; };
+template<typename T>         struct is_final_role : std::false_type {};
+template<concepts::state S>  struct is_final_role<fsm::final<S>> : std::true_type {};
+
+template<typename T>         struct unwrap;
+template<concepts::state S>  struct unwrap<fsm::from<S>>    { using type = S; };
+template<concepts::event E>  struct unwrap<fsm::on<E>>      { using type = E; };
+template<concepts::state S>  struct unwrap<fsm::to<S>>      { using type = S; };
+template<concepts::state S>  struct unwrap<fsm::initial<S>> { using type = S; };
+template<concepts::state S>  struct unwrap<fsm::final<S>>   { using type = S; };
+template<>                   struct unwrap<mtl::nil_type>   { using type = mtl::nil_type; };
 
 // Payload of the first role matching PREDICATE; nil_type if there is none
 template<mtl::concepts::typelist LIST, template<typename> typename PREDICATE>
 using find_role_t = typename unwrap<mtl::find_if_t<LIST, PREDICATE>>::type;
 
 // The guard role's parts as a list, empty without the role
-template<typename ROLE>  struct guard_parts { using type = mtl::typelist<>; };
-template<typename... Gs> struct guard_parts<fsm::guard<Gs...>> { using type = mtl::typelist<Gs...>; };
+template<typename ROLE>              struct guard_parts { using type = mtl::typelist<>; };
+template<concepts::guard_part... Gs> struct guard_parts<fsm::guard<Gs...>> { using type = mtl::typelist<Gs...>; };
 
 template<mtl::concepts::typelist ROLES>
 using guards_t = typename guard_parts<mtl::find_if_t<ROLES, is_guard>>::type;
 
-// A part is a guard, or not_<guard>: the guard behind it, and whether
-// its answer is inverted
-template<typename PART> struct guard_of : std::type_identity<PART> {};
-template<typename G>    struct guard_of<fsm::not_<G>> : std::type_identity<G> {};
+// Whether a part's answer is inverted
+template<concepts::guard_part PART> struct is_negated : std::false_type {};
+template<concepts::guard GUARD>     struct is_negated<fsm::not_<GUARD>> : std::true_type {};
 
-template<typename PART>
-using guard_of_t = typename guard_of<PART>::type;
-
-template<typename PART> struct is_negated : std::false_type {};
-template<typename G>    struct is_negated<fsm::not_<G>> : std::true_type {};
-
-template<typename PART>
+template<concepts::guard_part PART>
 inline constexpr bool is_negated_v = is_negated<PART>::value;
-
-// A guard is a tag: an empty class the machine passes to the injected
-// object answering it, or a class answering itself with a static
-// check. Which of the two it is, the machine decides
-template<typename PART>
-struct is_guard_tag : std::bool_constant<std::is_class_v<guard_of_t<PART>> &&
-                                         std::default_initializable<guard_of_t<PART>>> {};
 
 // Stand-in for any event in unevaluated contexts: validates a guard's
 // two-argument (state, event) form when the event type is unknown
@@ -286,7 +375,8 @@ concept transition = requires {
 };
 
 template<typename T>
-concept transition_table_entry = transition<T> || internal::is_initial<T>::value;
+concept transition_table_entry =
+    transition<T> || internal::is_initial<T>::value || internal::is_final_role<T>::value;
 
 template<typename T>
 concept transition_role = internal::is_from<T>::value || internal::is_on<T>::value ||
@@ -313,11 +403,6 @@ public:
     using event  = internal::find_role_t<roles, internal::is_on>;
     using to     = internal::find_role_t<roles, internal::is_to>;
     using guards = internal::guards_t<roles>; // the condition's parts, empty if unguarded
-
-private:
-    static_assert(mtl::all_of_v<guards, internal::is_guard_tag>,
-                  "transition: a guard must be a default-constructible class - a tag an "
-                  "injected object answers, or a static check of its own - or not_<one>");
 };
 
 // The to-alias of internal transitions: never a state of the table
@@ -347,14 +432,11 @@ public:
 private:
     static_assert(!std::is_same_v<from, any_state>,
                   "internal_transition: from<any_state> is not supported");
-    static_assert(mtl::all_of_v<guards, internal::is_guard_tag>,
-                  "internal_transition: a guard must be a default-constructible class - a tag "
-                  "an injected object answers, or a static check of its own - or not_<one>");
 };
 
 namespace internal {
 
-template<typename TRANSITION>
+template<concepts::transition TRANSITION>
 inline constexpr bool is_internal_v = std::is_same_v<typename TRANSITION::to, internal_target>;
 
 template<typename T>

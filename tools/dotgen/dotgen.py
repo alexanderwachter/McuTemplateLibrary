@@ -5,8 +5,9 @@
 
 """Write Graphviz DOT graphs of the fsm transition tables in a source tree.
 
-Scans headers for named tables (struct X : fsm::transition_table<...>,
-also through mtl::rebind_t), generates a C++ program that includes the
+Scans headers for named tables - struct X : fsm::transition_table<...>,
+or struct X : Y where a scanned header declares using Y =
+fsm::transition_table<...> - generates a C++ program that includes the
 headers and calls fsm::writeDot for every table, builds it with the host
 C++ compiler against the library headers, runs it, and writes one
 <table>.dot per table - the graphs tools/fsmview loads.
@@ -46,6 +47,10 @@ PRUNED_DIRS = {".git", ".west", "__pycache__", "node_modules", "dot"}
 STRUCT_RE = re.compile(r"\b(struct|class)\s+(\w+)\s*(?:final\s*)?:\s*([^{;]*?)\{", re.DOTALL)
 NAMESPACE_RE = re.compile(r"\bnamespace\s+((?:\w+(?:::)?)+|(?=\{))\s*\{")
 TEMPLATE_RE = re.compile(r"template\s*<[^;{]*>\s*$", re.DOTALL)
+# the alias of an unnamed table, which a named table may derive from
+TABLE_ALIAS_RE = re.compile(r"\busing\s+(\w+)\s*=\s*fsm::transition_table\s*<")
+TEMPLATE_ARGUMENTS_RE = re.compile(r"<[^<>]*>")
+BASE_KEYWORDS = {"public", "protected", "private", "virtual"}
 
 
 class Table:
@@ -63,10 +68,39 @@ def strip_code(text):
     return STRING_RE.sub(blank, COMMENT_RE.sub(blank, text))
 
 
-def find_tables(header):
+def table_aliases(header):
+    """The names a header gives to unnamed tables: using X =
+    fsm::transition_table<...>."""
+    text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
+    return set(TABLE_ALIAS_RE.findall(text))
+
+
+def base_names(bases):
+    """The class names of a base clause, without access specifiers,
+    namespaces and template arguments."""
+    while TEMPLATE_ARGUMENTS_RE.search(bases):
+        bases = TEMPLATE_ARGUMENTS_RE.sub("", bases)
+    names = []
+    for base in bases.split(","):
+        words = [word for word in re.findall(r"[\w:]+", base) if word not in BASE_KEYWORDS]
+        if words:
+            names.append(words[-1].split("::")[-1])
+    return names
+
+
+def derives_from_table(bases, aliases):
+    """Whether a base clause names fsm::transition_table itself or the
+    alias of an unnamed table."""
+    return "fsm::transition_table" in bases or any(name in aliases for name in base_names(bases))
+
+
+def find_tables(header, aliases=None):
     """Named concrete transition tables declared in a header, and
     whether a template table (only a --table instantiation can render
-    it) lives here."""
+    it) lives here. The aliases are the names of unnamed tables a table
+    may derive from; those of the header itself when none are given."""
+    if aliases is None:
+        aliases = table_aliases(header)
     text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
     tables = []
     templates = False
@@ -85,7 +119,7 @@ def find_tables(header):
             if namespace and namespace.end() == len(head):
                 stack.append((namespace.group(1), depth))
             elif struct and struct.end() == len(head):
-                if "fsm::transition_table" in struct.group(3):
+                if derives_from_table(struct.group(3), aliases):
                     before = text[:position + struct.start()]
                     if TEMPLATE_RE.search(before[-400:]):
                         line = before.count("\n") + 1
@@ -128,8 +162,10 @@ def scan(paths, say=lambda message: None):
                   file=sys.stderr)
     tables = []
     template_headers = []
+    # a table may derive from an alias another scanned header declares
+    aliases = set().union(*(table_aliases(header) for header in headers))
     for header in headers:
-        found, templates = find_tables(header.resolve())
+        found, templates = find_tables(header.resolve(), aliases)
         for table in found:
             say(f"dotgen: {table.header}:{table.line}: {table.qualified}")
             tables.append(table)
@@ -308,12 +344,19 @@ def run(args, say=print, fail=sys.exit):
     tables, given_headers, template_headers = scan(args.paths, say)
     for spec in args.table:
         qualified, _, name = spec.partition("=")
+        scanned = next((table for table in tables if table.qualified == qualified), None)
+        if scanned and name:
+            # a table the scan found, renamed: how two tables sharing a
+            # struct name in different namespaces are told apart
+            say(f"dotgen: --table: {qualified} as {name}")
+            scanned.name = name
+            continue
         table = Table(qualified, name or qualified.split("<")[0].split("::")[-1], None, 0)
         say(f"dotgen: --table: {table.qualified} as {table.name}")
         tables.append(table)
     if not tables:
         fail("dotgen: no transition table found (tables must be named structs deriving from "
-             "fsm::transition_table, declared in headers)")
+             "fsm::transition_table or from the alias of one, declared in headers)")
     names = {}
     for table in tables:
         if table.name in names:

@@ -30,10 +30,11 @@ struct busy { char const* text = "struct fake : fsm::transition_table<> {"; };
 struct plain_table : fsm::transition_table<
     fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>> {};
 
+using shared_transitions = fsm::transition_table<
+    fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>>;
+
 namespace inner::deep {
-class rebound_table final : public mtl::rebind_t<mtl::typelist<
-        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>>,
-    fsm::transition_table> {
+class aliased_table final : public app::shared_transitions {
 public:
     static constexpr int marker = 1;
 };
@@ -44,6 +45,7 @@ struct templated_table : fsm::transition_table<
     fsm::transition<fsm::from<STATE>, fsm::on<go>, fsm::to<busy>>> {};
 
 struct not_a_table : some_base<fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>> {};
+struct holds_an_alias : some_base<shared_transitions> {};
 
 } // namespace app
 
@@ -103,9 +105,9 @@ class Crawler(unittest.TestCase):
 
     def test_named_tables_with_their_namespaces(self):
         self.assertEqual([table.qualified for table in self.tables],
-                         ["app::plain_table", "app::inner::deep::rebound_table", "anonymous_table"])
+                         ["app::plain_table", "app::inner::deep::aliased_table", "anonymous_table"])
         self.assertEqual([table.name for table in self.tables],
-                         ["plain_table", "rebound_table", "anonymous_table"])
+                         ["plain_table", "aliased_table", "anonymous_table"])
 
     def test_template_is_skipped_with_a_hint(self):
         self.assertIn("template table 'templated_table' skipped", self.messages)
@@ -120,7 +122,7 @@ class Crawler(unittest.TestCase):
     def test_generator_names_every_table(self):
         source = dotgen.generator_source(self.tables, Path("/out"))
         self.assertIn(f'#include "{self.header}"', source)
-        self.assertIn('fsm::writeDot<app::inner::deep::rebound_table>(out, "rebound_table")', source)
+        self.assertIn('fsm::writeDot<app::inner::deep::aliased_table>(out, "aliased_table")', source)
         self.assertIn('std::ofstream out{"/out/anonymous_table.dot"}', source)
 
     def test_explicit_instantiation_includes_its_header(self):
@@ -137,6 +139,16 @@ class Crawler(unittest.TestCase):
     def test_scan_remembers_template_table_headers(self):
         _, _, template_headers = dotgen.scan([str(self.header)])
         self.assertEqual(template_headers, [self.header.resolve()])
+
+    def test_a_table_derives_from_an_alias_of_another_header(self):
+        named = Path(self.directory.name) / "named.hpp"
+        named.write_text('#include "tables.hpp"\n'
+                         "struct named_elsewhere : app::shared_transitions {};\n",
+                         encoding="utf-8")
+        alone, _ = dotgen.find_tables(named)
+        self.assertEqual(alone, [])
+        tables, _, _ = dotgen.scan([self.directory.name])
+        self.assertIn("named_elsewhere", [table.name for table in tables])
 
 
 class IncludeSearch(unittest.TestCase):

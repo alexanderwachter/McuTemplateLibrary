@@ -55,10 +55,19 @@ struct escaped {
 
 // a composite state: its sub-table is a graph of its own
 struct dive {};
+struct up {};
 struct shallow {};
 struct deep {};
+struct surfaced { // the submachine's end, told to the composite state
+    using emits = up;
+};
+struct lost {}; // an end without a word
 struct sub_table : fsm::transition_table<
-    fsm::transition<fsm::from<shallow>, fsm::on<go>, fsm::to<deep>>> {};
+    fsm::transition<fsm::from<shallow>, fsm::on<go>,   fsm::to<deep>>,
+    fsm::transition<fsm::from<deep>,    fsm::on<go>,   fsm::to<surfaced>>,
+    fsm::transition<fsm::from<deep>,    fsm::on<kill>, fsm::to<lost>>,
+    fsm::final<surfaced>,
+    fsm::final<lost>> {};
 struct diving {
     using submachine = sub_table;
     static constexpr auto timeout = 90ms;
@@ -75,7 +84,8 @@ struct example_table : fsm::transition_table<
     fsm::transition<fsm::from<escaped>, fsm::on<go>, fsm::to<off>,
                     fsm::guard<ready, fsm::not_<ready>>>,
     fsm::transition<fsm::from<off>, fsm::on<dive>, fsm::to<diving>>,
-    fsm::transition<fsm::from<diving>, fsm::on<fsm::timeout>, fsm::to<off>>> {};
+    fsm::transition<fsm::from<diving>, fsm::on<fsm::timeout>, fsm::to<off>>,
+    fsm::transition<fsm::from<diving>, fsm::on<up>, fsm::to<off>>> {};
 
 // the label strips namespaces, the type name keeps them (both from
 // mtl/TypeName.hpp)
@@ -104,6 +114,8 @@ int dotTests()
     // child's graph
     check(dot.starts_with("digraph \"example\" {\n    // table: example_table\n"
                           "    // submachine: diving sub_table\n    rankdir=LR;\n"));
+    // the graph's name is its title, visible in every rendering
+    check(dot.contains("    label=\"example\";\n    labelloc=t;\n"));
     // the composite's label carries its sub-table as a section of its own
     check(dot.contains("\"diving\" [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">"
                        "<tr><td><b><font point-size=\"16\">diving</font></b></td></tr><hr/>"
@@ -115,6 +127,14 @@ int dotTests()
     fsm::writeDot<sub_table>(sub, "sub");
     check(sub.str().starts_with("digraph \"sub\" {\n    // table: sub_table\n    rankdir=LR;\n"));
     check(sub.str().contains("\"shallow\" -> \"deep\" [label=\"go\" id=\"shallow__go__deep__0\"];"));
+    // a final state has a double border; an emitting state names its event
+    check(sub.str().contains(
+        "\"surfaced\" [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">"
+        "<tr><td><b><font point-size=\"16\">surfaced</font></b></td></tr>"
+        "<hr/><tr><td align=\"left\">emits up</td></tr></table>> peripheries=2];"));
+    check(sub.str().contains("    \"lost\" [peripheries=2];\n"));
+    check(sub.str().contains("    \"shallow\";\n"));
+    check(dot.contains("\"diving\" -> \"off\" [label=\"up\" id=\"diving__up__off__8\"];"));
     check(dot.contains("\"off\" -> \"running\" [label=\"go\\n[ready]\" id=\"off__go__running__0\"];"));
     // an HTML-like table: the name bold and larger, a rule between the
     // sections name / timeout / annotation set (type name for the

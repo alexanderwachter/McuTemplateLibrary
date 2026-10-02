@@ -9,7 +9,8 @@
  * state could do on an edge is an observer's job. The state set is derived
  * from the table;
  * an initial<STATE> table role picks the initial state (default: the first
- * state of the first transition).
+ * state of the first transition), a final<STATE> role marks a state the
+ * machine ends in (see "Final states" below).
  *
  * Events may carry payload: a target state constructible from the
  * triggering event is emplaced with it, any other target state is
@@ -25,7 +26,7 @@
  * alternatives; from<any_state> is not supported.
  *
  * States may keep data in machine-owned context that survives
- * transitions: a state declaring `using contexts = mtl::typelist<A,
+ * transitions: a state declaring `using contexts = fsm::contexts<A,
  * B>;` is constructed with references to the matching instances, in
  * that order - (event, A&, B&) when such a constructor exists, (A&, B&)
  * otherwise, which every context state must provide - and keeps them
@@ -79,9 +80,14 @@
  * does not - no row, or every guard refused - is tried against the
  * parent's own alternatives and then the wildcards. A local event
  * (fsm::is_local_event: fsm::timeout, fsm::deadline, own
- * specializations) is addressed to one machine and never descends -
- * the timer observers inject an expiry into the machine whose state
- * they armed. There is no history: a transition to a composite state
+ * specializations) belongs to one level and never descends from it.
+ * A sub-state's expiry enters at the root too, decorated once per
+ * level it lies below (fsm::for_level_t<EVENT, LEVEL>, one
+ * fsm::for_submachine<> per level), and each machine passes it to its
+ * submachine with one decoration less - no table names the decorated
+ * type, so the machines on the way do not react to it. The timer
+ * observers and the queued machine do the decorating.
+ * There is no history: a transition to a composite state
  * restarts its child at the child's initial state. The child is a
  * real StateMachine with the same observers, its `table` the
  * sub-table and its `depth` one more than the parent's; the parent's
@@ -97,7 +103,7 @@
  * (the lifetime of a phase: a retry budget, a debounce record). A
  * composite state names the contexts of its own machine that its
  * child inherits:
- *   using parent_contexts = mtl::typelist<line_status>;
+ *   using parent_contexts = fsm::contexts<line_status>;
  * the sub-states declaring an inherited type then bind to the parent
  * machine's instance - the parent's lifetime - and an inherited type
  * the sub-table does not declare itself may be inherited further down
@@ -109,6 +115,33 @@
  * named type (declared by a state of its table or inherited in turn),
  * and some state below declares it. A machine's `own_contexts` /
  * `inherited_contexts` spell the split; context<T>() answers for both.
+ *
+ * Final states: a table entry fsm::final<STATE> - next to
+ * fsm::initial<STATE>, one entry per state - marks a state the
+ * machine ends in. Nothing leaves it: no transition names it as its
+ * source, from<any_state> does not apply to it, it owns no submachine
+ * and is not the initial state. isFinished() says whether the machine
+ * rests in one. A finished root ignores every event from then on; a
+ * finished submachine refuses them, so they are the composite state's,
+ * and it is restarted when that state is entered again.
+ *
+ * Emitted events: a state of a submachine may declare
+ *   using emits = attempt_failed;
+ * and entering it hands that event - default-constructed - to the
+ * machine above: the composite state's own alternatives, guards
+ * included, then the wildcards; it is not offered back to the
+ * submachine. The parent's table thus decides whether the composite
+ * state is left - ending the submachine - or the submachine carries
+ * on. The event is taken once, in the run that entered the state (an
+ * internal transition in that state does not emit again), whatever
+ * brought the submachine there - an event from outside or its own
+ * timer. A final state that emits is the submachine's end with an
+ * outcome; a state that only emits reports on the way. Checked at
+ * compile time: the composite state has a transition for every event
+ * its submachine emits, and a submachine's initial state emits none.
+ * An emitted event is the submachine's own word: process() of a
+ * queued machine does not accept it from outside
+ * (fsm::emitted_events_t). At a root `emits` means nothing.
  *
  * Optional features: a state declaring `using feature = TAG;` belongs
  * to the feature TAG, and an observer declaring `using enables = TAG;`
@@ -137,6 +170,9 @@
  *   The observer holds one timer per machine level (a composite state
  *   and its active sub-state may both be timed): LEVELS defaults to 1,
  *   fsm::levels_v<table> covers a hierarchy, timer(level) reads a slot.
+ *   An expiry is the event for its slot's level and enters the machine
+ *   at the root; an observer serving more than one level remembers the
+ *   root for that when the root's initial state is entered.
  *
  * Observer contract: injected by reference, must outlive the machine.
  * Optional hooks, each detected by a requires-expression, run in observer

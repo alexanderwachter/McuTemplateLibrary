@@ -20,18 +20,27 @@
 
 namespace fsm {
 
+namespace concepts {
+
+// An annotation is keyed by its plain type: a value, never a
+// reference or a const one
+template<typename T>
+concept annotation = std::is_object_v<T> && std::same_as<T, std::remove_cv_t<T>>;
+
+} // namespace concepts
+
 namespace internal {
 
-template<typename OBSERVER, typename STATE>
+template<concepts::observer OBSERVER, concepts::state STATE>
 inline constexpr bool observes_v = requires { OBSERVER::template annotation<STATE>(); };
 
 // Whether STATE's annotation differs from OTHER's: an annotation OTHER
 // lacks, or of another type, always counts as a change; an unobserved
 // STATE never notifies
-template<typename OBSERVER, typename STATE, typename OTHER>
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
 struct annotation_changes : std::bool_constant<observes_v<OBSERVER, STATE>> {};
 
-template<typename OBSERVER, typename STATE, typename OTHER>
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
     requires observes_v<OBSERVER, STATE> && observes_v<OBSERVER, OTHER> &&
              std::same_as<decltype(OBSERVER::template annotation<STATE>()),
                           decltype(OBSERVER::template annotation<OTHER>())>
@@ -39,7 +48,7 @@ struct annotation_changes<OBSERVER, STATE, OTHER>
     : std::bool_constant<OBSERVER::template annotation<STATE>() !=
                          OBSERVER::template annotation<OTHER>()> {};
 
-template<typename OBSERVER, typename STATE, typename OTHER>
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
 inline constexpr bool annotation_changes_v = annotation_changes<OBSERVER, STATE, OTHER>::value;
 
 } // namespace internal
@@ -119,7 +128,7 @@ template<typename... Ts>
 struct is_annotation_set<annotation_set<Ts...>> : std::true_type {};
 
 template<typename STATE>
-concept annotated = requires {
+concept annotated = concepts::state<STATE> && requires {
     STATE::annotations;
     requires is_annotation_set<std::remove_cvref_t<decltype(STATE::annotations)>>::value;
 };
@@ -128,7 +137,7 @@ concept annotated = requires {
 // value, which instanceValues() wraps into a set (by reference when
 // values() returns a reference)
 template<typename STATE>
-concept valued = requires(STATE const& state) { state.values(); };
+concept valued = concepts::state<STATE> && requires(STATE const& state) { state.values(); };
 
 template<valued STATE>
 constexpr auto instanceValues(STATE const& state)
@@ -140,60 +149,60 @@ constexpr auto instanceValues(STATE const& state)
     }
 }
 
-template<typename STATE>
+template<concepts::state STATE>
 struct instance_types : std::type_identity<mtl::typelist<>> {};
 
 template<valued STATE>
 struct instance_types<STATE>
     : std::type_identity<typename decltype(instanceValues(std::declval<STATE const&>()))::types> {};
 
-template<typename STATE>
+template<concepts::state STATE>
 using instance_types_t = typename instance_types<STATE>::type;
 
-template<typename STATE, typename T>
+template<concepts::state STATE, typename T>
 inline constexpr bool has_value_v = mtl::has_a_v<instance_types_t<STATE>, std::remove_cvref_t<T>>;
 
 // The element types of a state's set, none for a state without one
-template<typename STATE>
+template<concepts::state STATE>
 struct annotation_types : std::type_identity<mtl::typelist<>> {};
 
 template<annotated STATE>
 struct annotation_types<STATE>
     : std::type_identity<typename std::remove_cvref_t<decltype(STATE::annotations)>::types> {};
 
-template<typename STATE>
+template<concepts::state STATE>
 using annotation_types_t = typename annotation_types<STATE>::type;
 
 // Lazy: the set is only named for annotated states (a plain && would
 // substitute both operands)
-template<typename STATE, typename T>
+template<concepts::state STATE, typename T>
 struct has_annotation : std::false_type {};
 
 template<annotated STATE, typename T>
 struct has_annotation<STATE, T>
     : std::bool_constant<std::remove_cvref_t<decltype(STATE::annotations)>::template has<T>> {};
 
-template<typename STATE, typename T>
+template<concepts::state STATE, typename T>
 inline constexpr bool has_annotation_v = has_annotation<STATE, T>::value;
 
 // Whether STATE's T element differs from OTHER's: an element OTHER lacks
 // always counts as a change, a state without the element never notifies
-template<typename T, typename STATE, typename OTHER>
+template<concepts::annotation T, concepts::state STATE, concepts::state OTHER>
 struct set_annotation_changes : std::bool_constant<has_annotation_v<STATE, T>> {};
 
-template<typename T, typename STATE, typename OTHER>
+template<concepts::annotation T, concepts::state STATE, concepts::state OTHER>
     requires has_annotation_v<STATE, T> && has_annotation_v<OTHER, T>
 struct set_annotation_changes<T, STATE, OTHER>
     : std::bool_constant<STATE::annotations.template get<T>() !=
                          OTHER::annotations.template get<T>()> {};
 
-template<typename T, typename STATE, typename OTHER>
+template<concepts::annotation T, concepts::state STATE, concepts::state OTHER>
 inline constexpr bool set_annotation_changes_v = set_annotation_changes<T, STATE, OTHER>::value;
 
 // Whether STATE's T element reaches one of OBSERVER's hooks
-template<typename OBSERVER, typename STATE>
+template<concepts::observer OBSERVER, concepts::state STATE>
 struct element_notified {
-    template<typename T>
+    template<concepts::annotation T>
     struct pred : std::bool_constant<requires(OBSERVER observer) {
                       observer.notifyEntry(STATE::annotations.template get<T>());
                   } || requires(OBSERVER observer) {
@@ -201,14 +210,14 @@ struct element_notified {
                   }> {};
 };
 
-template<typename OBSERVER, typename STATE>
+template<concepts::observer OBSERVER, concepts::state STATE>
 inline constexpr bool set_notified_v =
     mtl::any_of_v<annotation_types_t<STATE>, element_notified<OBSERVER, STATE>::template pred>;
 
 // Whether STATE's T value reaches one of OBSERVER's hooks
-template<typename OBSERVER, typename STATE>
+template<concepts::observer OBSERVER, concepts::state STATE>
 struct value_notified {
-    template<typename T>
+    template<concepts::annotation T>
     struct pred : std::bool_constant<requires(OBSERVER observer, STATE const& state) {
                       observer.notifyEntry(instanceValues(state).template get<T>());
                   } || requires(OBSERVER observer, STATE const& state) {
@@ -216,14 +225,14 @@ struct value_notified {
                   }> {};
 };
 
-template<typename OBSERVER, typename STATE>
+template<concepts::observer OBSERVER, concepts::state STATE>
 inline constexpr bool values_notified_v =
     mtl::any_of_v<instance_types_t<STATE>, value_notified<OBSERVER, STATE>::template pred>;
 
 // A state carrying T: as a static annotation or as an instance value
-template<typename T>
+template<concepts::annotation T>
 struct carrying {
-    template<typename STATE>
+    template<concepts::state STATE>
     struct pred : std::bool_constant<has_annotation_v<STATE, T> || has_value_v<STATE, T>> {};
 };
 
@@ -251,19 +260,19 @@ concept notified_of =
 // annotation T: an observer watching an annotation no state carries is
 // wired to nothing (the check fsm::observing runs for the types an
 // observer declares)
-template<typename TABLE, typename T>
+template<concepts::transition_table TABLE, concepts::annotation T>
 struct annotation_in_table
     : std::bool_constant<
           mtl::any_of_v<all_states_t<TABLE>, internal::carrying<T>::template pred>> {};
 
-template<typename TABLE, typename T>
+template<concepts::transition_table TABLE, concepts::annotation T>
 inline constexpr bool annotation_in_table_v = annotation_in_table<TABLE, T>::value;
 
 namespace internal {
 
-template<typename TABLE>
+template<concepts::transition_table TABLE>
 struct carried_in {
-    template<typename T>
+    template<concepts::annotation T>
     struct pred : annotation_in_table<TABLE, T> {};
 };
 
@@ -273,13 +282,13 @@ struct carried_in {
 // annotation<T>() query disagreeing - moving on to a sibling without T
 // re-notifies nothing, while the parent's T is still the active one
 // A composite state whose hierarchy carries T somewhere below it
-template<typename T>
+template<concepts::annotation T>
 struct nesting_carrier {
     template<composite STATE>
     struct pred : annotation_in_table<submachine_t<STATE>, T> {};
 };
 
-template<typename STATE>
+template<concepts::state STATE>
 struct annotation_levels_exclusive : std::true_type {};
 
 template<composite STATE>
@@ -289,12 +298,16 @@ struct annotation_levels_exclusive<STATE>
 
 } // namespace internal
 
+// The annotation types an observer declares it observes
+template<concepts::annotation... ANNOTATIONs>
+using annotations = mtl::typelist<ANNOTATIONs...>;
+
 // Value observer base: the derived class names the watched member once and
 // provides notifyEntry(value) (new state's value) and/or notifyExit(value)
 // (old state's value, old state still alive), each optional:
 //
 //   struct lamp_driver : fsm::observing<lamp_driver> {
-//       template<typename STATE>
+//       template<concepts::state STATE>
 //       static constexpr auto observe_static() -> decltype(STATE::lamps)
 //       {
 //           return STATE::lamps;
@@ -337,7 +350,7 @@ struct annotation_levels_exclusive<STATE>
 // nothing, silently (a renamed annotation, a typo in a type). An
 // observer naming the annotation types it handles,
 //
-//   using observes = mtl::typelist<led_pattern, power>;
+//   using observes = fsm::annotations<led_pattern, power>;
 //
 // gets each of them checked by every machine it is injected into: a
 // listed type must be carried by a state of the table. Leave the
@@ -348,14 +361,14 @@ struct annotation_levels_exclusive<STATE>
 template<typename DERIVED>
 struct observing {
 
-    template<typename STATE>
+    template<concepts::state STATE>
     static constexpr auto annotation()
         requires requires { DERIVED::template observe_static<STATE>(); }
     {
         return DERIVED::template observe_static<STATE>();
     }
 
-    template<typename TABLE>
+    template<concepts::transition_table TABLE>
     static constexpr void validate()
     {
         if constexpr (requires { typename DERIVED::observes; }) {
@@ -369,7 +382,7 @@ struct observing {
     // The edge form. The static path is per edge (the change check needs
     // both states); the instance values delegate to one body per valued
     // state
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
     void onExitFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -382,7 +395,7 @@ struct observing {
         this->template valuesExit<OLD_STATE>(machine);
     }
 
-    template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
     void onEnterFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -397,13 +410,13 @@ struct observing {
 
     // The one-state form: no other state to compare against, which is the
     // edge form against mtl::nil_type - every value counts as a change
-    template<typename STATE, typename MACHINE>
+    template<concepts::state STATE, typename MACHINE>
     void onExit(MACHINE& machine)
     {
         this->template onExitFrom<STATE, mtl::nil_type>(machine);
     }
 
-    template<typename STATE, typename MACHINE>
+    template<concepts::state STATE, typename MACHINE>
     void onEnter(MACHINE& machine)
     {
         this->template onEnterFrom<mtl::nil_type, STATE>(machine);
@@ -417,7 +430,7 @@ protected:
 
 private:
     // The set elements, each on its own change check
-    template<typename OLD_STATE, typename NEW_STATE, typename... Ts>
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::annotation... Ts>
     void setExit(mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -430,7 +443,7 @@ private:
         }(), ...);
     }
 
-    template<typename OLD_STATE, typename NEW_STATE, typename... Ts>
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::annotation... Ts>
     void setEnter(mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -447,7 +460,7 @@ private:
     // machine is in STATE here, so getIf() cannot fail; the check is what
     // stops GCC reporting a potential null dereference inside <variant>
     // once this inlines at -Os
-    template<typename STATE, typename MACHINE>
+    template<concepts::state STATE, typename MACHINE>
     void valuesExit(MACHINE& machine)
     {
         if constexpr (internal::values_notified_v<DERIVED, STATE>) {
@@ -457,7 +470,7 @@ private:
         }
     }
 
-    template<typename STATE, typename MACHINE>
+    template<concepts::state STATE, typename MACHINE>
     void valuesEnter(MACHINE& machine)
     {
         if constexpr (internal::values_notified_v<DERIVED, STATE>) {
@@ -467,7 +480,7 @@ private:
         }
     }
 
-    template<typename SET, typename... Ts>
+    template<typename SET, concepts::annotation... Ts>
     void exitEach(SET const& set, mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -478,7 +491,7 @@ private:
         }(), ...);
     }
 
-    template<typename SET, typename... Ts>
+    template<typename SET, concepts::annotation... Ts>
     void enterEach(SET const& set, mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);

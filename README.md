@@ -32,7 +32,7 @@ yielding `::value`, `template<typename, typename> typename COMPARE`).
 | `reverse_t<LIST>` | reversed order |
 | `remove_front_t<LIST>`, `remove_back_t<LIST>`, `remove_at_t<INDEX, LIST>` | drop one element |
 | `linearize_t<LIST>` | flatten nested typelists into one |
-| `rebind_t<LIST, TARGET>` | `TARGET<Ts...>` for any variadic template (`std::variant`, `std::tuple`, `fsm::transition_table`) |
+| `rebind_t<LIST, TARGET>` | `TARGET<Ts...>` for any variadic template (`std::variant`, `std::tuple`) |
 | `common_type_t<LIST>`, `common_value_type_t<LIST>` | `std::common_type` of the elements / of their `value_type`s |
 
 **`TypelistAlgorithms.hpp`**
@@ -75,9 +75,14 @@ whether a transition fired.
 - **Tables are types.** A table is a list of `fsm::transition<fsm::from<A>,
   fsm::on<E>, fsm::to<B>>` (roles in any order, an optional
   `fsm::guard<G, ...>`), plus an optional `fsm::initial<S>`. The state set is
-  derived from the table. Give tables a name - `struct my_table :
-  fsm::transition_table<...> {}` - and compose them from typelists
-  (`mtl::concat_t`, `mtl::rebind_t`) to switch features in and out.
+  derived from the table. The table a machine runs is a struct of its
+  own - `struct my_table : fsm::transition_table<...> {}` - and the
+  machine refuses an unnamed one: the short name stands for the table in
+  every symbol, which keeps compile time and memory down. An unnamed
+  `fsm::transition_table<...>` among the entries contributes its
+  entries in place, so tables compose from the transitions they share:
+  `using shared = fsm::transition_table<...>;` then `struct my_table :
+  fsm::transition_table<shared, ...> {}`.
 - **States are plain classes**, constructed on entry and destroyed on
   exit: the constructor and the destructor are the entry and exit hooks.
   Optional members are detected: `static constexpr timeout`, and any
@@ -108,7 +113,7 @@ whether a transition fired.
 - **Internal transitions.** `fsm::internal_transition<from<S>, on<E>>`
   handles E inside S via `S::handle(E const&)`: no exit, no entry, no
   timer restart.
-- **Context.** A state declaring `using contexts = mtl::typelist<A, B>;`
+- **Context.** A state declaring `using contexts = fsm::contexts<A, B>;`
   is constructed with machine-owned instances of those types, in that
   order, shared by every state naming them and surviving transitions: a
   retry budget, a running count. Data of different lifetimes goes into
@@ -153,8 +158,15 @@ whether a transition fired.
   reachability and timeout bounds (`fsm::all_states_reachable_v`,
   `fsm::timeouts_within_bounds_v`), observer coverage
   (`fsm::all_states_notified_v`), and an observer's declared
-  annotations (`using observes = mtl::typelist<a, b>;`) being carried
+  annotations (`using observes = fsm::annotations<a, b>;`) being carried
   by some state of every table it is injected into.
+- **Concepts are the types.** A template parameter says what it is:
+  `fsm::concepts::state`, `event`, `guard`, `transition`,
+  `transition_table`, `observer`, `context`, `annotation`. The lists a
+  state machine is declared with carry them: `fsm::contexts<...>`,
+  `fsm::annotations<...>`, `fsm::events<...>`, `fsm::observers<...>`,
+  and `fsm::timer_ranges<...>` for a timer-range map, which like a
+  table takes other maps in place of their entries.
 - **Small.** Transition bodies are instantiated per edge, not per event;
   wildcard transitions fire through one shared body per target when no
   observer could tell the source apart; dispatch is a fold, no tables.
@@ -193,6 +205,17 @@ whether a transition fired.
   therefore overrides the wildcard - that is how a state is exempted
   from one - while a guarded own entry that refuses falls through to
   it. The wildcard matches its own target too (a full self-transition).
+- A table entry `fsm::final<STATE>` marks a state the machine ends in.
+  Nothing leaves it: no transition may name it as its source and the
+  wildcard does not apply to it. `isFinished()` tells whether the
+  machine rests in one.
+- A state of a submachine may declare `using emits = EVENT;`. Entering
+  it hands that event to the machine above, where the composite
+  state's transitions - guards included - decide whether the composite
+  state is left or the submachine carries on. The event is taken once,
+  in the run that entered the state, whether an outside event or the
+  sub-state's own timer brought the submachine there. A composite state
+  must have a transition for every event its submachine emits.
 - Internal transitions group with regular ones as alternatives, take a
   guard like any other, and do not support `from<any_state>`.
 - Order on a transition: observers' exit hooks (old state alive), the
@@ -222,8 +245,8 @@ whether a transition fired.
   (Zephyr: one workqueue). Observers hand out the machine's address and
   may keep it, so the machine is neither copyable nor movable.
 - Machine ids: trace lines and graphs name a machine by its table's
-  short type name, so a table alias reads `transition_table` and every
-  instantiation of a templated table reads alike.
+  short type name, so every instantiation of a templated table reads
+  alike.
 
 ## Zephyr
 
@@ -239,8 +262,9 @@ manifest with `west-commands: zephyr/scripts/west-commands.yml` adds
 ## Tools
 
 - `tools/dotgen`: finds the tables in a source tree and writes one
-  Graphviz `.dot` per table, built with the host compiler. A node lists
-  the state's timeout and its annotation set as values (`color::red`,
-  `lamp{true}`), so the graph shows what each state switches.
+  Graphviz `.dot` per table, built with the host compiler. The graph is
+  titled with its name, and a node lists the state's timeout and its
+  annotation set as values (`color::red`, `lamp{true}`), so the graph
+  shows what each state switches.
 - `tools/fsmview`: live and replay viewer in the browser, fed by trace
   lines from a serial port, TCP, a pipe or a saved log.

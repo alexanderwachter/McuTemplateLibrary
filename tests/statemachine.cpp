@@ -92,13 +92,13 @@ struct locked { // same outputs as off -> transition must NOT notify
     static constexpr outputs_t outputs{.led = false, .fan = false};
 };
 
-using table = fsm::transition_table<
+struct table : fsm::transition_table<
     fsm::transition<fsm::from<off>,      fsm::on<button_press>, fsm::to<running>>,
     fsm::transition<fsm::from<running>,  fsm::on<button_press>, fsm::to<off>>,
     fsm::transition<fsm::from<running>,  fsm::on<fsm::timeout>, fsm::to<cooldown>>,
     fsm::transition<fsm::from<cooldown>, fsm::on<fsm::timeout>, fsm::to<off>>,
     fsm::transition<fsm::from<off>,      fsm::on<lock_key>,     fsm::to<locked>>,
-    fsm::transition<fsm::from<locked>,   fsm::on<lock_key>,     fsm::to<off>>>;
+    fsm::transition<fsm::from<locked>,   fsm::on<lock_key>,     fsm::to<off>>> {};
 
 using machine = fsm::StateMachine<table, fsm::timed<manual_timer>, output_controller>;
 
@@ -135,6 +135,23 @@ namespace Concepts {
     static_assert(!fsm::concepts::state<int>);
     static_assert(fsm::concepts::transition_table<table>);
     static_assert(!fsm::concepts::transition_table<off>);
+
+    // what the role-named lists take
+    static_assert(fsm::concepts::event<button_press> && fsm::concepts::event<int>);
+    static_assert(!fsm::concepts::event<button_press const> && !fsm::concepts::event<button_press&>);
+    static_assert(fsm::concepts::annotation<outputs_t> && !fsm::concepts::annotation<outputs_t const&>);
+    struct needs_an_argument {
+        explicit needs_an_argument(int);
+    };
+    static_assert(fsm::concepts::context<outputs_t> && !fsm::concepts::context<needs_an_argument>);
+    static_assert(fsm::concepts::observer<output_controller> && !fsm::concepts::observer<int>);
+    inline constexpr auto some_time = std::chrono::milliseconds{1};
+    static_assert(fsm::concepts::timed_by_or_timer_ranges<fsm::timed_by<running, some_time>>);
+    static_assert(fsm::concepts::timed_by_or_timer_ranges<
+                  fsm::timer_ranges<fsm::timed_by<running, some_time>>>);
+    static_assert(!fsm::concepts::timed_by_or_timer_ranges<running>);
+    static_assert(std::is_same_v<fsm::events<button_press, lock_key>,
+                                 mtl::typelist<button_press, lock_key>>);
 } // namespace Concepts
 
 namespace MachineTypes {
@@ -147,23 +164,71 @@ namespace MachineTypes {
 } // namespace MachineTypes
 
 namespace ExplicitInitial {
-    using lock_first = fsm::transition_table<
+    struct lock_first : fsm::transition_table<
         fsm::initial<locked>,
         fsm::transition<fsm::from<off>,    fsm::on<lock_key>, fsm::to<locked>>,
-        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>>;
+        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>> {};
 
     // the chosen state moves to the front and becomes the initial state
     static_assert(std::is_same_v<lock_first::states, mtl::typelist<locked, off>>);
     static_assert(std::is_same_v<fsm::StateMachine<lock_first>::initial_state, locked>);
 
     // initial<> may appear anywhere in the table
-    using reordered = fsm::transition_table<
+    struct reordered : fsm::transition_table<
         fsm::transition<fsm::from<off>,    fsm::on<lock_key>, fsm::to<locked>>,
         fsm::initial<locked>,
-        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>>;
+        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>> {};
     static_assert(std::is_same_v<reordered::states, lock_first::states>);
     static_assert(std::is_same_v<reordered::transitions, lock_first::transitions>);
 } // namespace ExplicitInitial
+
+namespace Composition {
+    using locking = fsm::transition_table<
+        fsm::transition<fsm::from<off>,    fsm::on<lock_key>, fsm::to<locked>>,
+        fsm::transition<fsm::from<locked>, fsm::on<lock_key>, fsm::to<off>>>;
+    using running_cycle = fsm::transition_table<
+        fsm::transition<fsm::from<off>,     fsm::on<button_press>, fsm::to<running>>,
+        fsm::transition<fsm::from<running>, fsm::on<button_press>, fsm::to<off>>>;
+
+    struct spelled_out : fsm::transition_table<
+        fsm::initial<locked>,
+        fsm::transition<fsm::from<off>,     fsm::on<button_press>, fsm::to<running>>,
+        fsm::transition<fsm::from<running>, fsm::on<button_press>, fsm::to<off>>,
+        fsm::transition<fsm::from<off>,     fsm::on<fsm::timeout>, fsm::to<off>>,
+        fsm::transition<fsm::from<off>,     fsm::on<lock_key>,     fsm::to<locked>>,
+        fsm::transition<fsm::from<locked>,  fsm::on<lock_key>,     fsm::to<off>>> {};
+
+    // an unnamed table among the entries stands for its entries, in place
+    struct composed : fsm::transition_table<
+        fsm::initial<locked>,
+        running_cycle,
+        fsm::transition<fsm::from<off>, fsm::on<fsm::timeout>, fsm::to<off>>,
+        locking> {};
+    static_assert(std::is_same_v<composed::entries, spelled_out::entries>);
+    static_assert(std::is_same_v<composed::states, mtl::typelist<locked, off, running>>);
+    static_assert(std::is_same_v<fsm::transition_for_t<composed, locked, lock_key>::to, off>);
+    static_assert(std::is_same_v<fsm::StateMachine<composed>::initial_state, locked>);
+
+    // at any depth
+    using cycle_then_idling = fsm::transition_table<
+        running_cycle,
+        fsm::transition<fsm::from<off>, fsm::on<fsm::timeout>, fsm::to<off>>>;
+    struct composed_twice
+        : fsm::transition_table<fsm::initial<locked>, cycle_then_idling, locking> {};
+    static_assert(std::is_same_v<composed_twice::entries, spelled_out::entries>);
+
+    // a table standing in another one is not instantiated by itself: this
+    // one names an initial state it has no transition for
+    using only_the_initial_state = fsm::transition_table<fsm::initial<locked>>;
+    struct completed : fsm::transition_table<only_the_initial_state, locking> {};
+    static_assert(std::is_same_v<completed::states, mtl::typelist<locked, off>>);
+
+    static_assert(fsm::concepts::entry_or_table<locking>);
+    static_assert(fsm::concepts::entry_or_table<fsm::initial<locked>>);
+    static_assert(!fsm::concepts::entry_or_table<off>);
+    // a named table is the one a machine runs, not a building block
+    static_assert(!fsm::concepts::entry_or_table<composed>);
+} // namespace Composition
 
 namespace Guards {
     struct always { static bool check() { return true; } };
@@ -201,39 +266,39 @@ namespace TimeoutBounds {
 
     struct waiting { static constexpr auto timeout = std::chrono::milliseconds{150}; };
 
-    using timed_table = fsm::transition_table<
+    struct timed_table : fsm::transition_table<
         fsm::transition<fsm::from<off>,     fsm::on<button_press>, fsm::to<waiting>>,
-        fsm::transition<fsm::from<waiting>, fsm::on<fsm::timeout>, fsm::to<off>>>;
+        fsm::transition<fsm::from<waiting>, fsm::on<fsm::timeout>, fsm::to<off>>> {};
 
     // an entry's range must contain the timeout, an exact duration must equal it
     inline constexpr fsm::timeout_range wait_range{std::chrono::milliseconds{100},
                                                    std::chrono::milliseconds{200}};
     inline constexpr auto exact_wait = std::chrono::milliseconds{150};
 
-    using ranged_map = mtl::typelist<fsm::timed_by<waiting, wait_range>>;
-    using exact_map  = mtl::typelist<fsm::timed_by<waiting, exact_wait>>;
+    using ranged_map = fsm::timer_ranges<fsm::timed_by<waiting, wait_range>>;
+    using exact_map  = fsm::timer_ranges<fsm::timed_by<waiting, exact_wait>>;
 
     static_assert(fsm::timeout_within_bounds_v<ranged_map, waiting>);
     static_assert(fsm::timeouts_within_bounds_v<timed_table, ranged_map>);
     static_assert(fsm::timeouts_within_bounds_v<timed_table, exact_map>);
 
-    // maps compose by concatenation, like the tables they describe
+    // a map among the entries stands for its entries, like a table in a table
     static_assert(fsm::timeouts_within_bounds_v<
-                  timed_table, mtl::concat_t<mtl::typelist<>, ranged_map>>);
+                  timed_table, fsm::timer_ranges<fsm::timer_ranges<>, ranged_map>>);
+    static_assert(std::is_same_v<fsm::timer_ranges<fsm::timer_ranges<>, ranged_map>, ranged_map>);
 
     // rejected: a timeout outside the range, a duration that differs, a
     // timed state without an entry, and an entry for an untimed state
     inline constexpr fsm::timeout_range low_range{std::chrono::milliseconds{10},
                                                   std::chrono::milliseconds{20}};
     inline constexpr auto other_wait = std::chrono::milliseconds{100};
-    static_assert(!fsm::timeout_within_bounds_v<mtl::typelist<fsm::timed_by<waiting, low_range>>,
+    static_assert(!fsm::timeout_within_bounds_v<fsm::timer_ranges<fsm::timed_by<waiting, low_range>>,
                                                 waiting>);
-    static_assert(!fsm::timeout_within_bounds_v<mtl::typelist<fsm::timed_by<waiting, other_wait>>,
+    static_assert(!fsm::timeout_within_bounds_v<fsm::timer_ranges<fsm::timed_by<waiting, other_wait>>,
                                                 waiting>);
-    static_assert(!fsm::timeouts_within_bounds_v<timed_table, mtl::typelist<>>);
+    static_assert(!fsm::timeouts_within_bounds_v<timed_table, fsm::timer_ranges<>>);
     static_assert(!fsm::timeouts_within_bounds_v<
-                  timed_table, mtl::concat_t<ranged_map,
-                                             mtl::typelist<fsm::timed_by<off, wait_range>>>>);
+                  timed_table, fsm::timer_ranges<ranged_map, fsm::timed_by<off, wait_range>>>);
 } // namespace TimeoutBounds
 
 namespace Reachability {
@@ -244,25 +309,25 @@ namespace Reachability {
     struct advance {};
     struct abort {};
 
-    using linear = fsm::transition_table<
+    struct linear : fsm::transition_table<
         fsm::transition<fsm::from<start>, fsm::on<advance>, fsm::to<step>>,
-        fsm::transition<fsm::from<step>,  fsm::on<advance>, fsm::to<end>>>;
+        fsm::transition<fsm::from<step>,  fsm::on<advance>, fsm::to<end>>> {};
     static_assert(fsm::is_reachable_v<linear, end>);
     static_assert(fsm::all_states_reachable_v<linear>);
 
     // a state appearing only as a transition source is dead code
-    using orphaned = fsm::transition_table<
+    struct orphaned : fsm::transition_table<
         fsm::transition<fsm::from<start>,  fsm::on<advance>, fsm::to<end>>,
-        fsm::transition<fsm::from<orphan>, fsm::on<advance>, fsm::to<end>>>;
+        fsm::transition<fsm::from<orphan>, fsm::on<advance>, fsm::to<end>>> {};
     static_assert(!fsm::is_reachable_v<orphaned, orphan>);
     static_assert(!fsm::all_states_reachable_v<orphaned>);
 
     // a wildcard source leaves from every state; internal transitions
     // stay in place and reach nothing
-    using through_wildcard = fsm::transition_table<
+    struct through_wildcard : fsm::transition_table<
         fsm::transition<fsm::from<start>, fsm::on<advance>, fsm::to<step>>,
         fsm::internal_transition<fsm::from<step>, fsm::on<advance>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<abort>, fsm::to<end>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<abort>, fsm::to<end>>> {};
     static_assert(fsm::is_reachable_v<through_wildcard, end>);
     static_assert(fsm::all_states_reachable_v<through_wildcard>);
 } // namespace Reachability
@@ -297,9 +362,9 @@ namespace AnnotationCoverage {
     static_assert(fsm::is_observed_v<level_watcher, wrongly_annotated>);
     static_assert(!fsm::is_notified_of_v<level_watcher, wrongly_annotated>);
 
-    using mixed_table = fsm::transition_table<
+    struct mixed_table : fsm::transition_table<
         fsm::transition<fsm::from<annotated>, fsm::on<tick>, fsm::to<bare>>,
-        fsm::transition<fsm::from<bare>,      fsm::on<tick>, fsm::to<annotated>>>;
+        fsm::transition<fsm::from<bare>,      fsm::on<tick>, fsm::to<annotated>>> {};
 
     static_assert(!fsm::all_states_notified_v<level_watcher, mixed_table>);
     static_assert(fsm::all_states_notified_v<level_watcher, mixed_table, mtl::typelist<bare>>);
@@ -310,10 +375,10 @@ namespace EventHandling {
     struct halt {};
     struct ignored {};
 
-    using table = fsm::transition_table<
+    struct table : fsm::transition_table<
         fsm::transition<fsm::from<off>, fsm::on<go>, fsm::to<running>>,
         fsm::internal_transition<fsm::from<running>, fsm::on<go>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<halt>, fsm::to<off>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<halt>, fsm::to<off>>> {};
 
     static_assert(fsm::handles_event_v<table, off, go>);
     static_assert(fsm::handles_event_v<table, running, go>); // internal counts
@@ -328,10 +393,10 @@ namespace Wildcard {
     struct stage1 {};
     struct stage2 {};
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>,           fsm::on<advance>,  fsm::to<stage1>>,
         fsm::transition<fsm::from<stage1>,         fsm::on<advance>,  fsm::to<stage2>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>> {};
 
     // any_state is not a state of the machine
     static_assert(std::is_same_v<tbl::states, mtl::typelist<idle, stage1, stage2>>);
@@ -340,10 +405,10 @@ namespace Wildcard {
     static_assert(std::is_same_v<fsm::transition_for_t<tbl, stage1, advance>::to, stage2>);
 
     // an exact pair takes precedence over the wildcard
-    using with_override = fsm::transition_table<
+    struct with_override : fsm::transition_table<
         fsm::transition<fsm::from<idle>,           fsm::on<advance>,  fsm::to<stage1>>,
         fsm::transition<fsm::from<stage1>,         fsm::on<shutdown>, fsm::to<stage2>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<shutdown>, fsm::to<idle>>> {};
     static_assert(std::is_same_v<fsm::transition_for_t<with_override, stage1, shutdown>::to, stage2>);
     static_assert(std::is_same_v<fsm::transition_for_t<with_override, stage2, shutdown>::to, idle>);
     // the exact pair first, the wildcard behind it
@@ -383,9 +448,9 @@ namespace Payload {
     static_assert(std::is_same_v<decltype(std::declval<sending const&>().values())::types,
                                  mtl::typelist<message>>);
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>,    fsm::on<send>,   fsm::to<sending>>,
-        fsm::transition<fsm::from<sending>, fsm::on<cancel>, fsm::to<idle>>>;
+        fsm::transition<fsm::from<sending>, fsm::on<cancel>, fsm::to<idle>>> {};
 
     // Driver observer: reads the payload delivered into the sending state
     struct tx_driver {
@@ -403,7 +468,7 @@ namespace Payload {
     // observing-based counterpart to tx_driver: consumes the state's
     // instance value by type, no getIf plumbing, no accessor named
     struct live_driver : fsm::observing<live_driver> {
-        using observes = mtl::typelist<message>;
+        using observes = fsm::annotations<message>;
 
         void notifyEntry(message const& msg) { entered.push_back(msg.id); }
         void notifyExit(message const& msg) { exited.push_back(msg.id); }
@@ -435,7 +500,7 @@ namespace Context {
     };
 
     struct trying {
-        using contexts = mtl::typelist<attempt_log>;
+        using contexts = fsm::contexts<attempt_log>;
         static constexpr auto timeout = 50ms;
 
         trying(start const& event, attempt_log& log) : context(log)
@@ -449,7 +514,7 @@ namespace Context {
     };
 
     struct succeeded { // shares trying's instance, and declares a second
-        using contexts = mtl::typelist<attempt_log, history>;
+        using contexts = fsm::contexts<attempt_log, history>;
         succeeded(attempt_log& log, history& past) : context(log), past(past) { ++past.successes; }
         attempt_log& context;
         history& past;
@@ -462,12 +527,12 @@ namespace Context {
     static_assert(!fsm::internal::payload_constructible_v<trying, fail>);
     static_assert(fsm::internal::context_constructible<succeeded>::value);
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>,    fsm::on<start>,        fsm::to<trying>>,
         fsm::transition<fsm::from<trying>,  fsm::on<fsm::timeout>, fsm::to<trying>>,
         fsm::transition<fsm::from<trying>,  fsm::on<fail>,         fsm::to<trying>>,
         fsm::transition<fsm::from<trying>,  fsm::on<done>,         fsm::to<succeeded>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<restart>, fsm::to<idle>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<restart>, fsm::to<idle>>> {};
 
     // context states need no default constructor
     static_assert(!std::default_initializable<trying>);
@@ -485,7 +550,7 @@ namespace Internal {
     };
 
     struct waiting {
-        using contexts = mtl::typelist<log>;
+        using contexts = fsm::contexts<log>;
         static constexpr auto timeout = 50ms;
 
         explicit waiting(log& l) : context(l) {}
@@ -500,14 +565,14 @@ namespace Internal {
         static bool check(waiting const& state) { return state.context.noted != 0; }
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<waiting>, fsm::on<fsm::timeout>, fsm::to<done>>,
         fsm::internal_transition<fsm::from<waiting>, fsm::on<note>>,
         // internal and regular transitions group as alternatives
         fsm::transition<fsm::from<done>, fsm::on<tick>, fsm::to<waiting>>,
         fsm::internal_transition<fsm::from<waiting>, fsm::on<tick>,
                                  fsm::guard<already_noted>>,
-        fsm::transition<fsm::from<waiting>, fsm::on<tick>, fsm::to<done>>>;
+        fsm::transition<fsm::from<waiting>, fsm::on<tick>, fsm::to<done>>> {};
 
     // internal_target never becomes a state of the table
     static_assert(std::is_same_v<tbl::states, mtl::typelist<waiting, done>>);
@@ -537,7 +602,7 @@ namespace Alternatives {
 
     struct idle {};
     struct pending {
-        using contexts = mtl::typelist<budget>;
+        using contexts = fsm::contexts<budget>;
         explicit pending(budget& b) : context(b) { ++context.used; }
         budget& context;
     };
@@ -549,12 +614,12 @@ namespace Alternatives {
 
     // Two transitions share (pending, tick): the guarded one first, the
     // unguarded catch-all last
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>,      fsm::on<tick>, fsm::to<pending>>,
         fsm::transition<fsm::from<pending>,   fsm::on<tick>, fsm::to<pending>,
                         fsm::guard<within_budget>>,
         fsm::transition<fsm::from<pending>,   fsm::on<tick>, fsm::to<exhausted>>,
-        fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>>;
+        fsm::transition<fsm::from<exhausted>, fsm::on<tick>, fsm::to<idle>>> {};
 } // namespace Alternatives
 
 namespace AnnotationSets {
@@ -603,11 +668,11 @@ namespace AnnotationSets {
     static_assert(!fsm::is_notified_of_v<panel, bare>);
     static_assert(!fsm::is_notified_of_v<panel, dead>); // heat has no hook in panel
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<dark>, fsm::on<next>, fsm::to<lit>>,
         fsm::transition<fsm::from<lit>,  fsm::on<next>, fsm::to<bare>>,
         fsm::transition<fsm::from<bare>, fsm::on<next>, fsm::to<dark>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>> {};
 
     // Whether an annotation type is carried by any state: the trait
     // behind fsm::observing's validate() for the types an observer
@@ -617,7 +682,7 @@ namespace AnnotationSets {
     static_assert(!fsm::annotation_in_table_v<tbl, sound>);
 
     struct heater : fsm::observing<heater> {
-        using observes = mtl::typelist<heat>;
+        using observes = fsm::annotations<heat>;
         void notifyEntry(heat) { ++heats; }
         int heats = 0;
     };
@@ -687,20 +752,20 @@ namespace Features {
                   mtl::typelist<plain_self>>);
 
     constexpr fsm::timeout_range any_time{0us, 1s};
-    using ranges = mtl::typelist<fsm::timed_by<powering, any_time>, fsm::timed_by<plain, any_time>>;
+    using ranges = fsm::timer_ranges<fsm::timed_by<powering, any_time>, fsm::timed_by<plain, any_time>>;
     static_assert(std::is_same_v<fsm::remove_feature_t<ranges, vconn_feature>,
-                                 mtl::typelist<fsm::timed_by<plain, any_time>>>);
+                                 fsm::timer_ranges<fsm::timed_by<plain, any_time>>>);
     static_assert(std::is_same_v<fsm::remove_disabled_features_t<ranges, both_policies>, ranges>);
 
     // the table a machine runs: the one given while nothing is disabled
     // (no observer list, or observers enabling every feature), else
     // rebuilt without the disabled features
-    using table_entries = mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, plain_self>;
-    struct full_table : mtl::rebind_t<table_entries, fsm::transition_table> {};
+    struct full_table
+        : fsm::transition_table<fsm::initial<swapping>, swap_in, swap_out, plain_self> {};
     static_assert(std::is_same_v<fsm::enabled_table_t<full_table>, full_table>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, mtl::typelist<both_policies>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<both_policies>>,
                                  full_table>);
-    using for_bystander = fsm::enabled_table_t<full_table, mtl::typelist<bystander>>;
+    using for_bystander = fsm::enabled_table_t<full_table, fsm::observers<bystander>>;
     static_assert(!std::is_same_v<for_bystander, full_table>);
     static_assert(std::is_same_v<for_bystander::states, mtl::typelist<plain>>);
     static_assert(std::is_same_v<for_bystander::transitions, mtl::typelist<plain_self>>);
@@ -714,10 +779,10 @@ namespace Features {
     static_assert(fsm::observer_enables_v<swap_only, swap_feature>);
     static_assert(!fsm::observer_enables_v<swap_only, vconn_feature>);
     static_assert(std::is_same_v<fsm::feature_switch<>::enables, mtl::typelist<>>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, mtl::typelist<swap_only>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<swap_only>>,
                                  full_table>);
     static_assert(std::is_same_v<
-                  fsm::enabled_table_t<full_table, mtl::typelist<fsm::feature_switch<>>>::states,
+                  fsm::enabled_table_t<full_table, fsm::observers<fsm::feature_switch<>>>::states,
                   mtl::typelist<plain>>);
 
     // a tag enabled by a guard: answering the question is what brings
@@ -737,24 +802,23 @@ namespace Features {
     static_assert(!fsm::observer_answers_for_v<swap_feature, answering_policy>); // no enabled_by
     static_assert(fsm::feature_enabled_v<asked_swap_feature, bystander, answering_policy>);
     static_assert(!fsm::feature_enabled_v<asked_swap_feature, bystander>);
-    using asked_entries = mtl::typelist<
+    struct asked_table : fsm::transition_table<
         fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<asked_swapping>, fsm::guard<swap_allowed>>,
-        fsm::transition<fsm::from<asked_swapping>, fsm::on<go>, fsm::to<plain>>, plain_self>;
-    struct asked_table : mtl::rebind_t<asked_entries, fsm::transition_table> {};
+        fsm::transition<fsm::from<asked_swapping>, fsm::on<go>, fsm::to<plain>>, plain_self> {};
     // the guard on the removed row needs no answerer: the machine builds without one
-    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, mtl::typelist<bystander>>::transitions,
+    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, fsm::observers<bystander>>::transitions,
                                  mtl::typelist<plain_self>>);
     static_assert(std::is_same_v<fsm::StateMachine<asked_table, bystander>::table, asked_table>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, mtl::typelist<answering_policy>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, fsm::observers<answering_policy>>,
                                  asked_table>);
     // the feature's voice among the observers, either way of enabling
     static_assert(std::is_same_v<
-                  fsm::feature_enabler_t<swap_feature, mtl::typelist<bystander, swap_policy>>,
+                  fsm::feature_enabler_t<swap_feature, fsm::observers<bystander, swap_policy>>,
                   swap_policy>);
-    static_assert(std::is_same_v<fsm::feature_enabler_t<vconn_feature, mtl::typelist<bystander>>,
+    static_assert(std::is_same_v<fsm::feature_enabler_t<vconn_feature, fsm::observers<bystander>>,
                                  mtl::nil_type>);
     static_assert(std::is_same_v<fsm::feature_enabler_t<asked_swap_feature,
-                                                        mtl::typelist<bystander, answering_policy>>,
+                                                        fsm::observers<bystander, answering_policy>>,
                                  answering_policy>);
 } // namespace Features
 
@@ -803,11 +867,11 @@ namespace SharedWildcard {
         void notifyExit(mode_tag) { ++exits; }
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
         fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,
         fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>> {};
 
     struct never {
         static bool check(b const&) { return false; }
@@ -816,18 +880,18 @@ namespace SharedWildcard {
     // a wildcard back into an annotated state: its entry has no edge to
     // compare against
     struct reset {};
-    using home_tbl = fsm::transition_table<
+    struct home_tbl : fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<reset>, fsm::to<a>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<reset>, fsm::to<a>>> {};
 
     // b has an own pair for kill whose guard refuses: the wildcard is
     // the next alternative, exactly like transitions_for says
-    using guarded_tbl = fsm::transition_table<
+    struct guarded_tbl : fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
         fsm::transition<fsm::from<a>, fsm::on<fsm::timeout>, fsm::to<b>>,
         fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
         fsm::transition<fsm::from<b>, fsm::on<kill>, fsm::to<a>, fsm::guard<never>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>> {};
 } // namespace SharedWildcard
 
 namespace Deadline {
@@ -852,7 +916,7 @@ namespace Deadline {
     };
     struct gave_up {};
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<searching>, fsm::on<step>,          fsm::to<probing>>,
         fsm::transition<fsm::from<probing>,   fsm::on<bounce>,        fsm::to<searching>>,
         fsm::transition<fsm::from<probing>,   fsm::on<fsm::timeout>,  fsm::to<searching>>,
@@ -861,12 +925,12 @@ namespace Deadline {
         fsm::transition<fsm::from<probing>,   fsm::on<fsm::deadline>, fsm::to<gave_up>>,
         fsm::transition<fsm::from<arrived>,   fsm::on<retry>,         fsm::to<rearmed>>,
         fsm::transition<fsm::from<rearmed>,   fsm::on<fsm::deadline>, fsm::to<gave_up>>,
-        fsm::transition<fsm::from<gave_up>,   fsm::on<retry>,         fsm::to<searching>>>;
+        fsm::transition<fsm::from<gave_up>,   fsm::on<retry>,         fsm::to<searching>>> {};
 
     // the deadline bounds mirror of the timeout map checks
     inline constexpr fsm::timeout_range phase_range{70ms, 90ms};
     inline constexpr fsm::timeout_range short_range{20ms, 40ms};
-    using ranges = mtl::typelist<fsm::timed_by<searching, phase_range>,
+    using ranges = fsm::timer_ranges<fsm::timed_by<searching, phase_range>,
                                  fsm::timed_by<probing, phase_range>,
                                  fsm::timed_by<rearmed, short_range>>;
     static_assert(fsm::deadlines_within_bounds_v<tbl, ranges>);
@@ -874,10 +938,10 @@ namespace Deadline {
     // the zero sentinel and unannotated states must have no entry ...
     static_assert(fsm::deadline_within_bounds_v<ranges, arrived>);
     static_assert(!fsm::deadline_within_bounds_v<
-                  mtl::typelist<fsm::timed_by<arrived, phase_range>>, arrived>);
+                  fsm::timer_ranges<fsm::timed_by<arrived, phase_range>>, arrived>);
     // ... and an active deadline outside its range fails
     static_assert(!fsm::deadline_within_bounds_v<
-                  mtl::typelist<fsm::timed_by<rearmed, phase_range>>, rearmed>);
+                  fsm::timer_ranges<fsm::timed_by<rearmed, phase_range>>, rearmed>);
 } // namespace Deadline
 
 // --- queued machine: run-to-completion delivery ------------------------------
@@ -1118,23 +1182,52 @@ using nested_machine = fsm::StateMachine<outer_table, recorder, level_watcher>;
 static_assert(nested_machine::depth == 0);
 static_assert(std::is_same_v<nested_machine::table, outer_table>);
 
-// annotation completeness per element, sub-states included
+// annotation completeness per element, over the hierarchy: the
+// composite state carries power for its whole submachine, and leaves
+// lamp to its sub-states
 static_assert(fsm::all_states_carry_v<inner_table, lamp>);
-static_assert(!fsm::all_states_carry_v<outer_table, power>); // done, low and high carry none
-static_assert(fsm::all_states_carry_v<outer_table, power, mtl::typelist<done, low, high>>);
+static_assert(!fsm::all_states_carry_v<outer_table, power>); // done carries none
+static_assert(fsm::all_states_carry_v<outer_table, power, mtl::typelist<done>>);
+static_assert(!fsm::all_states_carry_v<outer_table, lamp, mtl::typelist<done>>); // nor idle
+static_assert(fsm::all_states_carry_v<outer_table, lamp, mtl::typelist<idle, done>>);
+
+// reachability and the timer-range maps cover the sub-states
+static_assert(fsm::all_states_reachable_v<outer_table>);
+struct unreached {};
+struct orphaned_inner_table : fsm::transition_table<
+    fsm::transition<fsm::from<low>,       fsm::on<tick>, fsm::to<high>>,
+    fsm::transition<fsm::from<high>,      fsm::on<fsm::timeout>, fsm::to<low>>,
+    fsm::transition<fsm::from<unreached>, fsm::on<tick>, fsm::to<low>>> {};
+struct nesting_an_orphan {
+    using submachine = orphaned_inner_table;
+};
+struct orphaned_outer_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<nesting_an_orphan>>> {};
+static_assert(fsm::all_states_reachable_v<fsm::transition_table<
+                  fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<done>>>>);
+static_assert(!fsm::all_states_reachable_v<orphaned_outer_table>);
+
+inline constexpr fsm::timeout_range active_budget{.min = 50ms, .max = 150ms};
+inline constexpr fsm::timeout_range high_pulse{.min = 5ms, .max = 20ms};
+static_assert(fsm::timeouts_within_bounds_v<
+    outer_table, fsm::timer_ranges<fsm::timed_by<active, active_budget>,
+                               fsm::timed_by<high, high_pulse>>>);
+// a timed sub-state without an entry is caught from the root table
+static_assert(!fsm::timeouts_within_bounds_v<
+    outer_table, fsm::timer_ranges<fsm::timed_by<active, active_budget>>>);
 
 // event coverage: every state handles the events it owes in its own table
 template<typename STATE>
-struct owes_tick : std::type_identity<mtl::typelist<>> {};
+struct owes_tick : std::type_identity<fsm::events<>> {};
 template<>
-struct owes_tick<low> : std::type_identity<mtl::typelist<tick>> {};
+struct owes_tick<low> : std::type_identity<fsm::events<tick>> {};
 template<>
-struct owes_tick<high> : std::type_identity<mtl::typelist<tick>> {}; // a guarded row counts
+struct owes_tick<high> : std::type_identity<fsm::events<tick>> {}; // a guarded row counts
 static_assert(fsm::all_states_handle_v<outer_table, owes_tick>);
 template<typename STATE>
-struct owes_stop : std::type_identity<mtl::typelist<>> {};
+struct owes_stop : std::type_identity<fsm::events<>> {};
 template<>
-struct owes_stop<low> : std::type_identity<mtl::typelist<stop>> {}; // the parent's row is not low's
+struct owes_stop<low> : std::type_identity<fsm::events<stop>> {}; // the parent's row is not low's
 static_assert(!fsm::all_states_handle_v<outer_table, owes_stop>);
 
 // a composite without a timeout of its own: the table is timed through its child
@@ -1207,7 +1300,7 @@ struct sense {
 };
 
 struct probing {
-    using contexts = mtl::typelist<port_line, phase_budget>;
+    using contexts = fsm::contexts<port_line, phase_budget>;
     probing(port_line& line_ref, phase_budget& budget_ref) : line(line_ref), budget(budget_ref) {}
     probing(sense const& event, port_line& line_ref, phase_budget& budget_ref)
         : probing(line_ref, budget_ref)
@@ -1226,7 +1319,7 @@ struct probe_table : fsm::transition_table<
 // child inherits what it inherited
 struct trying {
     using submachine      = probe_table;
-    using parent_contexts = mtl::typelist<port_line>;
+    using parent_contexts = fsm::contexts<port_line>;
 };
 struct waiting {};
 
@@ -1234,12 +1327,12 @@ struct session_table : fsm::transition_table<
     fsm::transition<fsm::from<waiting>, fsm::on<go>, fsm::to<trying>>> {};
 
 struct resting {
-    using contexts = mtl::typelist<port_line>;
+    using contexts = fsm::contexts<port_line>;
     explicit resting(port_line&) {}
 };
 struct session {
     using submachine      = session_table;
-    using parent_contexts = mtl::typelist<port_line>;
+    using parent_contexts = fsm::contexts<port_line>;
 };
 
 struct inheriting_table : fsm::transition_table<
@@ -1276,11 +1369,11 @@ static_assert(!fsm::internal::holds_inherited_context<phase_budget,
 
 // the checks on a parent_contexts declaration, each askable per state
 struct plain_with_parent_contexts {
-    using parent_contexts = mtl::typelist<port_line>; // no submachine to inherit it
+    using parent_contexts = fsm::contexts<port_line>; // no submachine to inherit it
 };
 struct parent_contexts_unused {
     using submachine      = inner_table; // low and high declare no context
-    using parent_contexts = mtl::typelist<port_line>;
+    using parent_contexts = fsm::contexts<port_line>;
 };
 static_assert(fsm::internal::parent_contexts_on_composite<trying>::value);
 static_assert(fsm::internal::parent_contexts_on_composite<waiting>::value);
@@ -1335,13 +1428,13 @@ struct booster {
 };
 
 // disabled: both levels lose the feature's states, and push with them
-static_assert(std::is_same_v<fsm::all_states_t<featured_table, mtl::typelist<>>,
+static_assert(std::is_same_v<fsm::all_states_t<featured_table, fsm::observers<>>,
                              mtl::typelist<idle, engine, calm, warm>>);
-static_assert(!mtl::has_a_v<fsm::nested_events_t<featured_table, mtl::typelist<>>, push>);
+static_assert(!mtl::has_a_v<fsm::nested_events_t<featured_table, fsm::observers<>>, push>);
 // enabled, or no observer list at all: everything in view, the sub-table as named
-static_assert(std::is_same_v<fsm::all_states_t<featured_table, mtl::typelist<booster>>,
+static_assert(std::is_same_v<fsm::all_states_t<featured_table, fsm::observers<booster>>,
                              mtl::typelist<idle, engine, turbo, optional_engine, calm, warm, boost>>);
-static_assert(std::is_same_v<fsm::nested_tables_t<featured_table, mtl::typelist<booster>>,
+static_assert(std::is_same_v<fsm::nested_tables_t<featured_table, fsm::observers<booster>>,
                              mtl::typelist<featured_table, deep_table>>);
 static_assert(std::is_same_v<fsm::nested_tables_t<featured_table>,
                              mtl::typelist<featured_table, deep_table>>);
@@ -1354,6 +1447,169 @@ static_assert(!mtl::has_a_v<queued_off::queueable_events, push>);
 static_assert(mtl::has_a_v<queued_on::queueable_events, push>);
 
 } // namespace Nested
+
+namespace Final {
+
+struct start {};
+struct fail {};
+struct poke {};
+struct retry {};
+struct halt {};
+
+// --- a root that ends: nothing leaves a final state, wildcards included
+struct working {};
+struct stopped {};
+struct finished {};
+
+struct ending_table : fsm::transition_table<
+    fsm::transition<fsm::from<working>, fsm::on<start>, fsm::to<finished>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<halt>, fsm::to<stopped>>,
+    fsm::transition<fsm::from<stopped>, fsm::on<start>, fsm::to<working>>,
+    fsm::final<finished>> {};
+
+static_assert(std::is_same_v<fsm::final_states_t<ending_table>, mtl::typelist<finished>>);
+static_assert(mtl::empty_v<fsm::final_states_t<Nested::outer_table>>);
+// the role is no transition, and the wildcard does not apply to the final state
+static_assert(std::is_same_v<ending_table::states, mtl::typelist<working, stopped, finished>>);
+static_assert(!mtl::empty_v<fsm::transitions_for_t<ending_table, working, halt>>);
+static_assert(mtl::empty_v<fsm::transitions_for_t<ending_table, finished, halt>>);
+static_assert(fsm::internal::wildcard_source_v<ending_table, working, halt>);
+static_assert(!fsm::internal::wildcard_source_v<ending_table, finished, halt>);
+static_assert(fsm::all_states_reachable_v<ending_table>);
+
+// --- a submachine telling its parent: the events its states emit
+struct progress {};
+struct attempt_succeeded {};
+struct attempt_failed {};
+
+struct trying {
+    static constexpr auto timeout = 10ms;
+};
+// not final: the parent's guard decides whether the attempt goes on
+struct halfway {
+    using emits = progress;
+    void handle(poke const&) {}
+};
+struct succeeded {
+    using emits = attempt_succeeded;
+};
+struct failed {
+    using emits = attempt_failed;
+};
+struct given_up {}; // final and silent: the submachine rests finished
+
+struct attempt_table : fsm::transition_table<
+    fsm::transition<fsm::from<trying>,  fsm::on<start>,        fsm::to<halfway>>,
+    fsm::transition<fsm::from<trying>,  fsm::on<fsm::timeout>, fsm::to<failed>>,
+    fsm::transition<fsm::from<trying>,  fsm::on<fail>,         fsm::to<given_up>>,
+    fsm::internal_transition<fsm::from<halfway>, fsm::on<poke>>,
+    fsm::transition<fsm::from<halfway>, fsm::on<start>,        fsm::to<succeeded>>,
+    fsm::final<succeeded>,
+    fsm::final<failed>,
+    fsm::final<given_up>> {};
+
+struct idle {};
+struct attempt {
+    using submachine = attempt_table;
+};
+struct done {};
+struct broken {};
+struct interrupted {};
+
+// the table's question at the halfway report, answered by an injected object
+struct stop_halfway {};
+
+struct job_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>,    fsm::on<start>,             fsm::to<attempt>>,
+    fsm::transition<fsm::from<attempt>, fsm::on<progress>,          fsm::to<interrupted>,
+                    fsm::guard<stop_halfway>>,
+    fsm::transition<fsm::from<attempt>, fsm::on<attempt_succeeded>, fsm::to<done>>,
+    fsm::transition<fsm::from<attempt>, fsm::on<attempt_failed>,    fsm::to<broken>>,
+    fsm::transition<fsm::from<attempt>, fsm::on<retry>,             fsm::to<attempt>>> {};
+
+struct interrupter {
+    bool check(stop_halfway)
+    {
+        ++asked;
+        return stop;
+    }
+    bool stop = false;
+    int asked = 0;
+};
+
+static_assert(std::is_same_v<fsm::final_states_t<attempt_table>,
+                             mtl::typelist<succeeded, failed, given_up>>);
+static_assert(std::is_same_v<fsm::emitted_events_t<attempt_table>,
+                             mtl::typelist<progress, attempt_failed, attempt_succeeded>>);
+static_assert(std::is_same_v<fsm::emitted_events_t<job_table>,
+                             mtl::typelist<progress, attempt_failed, attempt_succeeded>>);
+static_assert(mtl::empty_v<fsm::emitted_events_t<ending_table>>);
+
+// a composite state owes a transition for every event its submachine emits
+static_assert(
+    fsm::internal::emitted_events_taken_in<job_table, mtl::nil_type>::pred<attempt>::value);
+struct careless_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>,    fsm::on<start>,          fsm::to<attempt>>,
+    fsm::transition<fsm::from<attempt>, fsm::on<attempt_failed>, fsm::to<broken>>> {};
+static_assert(
+    !fsm::internal::emitted_events_taken_in<careless_table, mtl::nil_type>::pred<attempt>::value);
+
+// a local event for a level below is decorated once per level on the way up
+static_assert(std::is_same_v<fsm::for_level_t<fsm::timeout, 0>, fsm::timeout>);
+static_assert(std::is_same_v<fsm::for_level_t<fsm::timeout, 2>,
+                             fsm::for_submachine<fsm::for_submachine<fsm::timeout>>>);
+static_assert(!fsm::local_event_v<fsm::for_submachine<fsm::timeout>>);
+
+// an emitted event is taken inside the machine: the ring does not carry it
+using queued_timers = fsm::timed<fsm::OwningQueuedTimer<manual_timer>, 2>;
+using queued_job =
+    fsm::QueuedMachine<job_table, 4, fsm::inline_work, fsm::no_lock, queued_timers, interrupter>;
+static_assert(mtl::has_a_v<queued_job::queueable_events, start>);
+static_assert(!mtl::has_a_v<queued_job::queueable_events, progress>);
+static_assert(!mtl::has_a_v<queued_job::queueable_events, attempt_failed>);
+
+// --- three levels: an end taken one level up may end that level in turn
+struct campaign_failed {};
+
+struct campaign_lost {
+    using emits = campaign_failed;
+};
+struct battle {
+    using submachine = attempt_table;
+    void handle(progress const&) {}
+};
+
+struct campaign_table : fsm::transition_table<
+    fsm::internal_transition<fsm::from<battle>, fsm::on<progress>>,
+    fsm::transition<fsm::from<battle>, fsm::on<attempt_succeeded>, fsm::to<battle>>,
+    fsm::transition<fsm::from<battle>, fsm::on<attempt_failed>,    fsm::to<campaign_lost>>,
+    fsm::final<campaign_lost>> {};
+
+struct war {
+    using submachine = campaign_table;
+};
+struct peace {};
+
+struct war_table : fsm::transition_table<
+    fsm::transition<fsm::from<war>, fsm::on<campaign_failed>, fsm::to<peace>>> {};
+
+static_assert(fsm::levels_v<war_table> == 3);
+
+// --- a feature takes its final<> entry along
+struct ending_feature {};
+struct optional_end {
+    using feature = ending_feature;
+};
+struct featured_ending_table : fsm::transition_table<
+    fsm::transition<fsm::from<working>, fsm::on<start>, fsm::to<optional_end>>,
+    fsm::transition<fsm::from<working>, fsm::on<fail>,  fsm::to<stopped>>,
+    fsm::final<optional_end>> {};
+static_assert(std::is_same_v<fsm::final_states_t<featured_ending_table>,
+                             mtl::typelist<optional_end>>);
+static_assert(mtl::empty_v<
+    fsm::final_states_t<fsm::enabled_table_t<featured_ending_table, fsm::observers<>>>>);
+
+} // namespace Final
 
 // --- runtime checks ---------------------------------------------------------
 
@@ -1570,9 +1826,9 @@ namespace lifetime {
     struct plain { ~plain() { ++exits; } };      // counts its exits
     struct counted { counted() { ++entries; } }; // counts its entries
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<plain>,   fsm::on<ping>, fsm::to<counted>>,
-        fsm::transition<fsm::from<counted>, fsm::on<ping>, fsm::to<plain>>>;
+        fsm::transition<fsm::from<counted>, fsm::on<ping>, fsm::to<plain>>> {};
 } // namespace lifetime
 
 void entryIsConstructionExitIsDestruction()
@@ -1608,12 +1864,12 @@ namespace guards {
         static bool check() { return allow; }
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<gate>,   fsm::on<push>, fsm::to<passed>,
                         fsm::guard<gate_is_open>>,
         fsm::internal_transition<fsm::from<gate>, fsm::on<unlock>>,
         fsm::transition<fsm::from<passed>, fsm::on<push>, fsm::to<gate>,
-                        fsm::guard<return_allowed>>>;
+                        fsm::guard<return_allowed>>> {};
 } // namespace guards
 
 // --- injected guards: the table asks, an injected object answers -----------
@@ -1629,11 +1885,11 @@ namespace InjectedGuards {
         static bool check() { return false; }
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<open>,
                         fsm::guard<door_unlocked>>,
         fsm::transition<fsm::from<open>,   fsm::on<push>, fsm::to<closed>,
-                        fsm::guard<after_hours>>>;
+                        fsm::guard<after_hours>>> {};
 
     // answers door_unlocked from its own data and counts entries: a guard
     // and an observer at once, the table naming neither
@@ -1684,14 +1940,14 @@ namespace CombinedGuards {
 
     // unlocked and not late opens; unlocked but late is refused; locked
     // stays - a disjunction is the next row of the pair
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<open>,
                         fsm::guard<door_unlocked, fsm::not_<after_hours>>>,
         fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<refused>,
                         fsm::guard<door_unlocked>>,
         fsm::internal_transition<fsm::from<closed>, fsm::on<push>>,
         fsm::transition<fsm::from<open>,    fsm::on<push>, fsm::to<closed>>,
-        fsm::transition<fsm::from<refused>, fsm::on<push>, fsm::to<closed>>>;
+        fsm::transition<fsm::from<refused>, fsm::on<push>, fsm::to<closed>>> {};
 
     using opening = mtl::front_t<tbl::transitions>;
     static_assert(std::is_same_v<opening::guards,
@@ -1807,11 +2063,11 @@ namespace transition_hook {
         int code = 0;
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>>,
         fsm::internal_transition<fsm::from<idle>, fsm::on<tick>>,
         fsm::transition<fsm::from<busy>, fsm::on<go>, fsm::to<idle>>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>>;
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>> {};
 
     struct step {
         std::string_view from;
@@ -1856,9 +2112,9 @@ namespace event_guard {
         static bool check(closed const&, reading const& event) { return event.value > 10; }
     };
 
-    using tbl = fsm::transition_table<
+    struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<closed>, fsm::on<reading>, fsm::to<open>,
-                        fsm::guard<above_threshold>>>;
+                        fsm::guard<above_threshold>>> {};
 } // namespace event_guard
 
 void guardSeesTheEventPayload()
@@ -1908,8 +2164,8 @@ namespace ordering {
         int last_value = -1;
     };
 
-    using tbl = fsm::transition_table<
-        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>>;
+    struct tbl : fsm::transition_table<
+        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>> {};
 } // namespace ordering
 
 void declaredObservationsAreValidated()
@@ -2068,9 +2324,9 @@ void contextSurvivesTimeoutRetry()
 void contextInitialState()
 {
     using namespace Context;
-    using tbl2 = fsm::transition_table<
+    struct tbl2 : fsm::transition_table<
         fsm::initial<trying>,
-        fsm::transition<fsm::from<trying>, fsm::on<done>, fsm::to<succeeded>>>;
+        fsm::transition<fsm::from<trying>, fsm::on<done>, fsm::to<succeeded>>> {};
     fsm::StateMachine<tbl2> sm; // initial state constructed from its context
 
     check(sm.is<trying>());
@@ -2743,6 +2999,127 @@ void queuedNestedExpiryReachesItsLevel()
     check(!tim.timer(1).platformTimer().armed);
 }
 
+void finalStateEndsTheMachine()
+{
+    using namespace Final;
+    fsm::StateMachine<ending_table> sm;
+    check(!sm.isFinished());
+
+    check(sm.process(halt{})); // the wildcard applies to every other state
+    check(sm.is<stopped>() && !sm.isFinished());
+    check(sm.process(start{}));
+
+    check(sm.process(start{}));
+    check(sm.is<finished>() && sm.isFinished());
+    check(!sm.process(halt{})); // nothing leaves a final state, not even the wildcard
+    check(!sm.process(start{}));
+    check(sm.is<finished>());
+}
+
+void emittedEventIsTakenByTheCompositeState()
+{
+    using namespace Final;
+    interrupter guard;
+    fsm::StateMachine<job_table, interrupter> sm{guard};
+    sm.process(start{}); // attempt: trying
+    check(sm.submachine<attempt>()->is<trying>());
+
+    // halfway emits progress: the parent's guard is asked and refuses,
+    // the submachine carries on
+    check(sm.process(start{}));
+    check(guard.asked == 1);
+    check(sm.is<attempt>() && sm.submachine<attempt>()->is<halfway>());
+
+    // handled in place: the state was not entered again, nothing is emitted
+    check(sm.process(poke{}));
+    check(guard.asked == 1);
+
+    // succeeded is final and emits: the composite state is left
+    check(sm.process(start{}));
+    check(sm.is<done>());
+}
+
+void parentGuardEndsTheSubmachine()
+{
+    using namespace Final;
+    interrupter guard{.stop = true};
+    fsm::StateMachine<job_table, interrupter> sm{guard};
+    sm.process(start{});
+
+    check(sm.process(start{})); // halfway reports, the guard says stop
+    check(guard.asked == 1);
+    check(sm.is<interrupted>());
+    check(sm.submachine<attempt>() == nullptr);
+}
+
+void silentFinalStateRestsUntilTheParentLeaves()
+{
+    using namespace Final;
+    interrupter guard;
+    fsm::StateMachine<job_table, interrupter> sm{guard};
+    sm.process(start{});
+
+    check(sm.process(fail{})); // given_up: final, emits nothing
+    check(sm.is<attempt>());
+    check(sm.submachine<attempt>()->isFinished());
+    check(!sm.isFinished()); // the parent has not ended
+    check(!sm.process(start{})); // a finished submachine handles nothing
+
+    check(sm.process(retry{})); // the parent's own row: re-entry restarts the submachine
+    check(sm.submachine<attempt>()->is<trying>());
+    check(!sm.submachine<attempt>()->isFinished());
+}
+
+void subStateTimeoutEndsItsCompositeState()
+{
+    using namespace Final;
+    fsm::timed<manual_timer, 2> tim;
+    interrupter guard;
+    fsm::StateMachine<job_table, fsm::timed<manual_timer, 2>, interrupter> sm{tim, guard};
+    sm.process(start{});
+    check(tim.timer(1).armed && tim.timer(1).duration == 10ms);
+
+    // the expiry enters at the root, decorated for the level below:
+    // trying -> failed, whose event the composite state takes
+    tim.timer(1).expire();
+    check(sm.is<broken>());
+    check(!tim.timer(1).armed);
+}
+
+void endTakenOneLevelUpEndsThatLevelInTurn()
+{
+    using namespace Final;
+    fsm::timed<manual_timer, 3> tim;
+    fsm::StateMachine<war_table, fsm::timed<manual_timer, 3>> sm{tim};
+    check(sm.is<war>());
+    auto const* campaign = sm.submachine<war>();
+    check(campaign->is<battle>() && campaign->submachine<battle>()->is<trying>());
+
+    sm.process(start{}); // halfway: progress, handled in place one level up
+    sm.process(start{}); // succeeded: the battle is fought again
+    check(sm.submachine<war>()->submachine<battle>()->is<trying>());
+
+    // two levels down: failed -> campaign_lost -> peace, in one run
+    check(tim.timer(2).armed);
+    tim.timer(2).expire();
+    check(sm.is<peace>());
+}
+
+void queuedSubStateTimeoutEndsItsCompositeState()
+{
+    using namespace Final;
+    queued_timers tim;
+    interrupter guard;
+    queued_job sm{tim, guard};
+    check(sm.process(start{}));
+    check(!sm.process(progress{})); // an emitted event is never processed from outside
+    check(sm.is<attempt>() && !sm.isFinished());
+
+    check(tim.timer(1).platformTimer().armed);
+    tim.timer(1).platformTimer().expire(); // latches; the queue delivers it for level 1
+    check(sm.is<broken>());
+}
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -2804,6 +3181,13 @@ int statemachineTests()
     nestedFeatureEnabledByAnObserver();
     machineFiltersItsOwnTable();
     queuedNestedExpiryReachesItsLevel();
+    finalStateEndsTheMachine();
+    emittedEventIsTakenByTheCompositeState();
+    parentGuardEndsTheSubmachine();
+    silentFinalStateRestsUntilTheParentLeaves();
+    subStateTimeoutEndsItsCompositeState();
+    endTakenOneLevelUpEndsThatLevelInTurn();
+    queuedSubStateTimeoutEndsItsCompositeState();
     queuedDeliversAfterTransitionCompletes();
     queuedOwningTimerIsOneLine();
     queuedRunsOnCallerOwnedWork();

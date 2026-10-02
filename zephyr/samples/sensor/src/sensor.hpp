@@ -90,7 +90,7 @@ struct reading {
     static constexpr auto timeout = 2000ms; // the sensor never answered
     static constexpr auto annotations = fsm::annotate(led_pattern::on);
 
-    using contexts = mtl::typelist<retry_budget>;
+    using contexts = fsm::contexts<retry_budget>;
     retry_budget& context;
     explicit reading(retry_budget& budget) : context(budget) {}
 };
@@ -99,7 +99,7 @@ struct retrying {
     static constexpr auto timeout = 200ms;
     static constexpr auto annotations = fsm::annotate(led_pattern::off);
 
-    using contexts = mtl::typelist<retry_budget>;
+    using contexts = fsm::contexts<retry_budget>;
     retry_budget& context;
     // one more attempt used, whether the sensor reported the failure or
     // never answered (the timeout path constructs without the event)
@@ -124,7 +124,7 @@ struct failed {
 struct emergency {
     static constexpr auto annotations = fsm::annotate(led_pattern::on, sensor_power{false});
 
-    using contexts = mtl::typelist<stop_log>;
+    using contexts = fsm::contexts<stop_log>;
     stop_log& context;
     explicit emergency(stop_log& log) : context(log) {}
     // a reading finishing while stopped is handled in place
@@ -164,10 +164,10 @@ struct measuring {
     static constexpr auto annotations = fsm::annotate(sensor_power{true});
 };
 
-// --- the table: one list, features included; a disabled feature is
-// filtered out. Without the calibration entries the first transition's
-// source, idle, is the initial state
-using sensor_transitions = mtl::typelist<
+// --- the table: its transitions, features included; a disabled feature
+// is filtered out. Without the calibration entries the first
+// transition's source, idle, is the initial state
+using sensor_transitions = fsm::transition_table<
     fsm::initial<calibrating>,
     fsm::transition<fsm::from<calibrating>, fsm::on<calibrated>,   fsm::to<idle>>,
     fsm::transition<fsm::from<calibrating>, fsm::on<fsm::timeout>, fsm::to<failed>>,
@@ -185,10 +185,10 @@ using sensor_transitions = mtl::typelist<
     fsm::internal_transition<fsm::from<emergency>, fsm::on<reading_failed>>>;
 
 // The table, features included: the machine built on it removes every
-// feature none of its observers enables, at every level. Named (a
-// struct, not an alias): the short name, sensor_table, identifies the
-// machine in trace lines and graphs
-struct sensor_table : mtl::rebind_t<sensor_transitions, fsm::transition_table> {};
+// feature none of its observers enables, at every level. A machine
+// runs a named table - a struct, not the alias above: the short name,
+// sensor_table, identifies the machine in trace lines and graphs
+struct sensor_table : sensor_transitions {};
 
 // A stand-in observer enabling every feature, for the checks below
 // (the real enabler lives with the board code)
@@ -198,8 +198,8 @@ struct every_feature {
 
 // what a machine runs: with the calibrator, the table as named; without
 // an enabler, the table minus the feature, idle leading
-using with_calibration    = fsm::enabled_table_t<sensor_table, mtl::typelist<every_feature>>;
-using without_calibration = fsm::enabled_table_t<sensor_table, mtl::typelist<>>;
+using with_calibration    = fsm::enabled_table_t<sensor_table, fsm::observers<every_feature>>;
+using without_calibration = fsm::enabled_table_t<sensor_table, fsm::observers<>>;
 static_assert(std::is_same_v<with_calibration, sensor_table>);
 static_assert(std::is_same_v<mtl::front_t<with_calibration::states>, calibrating>);
 static_assert(std::is_same_v<mtl::front_t<without_calibration::states>, idle>);

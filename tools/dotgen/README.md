@@ -2,8 +2,10 @@
 
 Finds the fsm transition tables in a source tree and writes one Graphviz
 `.dot` per table, the graphs `tools/fsmview` loads. It scans headers for
-named tables (`struct my_table : fsm::transition_table<...> {}`, also
-through `mtl::rebind_t`), generates a C++ program that includes those
+named tables (`struct my_table : fsm::transition_table<...> {}`, or
+`struct my_table : my_transitions {}` where a scanned header declares
+`using my_transitions = fsm::transition_table<...>;`), generates a C++
+program that includes those
 headers and calls `fsm::writeDot` for each table, builds it with the
 host C++ compiler against the library headers, runs it, and reports the
 files written.
@@ -34,9 +36,13 @@ west fsm_dotgen modules/mtl/zephyr/samples/traffic_light/src -o graphs
 - `-D MACRO[=VALUE]`: preprocessor definitions the table headers need.
 - `-o DIR`: output directory (default `dot/`), one `<table>.dot` per table;
   the file stem and graph title are the struct's name, which is also the
-  machine id in the trace lines.
+  machine id in the trace lines. The title is drawn at the top of the
+  graph, so it shows in a rendered PNG or SVG.
 - `--table NS::TABLE[=NAME]`: also render this type, for templated tables
   the scanner has to skip: `--table 'tc::drp::table_for<timing, pref>=tc_drp'`.
+  Naming a table the scan found renames it: how two tables sharing a
+  struct name in different namespaces are told apart
+  (`--table tc::sink_table=tc_sink_table`).
 - `--cxx`, `--std`: host compiler (default `$CXX` or `c++`) and standard
   (default `c++20`); `--keep` leaves the generated `dotgen.cpp` in the
   output directory.
