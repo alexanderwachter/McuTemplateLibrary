@@ -684,7 +684,13 @@ private:
     template<typename F>
     void forEachObserver(F&& f)
     {
-        std::apply([&](auto&... observer) { (f(observer), ...); }, observers_);
+        this->forEachObserver(f, std::index_sequence_for<OBSERVERs...>{});
+    }
+
+    template<typename F, std::size_t... INDEXs>
+    void forEachObserver(F& f, std::index_sequence<INDEXs...>)
+    {
+        (f(std::get<INDEXs>(observers_)), ...);
     }
 
     void beginProcessing()
