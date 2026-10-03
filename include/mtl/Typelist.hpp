@@ -91,9 +91,7 @@ struct prepend<T, typelist<ELEMENTs...>>
     using type = typelist<T, ELEMENTs...>;
 };
 
-// Trait to concatenate any number of typelists, in order. Sixteen lists
-// are merged per instantiation; fewer are padded with empty lists to
-// sixteen, so exactly one form matches any number of lists
+// Trait to concatenate any number of typelists, in order
 template<concepts::typelist... LISTs>
 struct concat;
 
@@ -114,7 +112,7 @@ struct padded_concat<std::index_sequence<PADDINGs...>, LISTs...>
 
 } // namespace internal
 
-// Two to fifteen lists
+// Three to fifteen lists
 template<concepts::typelist... LISTs>
 struct concat
     : internal::padded_concat<std::make_index_sequence<16U - sizeof...(LISTs)>, LISTs...> {};
@@ -124,6 +122,10 @@ struct concat<> : std::type_identity<typelist<>> {};
 
 template<typename... ELEMENTs>
 struct concat<typelist<ELEMENTs...>> : std::type_identity<typelist<ELEMENTs...>> {};
+
+template<typename... ELEMENT1s, typename... ELEMENT2s>
+struct concat<typelist<ELEMENT1s...>, typelist<ELEMENT2s...>>
+    : std::type_identity<typelist<ELEMENT1s..., ELEMENT2s...>> {};
 
 template<typename... ELEMENT1s, typename... ELEMENT2s, typename... ELEMENT3s,
          typename... ELEMENT4s, typename... ELEMENT5s, typename... ELEMENT6s,
