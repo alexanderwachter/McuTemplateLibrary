@@ -558,64 +558,115 @@ private:
         } else {
             this->template construct<NEW_STATE>();
         }
-        this->forEachObserver([&](auto& observer) {
-            this->template notifyEntered<EVENT, NEW_STATE>(observer, state_left);
-        });
-        this->forEachObserver([&](auto& observer) {
-            this->template notifyTransitioned<EVENT, NEW_STATE>(observer, state_left);
-        });
+        this->template enterObserversAfterWildcard<EVENT, NEW_STATE>(
+            state_left, internal::hooked_indices_t<StateMachine::has_enter_hook_after_wildcard<
+                            OBSERVERs, EVENT, NEW_STATE>...>{});
+        this->template transitionObserversAfterWildcard<EVENT, NEW_STATE>(
+            state_left,
+            internal::hooked_indices_t<StateMachine::has_transition_hook_after_wildcard<
+                OBSERVERs, EVENT, NEW_STATE>...>{});
         this->template enterSubmachine<NEW_STATE>();
     }
 
+    template<concepts::event EVENT, concepts::state NEW_STATE, std::size_t... INDEXs>
+    void enterObserversAfterWildcard(std::size_t state_left, std::index_sequence<INDEXs...>)
+    {
+        (this->template enterHookAfterWildcard<EVENT, NEW_STATE>(std::get<INDEXs>(observers_),
+                                                                 state_left),
+         ...);
+    }
+
+    template<concepts::event EVENT, concepts::state NEW_STATE, std::size_t... INDEXs>
+    void transitionObserversAfterWildcard(std::size_t state_left, std::index_sequence<INDEXs...>)
+    {
+        (this->template transitionHookAfterWildcard<EVENT, NEW_STATE>(
+             std::get<INDEXs>(observers_), state_left),
+         ...);
+    }
+
+    // The one-state form once, else the edge form of the state left
     template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER>
-    void notifyEntered(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
+    void enterHookAfterWildcard(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
     {
         if constexpr (internal::has_enter<OBSERVER, NEW_STATE, StateMachine>) {
             observer.template onEnter<NEW_STATE>(*this);
-        } else if constexpr (StateMachine::enters_from_some_state<OBSERVER, NEW_STATE>) {
-            this->template forStateLeft<EVENT>(state_left, [&](auto tag) {
-                internal::enterHook<typename decltype(tag)::type, NEW_STATE>(observer, *this);
-            });
+        } else {
+            this->template enterFromStateLeft<NEW_STATE>(
+                observer, state_left,
+                wildcard_sources_with_enter_from<OBSERVER, EVENT, NEW_STATE>{});
         }
     }
 
-    // Whether OBSERVER has an edge-form entry hook for NEW_STATE from any
-    // state: without one the switch on the state left has nothing to do
-    template<concepts::observer OBSERVER, concepts::state NEW_STATE>
-    static constexpr bool enters_from_some_state = []<typename... STATEs>(mtl::typelist<STATEs...>) {
-        return (internal::has_enter_from<OBSERVER, STATEs, NEW_STATE, StateMachine> || ...);
-    }(typename TRANSITIONS::states{});
-
     template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER>
-    void notifyTransitioned(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
+    void transitionHookAfterWildcard(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
     {
         if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, StateMachine>) {
             observer.template onTransition<EVENT, NEW_STATE>(*this);
         } else {
-            this->template forStateLeft<EVENT>(state_left, [&](auto tag) {
-                internal::transitionHook<typename decltype(tag)::type, EVENT, NEW_STATE>(observer,
-                                                                                         *this);
-            });
+            this->template transitionFromStateLeft<EVENT, NEW_STATE>(
+                observer, state_left,
+                wildcard_sources_with_transition_from<OBSERVER, EVENT, NEW_STATE>{});
         }
     }
 
-    // f(std::type_identity<STATE>{}) for the state at INDEX, among the
-    // states a wildcard for EVENT can leave
-    template<concepts::event EVENT, typename F>
-    void forStateLeft(std::size_t index, F&& f)
+    // The states a wildcard for EVENT can leave from which OBSERVER has
+    // the edge form of the hook
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    struct is_wildcard_source_with_enter_from {
+        template<concepts::state STATE>
+        struct pred
+            : std::bool_constant<
+                  internal::wildcard_source_v<TRANSITIONS, STATE, EVENT> &&
+                  internal::has_enter_from<OBSERVER, STATE, NEW_STATE, StateMachine>> {};
+    };
+
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    using wildcard_sources_with_enter_from = mtl::filter_t<
+        typename TRANSITIONS::states,
+        is_wildcard_source_with_enter_from<OBSERVER, EVENT, NEW_STATE>::template pred>;
+
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    struct is_wildcard_source_with_transition_from {
+        template<concepts::state STATE>
+        struct pred
+            : std::bool_constant<internal::wildcard_source_v<TRANSITIONS, STATE, EVENT> &&
+                                 internal::has_transition_from<OBSERVER, STATE, EVENT, NEW_STATE,
+                                                               StateMachine>> {};
+    };
+
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    using wildcard_sources_with_transition_from = mtl::filter_t<
+        typename TRANSITIONS::states,
+        is_wildcard_source_with_transition_from<OBSERVER, EVENT, NEW_STATE>::template pred>;
+
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    static constexpr bool has_enter_hook_after_wildcard =
+        internal::has_enter<OBSERVER, NEW_STATE, StateMachine> ||
+        !mtl::empty_v<wildcard_sources_with_enter_from<OBSERVER, EVENT, NEW_STATE>>;
+
+    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
+    static constexpr bool has_transition_hook_after_wildcard =
+        internal::has_transition<OBSERVER, EVENT, NEW_STATE, StateMachine> ||
+        !mtl::empty_v<wildcard_sources_with_transition_from<OBSERVER, EVENT, NEW_STATE>>;
+
+    template<concepts::state NEW_STATE, concepts::observer OBSERVER, concepts::state... SOURCEs>
+    void enterFromStateLeft(OBSERVER& observer, std::size_t state_left, mtl::typelist<SOURCEs...>)
     {
-        [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
-            static_cast<void>(([&] {
-                using STATE = std::variant_alternative_t<INDEXs, state_variant>;
-                if constexpr (internal::wildcard_source_v<TRANSITIONS, STATE, EVENT>) {
-                    if (index == INDEXs) {
-                        f(std::type_identity<STATE>{});
-                        return true;
-                    }
-                }
-                return false;
-            }() || ...));
-        }(std::make_index_sequence<std::variant_size_v<state_variant>>{});
+        static_cast<void>(
+            ((state_left == mtl::index_of_v<SOURCEs, typename TRANSITIONS::states> &&
+              (observer.template onEnterFrom<SOURCEs, NEW_STATE>(*this), true)) ||
+             ...));
+    }
+
+    template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER,
+             concepts::state... SOURCEs>
+    void transitionFromStateLeft(OBSERVER& observer, std::size_t state_left,
+                                 mtl::typelist<SOURCEs...>)
+    {
+        static_cast<void>(
+            ((state_left == mtl::index_of_v<SOURCEs, typename TRANSITIONS::states> &&
+              (observer.template onTransitionFrom<SOURCEs, EVENT, NEW_STATE>(*this), true)) ||
+             ...));
     }
 
     // --- submachines --------------------------------------------------------
@@ -709,19 +760,7 @@ private:
         }(nesting{});
     }
 
-    // --- observers and the re-entrancy check --------------------------------
-
-    template<typename F>
-    void forEachObserver(F&& f)
-    {
-        this->forEachObserver(f, std::index_sequence_for<OBSERVERs...>{});
-    }
-
-    template<typename F, std::size_t... INDEXs>
-    void forEachObserver(F& f, std::index_sequence<INDEXs...>)
-    {
-        (f(std::get<INDEXs>(observers_)), ...);
-    }
+    // --- the re-entrancy check ----------------------------------------------
 
     void beginProcessing()
     {
