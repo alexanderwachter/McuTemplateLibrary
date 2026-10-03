@@ -91,18 +91,57 @@ struct prepend<T, typelist<ELEMENTs...>>
     using type = typelist<T, ELEMENTs...>;
 };
 
-// Trait to concatenate two typelists
-template<concepts::typelist LIST1, concepts::typelist LIST2>
+// Trait to concatenate any number of typelists, in order. Sixteen lists
+// are merged per instantiation; fewer are padded with empty lists to
+// sixteen, so exactly one form matches any number of lists
+template<concepts::typelist... LISTs>
 struct concat;
 
-template<concepts::typelist LIST1, concepts::typelist LIST2>
-using concat_t = typename concat<LIST1, LIST2>::type;
+template<concepts::typelist... LISTs>
+using concat_t = typename concat<LISTs...>::type;
 
-template<typename... ELEMENT1s, typename... ELEMENT2s>
-struct concat<typelist<ELEMENT1s...>, typelist<ELEMENT2s...>>
-{
-    using type = typelist<ELEMENT1s..., ELEMENT2s...>;
-};
+namespace internal {
+
+template<std::size_t>
+using empty_typelist_t = typelist<>;
+
+template<typename PADDING, concepts::typelist... LISTs>
+struct padded_concat;
+
+template<std::size_t... PADDINGs, concepts::typelist... LISTs>
+struct padded_concat<std::index_sequence<PADDINGs...>, LISTs...>
+    : concat<LISTs..., empty_typelist_t<PADDINGs>...> {};
+
+} // namespace internal
+
+// Two to fifteen lists
+template<concepts::typelist... LISTs>
+struct concat
+    : internal::padded_concat<std::make_index_sequence<16U - sizeof...(LISTs)>, LISTs...> {};
+
+template<>
+struct concat<> : std::type_identity<typelist<>> {};
+
+template<typename... ELEMENTs>
+struct concat<typelist<ELEMENTs...>> : std::type_identity<typelist<ELEMENTs...>> {};
+
+template<typename... ELEMENT1s, typename... ELEMENT2s, typename... ELEMENT3s,
+         typename... ELEMENT4s, typename... ELEMENT5s, typename... ELEMENT6s,
+         typename... ELEMENT7s, typename... ELEMENT8s, typename... ELEMENT9s,
+         typename... ELEMENT10s, typename... ELEMENT11s, typename... ELEMENT12s,
+         typename... ELEMENT13s, typename... ELEMENT14s, typename... ELEMENT15s,
+         typename... ELEMENT16s, concepts::typelist... RESTs>
+struct concat<typelist<ELEMENT1s...>, typelist<ELEMENT2s...>, typelist<ELEMENT3s...>,
+              typelist<ELEMENT4s...>, typelist<ELEMENT5s...>, typelist<ELEMENT6s...>,
+              typelist<ELEMENT7s...>, typelist<ELEMENT8s...>, typelist<ELEMENT9s...>,
+              typelist<ELEMENT10s...>, typelist<ELEMENT11s...>, typelist<ELEMENT12s...>,
+              typelist<ELEMENT13s...>, typelist<ELEMENT14s...>, typelist<ELEMENT15s...>,
+              typelist<ELEMENT16s...>, RESTs...>
+    : concat<typelist<ELEMENT1s..., ELEMENT2s..., ELEMENT3s..., ELEMENT4s..., ELEMENT5s...,
+                      ELEMENT6s..., ELEMENT7s..., ELEMENT8s..., ELEMENT9s..., ELEMENT10s...,
+                      ELEMENT11s..., ELEMENT12s..., ELEMENT13s..., ELEMENT14s..., ELEMENT15s...,
+                      ELEMENT16s...>,
+             RESTs...> {};
 
 // Trait to get a list in reversed order
 template<concepts::typelist LIST>

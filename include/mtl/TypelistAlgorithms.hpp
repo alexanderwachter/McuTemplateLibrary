@@ -149,14 +149,17 @@ struct filter;
 template<concepts::typelist LIST, template<typename> typename PREDICATE>
 using filter_t = typename filter<LIST, PREDICATE>::type;
 
-template<template<typename> typename PREDICATE>
-struct filter<typelist<>, PREDICATE> : std::type_identity<typelist<>> {};
+namespace internal {
 
-template<template<typename> typename PREDICATE, typename FIRST, typename... RESTs>
-struct filter<typelist<FIRST, RESTs...>, PREDICATE>
-{
-    using type = std::conditional_t<PREDICATE<FIRST>::value, prepend_t<FIRST, filter_t<typelist<RESTs...>, PREDICATE>>, filter_t<typelist<RESTs...>, PREDICATE>>;
-};
+// typelist<ELEMENT> when KEEP, else empty: the lists a selection concatenates
+template<bool KEEP, typename ELEMENT>
+using kept_t = std::conditional_t<KEEP, typelist<ELEMENT>, typelist<>>;
+
+} // namespace internal
+
+template<template<typename> typename PREDICATE, typename... ELEMENTs>
+struct filter<typelist<ELEMENTs...>, PREDICATE>
+    : concat<internal::kept_t<PREDICATE<ELEMENTs>::value, ELEMENTs>...> {};
 
 
 // type is a typelist where the elements that satisfies the predicate are removed
@@ -166,14 +169,9 @@ struct remove_if;
 template<concepts::typelist LIST, template<typename> typename PREDICATE>
 using remove_if_t = typename remove_if<LIST, PREDICATE>::type;
 
-template<template<typename> typename PREDICATE>
-struct remove_if<typelist<>, PREDICATE> : std::type_identity<typelist<>> {};
-
-template<template<typename> typename PREDICATE, typename FIRST, typename... RESTs>
-struct remove_if<typelist<FIRST, RESTs...>, PREDICATE>
-{
-    using type = std::conditional_t<PREDICATE<FIRST>::value, remove_if_t<typelist<RESTs...>, PREDICATE>, prepend_t<FIRST, remove_if_t<typelist<RESTs...>, PREDICATE>>>;
-};
+template<template<typename> typename PREDICATE, typename... ELEMENTs>
+struct remove_if<typelist<ELEMENTs...>, PREDICATE>
+    : concat<internal::kept_t<!PREDICATE<ELEMENTs>::value, ELEMENTs>...> {};
 
 
 // removes the firs occurrences of a type if there exist the same type later in the list

@@ -59,6 +59,16 @@ namespace TestConcat {
     static_assert(std::is_same_v<concat_t<first, second>, firstTwo>);
     static_assert(std::is_same_v<concat_t<second, first>, typelist<test2, test1>>);
     static_assert(std::is_same_v<concat_t<firstTwo, secondTwo>, firstFour>);
+    // any number of lists, in order: none, one, and more than one merging step
+    static_assert(std::is_same_v<concat_t<>, empty>);
+    static_assert(std::is_same_v<concat_t<firstTwo>, firstTwo>);
+    static_assert(std::is_same_v<concat_t<first, empty, second, secondTwo>, firstFour>);
+    static_assert(std::is_same_v<concat_t<first, first, first, first, first, first, first, first,
+                                          first, first, first, first, first, first, first, first,
+                                          second, empty, secondTwo>,
+                                 typelist<test1, test1, test1, test1, test1, test1, test1, test1,
+                                          test1, test1, test1, test1, test1, test1, test1, test1,
+                                          test2, test3, test4>>);
 }
 
 namespace TestRemoveFront {
