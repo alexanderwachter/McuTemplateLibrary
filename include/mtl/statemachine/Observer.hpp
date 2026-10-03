@@ -10,8 +10,11 @@
 #pragma once
 
 #include <mtl/statemachine/Table.hpp>
+#include <mtl/Typelist.hpp>
 
+#include <cstddef>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace fsm {
@@ -58,6 +61,47 @@ template<typename OBSERVER, typename EVENT, typename TO, typename MACHINE>
 concept has_transition = requires(OBSERVER observer, MACHINE& machine) {
     observer.template onTransition<EVENT, TO>(machine);
 };
+
+// Whether an observer has a hook for the edge, in either form
+template<typename OBSERVER, typename FROM, typename TO, typename MACHINE>
+concept has_exit_hook =
+    has_exit_from<OBSERVER, FROM, TO, MACHINE> || has_exit<OBSERVER, FROM, MACHINE>;
+
+template<typename OBSERVER, typename FROM, typename TO, typename MACHINE>
+concept has_enter_hook =
+    has_enter_from<OBSERVER, FROM, TO, MACHINE> || has_enter<OBSERVER, TO, MACHINE>;
+
+template<typename OBSERVER, typename FROM, typename EVENT, typename TO, typename MACHINE>
+concept has_transition_hook = has_transition_from<OBSERVER, FROM, EVENT, TO, MACHINE> ||
+                              has_transition<OBSERVER, EVENT, TO, MACHINE>;
+
+// The positions of the observers a hook is delivered to: those where
+// HOOKED is true, as a std::index_sequence
+template<bool... HOOKED>
+struct hooked_indices;
+
+template<bool... HOOKED>
+using hooked_indices_t = typename hooked_indices<HOOKED...>::type;
+
+template<mtl::concepts::typelist POSITIONS>
+struct as_index_sequence;
+
+template<std::size_t... POSITIONs>
+struct as_index_sequence<mtl::typelist<std::integral_constant<std::size_t, POSITIONs>...>>
+    : std::type_identity<std::index_sequence<POSITIONs...>> {};
+
+template<typename INDEXES, bool... HOOKED>
+struct hooked_positions;
+
+template<std::size_t... INDEXs, bool... HOOKED>
+struct hooked_positions<std::index_sequence<INDEXs...>, HOOKED...>
+    : as_index_sequence<mtl::concat_t<
+          std::conditional_t<HOOKED, mtl::typelist<std::integral_constant<std::size_t, INDEXs>>,
+                             mtl::typelist<>>...>> {};
+
+template<bool... HOOKED>
+struct hooked_indices
+    : hooked_positions<std::make_index_sequence<sizeof...(HOOKED)>, HOOKED...> {};
 
 // An edge with a known source: the edge form when defined, else the
 // one-state form - of the state left for the exit, of the state
@@ -111,14 +155,17 @@ public:
         static_assert((internal::validated<OBSERVERs, TABLE>() && ...));
     }
 
-    // The From forms forward the source to each member's preferred form;
-    // a plain form exists only when every member has it, so a member
-    // asking for the source is never left without one
+    // The From forms forward the source to each member's preferred form
+    // and exist for the edges some member has a hook for; a plain form
+    // exists only when every member has it, so a member asking for the
+    // source is never left without one
     template<concepts::state FROM, concepts::state TO, typename MACHINE>
+        requires(internal::has_exit_hook<OBSERVERs, FROM, TO, MACHINE> || ...)
     void onExitFrom(MACHINE& machine)
     {
-        this->forEachMember(
-            [&machine](auto& member) { internal::exitHook<FROM, TO>(member, machine); });
+        this->template exitMembers<FROM, TO>(
+            machine, internal::hooked_indices_t<
+                         internal::has_exit_hook<OBSERVERs, FROM, TO, MACHINE>...>{});
     }
 
     template<concepts::state TO, typename MACHINE>
@@ -129,10 +176,12 @@ public:
     }
 
     template<concepts::state FROM, concepts::state TO, typename MACHINE>
+        requires(internal::has_enter_hook<OBSERVERs, FROM, TO, MACHINE> || ...)
     void onEnterFrom(MACHINE& machine)
     {
-        this->forEachMember(
-            [&machine](auto& member) { internal::enterHook<FROM, TO>(member, machine); });
+        this->template enterMembers<FROM, TO>(
+            machine, internal::hooked_indices_t<
+                         internal::has_enter_hook<OBSERVERs, FROM, TO, MACHINE>...>{});
     }
 
     template<concepts::state TO, typename MACHINE>
@@ -143,11 +192,12 @@ public:
     }
 
     template<concepts::state FROM, concepts::event EVENT, concepts::state TO, typename MACHINE>
+        requires(internal::has_transition_hook<OBSERVERs, FROM, EVENT, TO, MACHINE> || ...)
     void onTransitionFrom(MACHINE& machine)
     {
-        this->forEachMember([&machine](auto& member) {
-            internal::transitionHook<FROM, EVENT, TO>(member, machine);
-        });
+        this->template transitionMembers<FROM, EVENT, TO>(
+            machine, internal::hooked_indices_t<internal::has_transition_hook<
+                         OBSERVERs, FROM, EVENT, TO, MACHINE>...>{});
     }
 
     template<concepts::event EVENT, concepts::state TO, typename MACHINE>
@@ -159,6 +209,25 @@ public:
     }
 
 private:
+    template<concepts::state FROM, concepts::state TO, typename MACHINE, std::size_t... INDEXs>
+    void exitMembers(MACHINE& machine, std::index_sequence<INDEXs...>)
+    {
+        (internal::exitHook<FROM, TO>(std::get<INDEXs>(members_), machine), ...);
+    }
+
+    template<concepts::state FROM, concepts::state TO, typename MACHINE, std::size_t... INDEXs>
+    void enterMembers(MACHINE& machine, std::index_sequence<INDEXs...>)
+    {
+        (internal::enterHook<FROM, TO>(std::get<INDEXs>(members_), machine), ...);
+    }
+
+    template<concepts::state FROM, concepts::event EVENT, concepts::state TO, typename MACHINE,
+             std::size_t... INDEXs>
+    void transitionMembers(MACHINE& machine, std::index_sequence<INDEXs...>)
+    {
+        (internal::transitionHook<FROM, EVENT, TO>(std::get<INDEXs>(members_), machine), ...);
+    }
+
     template<typename F>
     void forEachMember(F&& f)
     {

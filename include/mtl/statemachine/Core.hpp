@@ -406,8 +406,15 @@ private:
     void leave()
     {
         this->template leaveSubmachine<OLD_STATE>();
-        this->forEachObserver(
-            [this](auto& observer) { internal::exitHook<OLD_STATE, NEW_STATE>(observer, *this); });
+        this->template exitObservers<OLD_STATE, NEW_STATE>(
+            internal::hooked_indices_t<
+                internal::has_exit_hook<OBSERVERs, OLD_STATE, NEW_STATE, StateMachine>...>{});
+    }
+
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, std::size_t... INDEXs>
+    void exitObservers(std::index_sequence<INDEXs...>)
+    {
+        (internal::exitHook<OLD_STATE, NEW_STATE>(std::get<INDEXs>(observers_), *this), ...);
     }
 
     template<concepts::state NEW_STATE, typename... ARGs>
@@ -422,16 +429,32 @@ private:
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
     void enter()
     {
-        this->forEachObserver(
-            [this](auto& observer) { internal::enterHook<OLD_STATE, NEW_STATE>(observer, *this); });
+        this->template enterObservers<OLD_STATE, NEW_STATE>(
+            internal::hooked_indices_t<
+                internal::has_enter_hook<OBSERVERs, OLD_STATE, NEW_STATE, StateMachine>...>{});
+    }
+
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, std::size_t... INDEXs>
+    void enterObservers(std::index_sequence<INDEXs...>)
+    {
+        (internal::enterHook<OLD_STATE, NEW_STATE>(std::get<INDEXs>(observers_), *this), ...);
     }
 
     template<concepts::state FROM_STATE, concepts::event EVENT, concepts::state TO_STATE>
     void notifyTransition()
     {
-        this->forEachObserver([this](auto& observer) {
-            internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(observer, *this);
-        });
+        this->template transitionObservers<FROM_STATE, EVENT, TO_STATE>(
+            internal::hooked_indices_t<internal::has_transition_hook<
+                OBSERVERs, FROM_STATE, EVENT, TO_STATE, StateMachine>...>{});
+    }
+
+    template<concepts::state FROM_STATE, concepts::event EVENT, concepts::state TO_STATE,
+             std::size_t... INDEXs>
+    void transitionObservers(std::index_sequence<INDEXs...>)
+    {
+        (internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(std::get<INDEXs>(observers_),
+                                                               *this),
+         ...);
     }
 
     void enterInitialState()
