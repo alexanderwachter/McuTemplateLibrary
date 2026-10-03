@@ -8,7 +8,8 @@ C++20 header-only state machine built on the mtl library in this repo
 (`include/mtl`: `typelist`, `find_if`, `count_if`, `unique`, `all_of`, `front`).
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
-`Observing.hpp`, `Observer.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
+`Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
+`InjectedObservers.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -297,7 +298,33 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `QueuedMachine`'s ring takes `nested_events_t` minus the timer
   events and the emitted events.
 - Observers are injected BY REFERENCE (`std::tuple<OBSERVERs&...>`) and
-  must outlive the machine. Value observation lives in the
+  must outlive the machine. The tuple lives in
+  `internal::InjectedObservers<OBSERVERs...>` (InjectedObservers.hpp),
+  the machine's `observers_`, copied into every child machine. The
+  class owns everything about the observers as a set: hook delivery to
+  the observers with a hook for the edge (`deliverExitHooks<OLD, NEW>`,
+  `deliverEnterHooks`, `deliverTransitionHooks`, and the
+  `...AfterWildcard` pair with the per-source compare chain), and the
+  questions `table_with_enabled_features<TABLE>`,
+  `any_observer_enables<TAG>`, `any_observer_notified_by<STATE>`,
+  `all_observers_validate<TABLE>`, `any_observer_answers_guard<GUARD,
+  STATE>`, `every_guard_answered<TRANSITIONS>`,
+  `no_guard_answered_by_two_observers<TRANSITIONS>`;
+  `answerToGuard<GUARD>` asks the answering observer only - the static
+  check and the choice between the two stay in the machine
+  (`StateMachine::answerTo`; guards become a class of their own later).
+  The class knows the machine only through its public interface: no
+  friendship, no member names; a wildcard's hooks read
+  `StateMachine::enabled_table` (public: the table the machine runs,
+  disabled features removed). Measured on pd_drp: this split costs
+  +100 B flash (62116 -> 62216 B, RAM equal) - every delivery passes
+  the observers and the machine, two arguments where the machine's own
+  member functions passed one. Tried: static delivery reaching
+  `machine.observers_` as a friend 0 B (rejected: couples the class to
+  a private member of another), scoped lambdas over the index sequence
+  in place of the named `...To` helpers +640 B, `observers_` as first
+  member and `always_inline` wrappers no change.
+  `ObserverGroup` keeps its own member delivery. Value observation lives in the
   `fsm::observing<DERIVED>` CRTP base: derived provides
   `observe_static<STATE>() -> decltype(STATE::member)` (trailing return
   type = SFINAE opt-out for states without the member) plus

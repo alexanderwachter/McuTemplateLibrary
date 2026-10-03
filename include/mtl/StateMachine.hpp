@@ -221,7 +221,10 @@
  *   Timeout.hpp     timeout/deadline annotations, timer-range maps
  *   Timer.hpp       the timer policy contract, fsm::timed, fsm::deadlined
  *   Observing.hpp   annotation sets, fsm::observing
- *   Observer.hpp    the hook forms, their delivery, ObserverGroup
+ *   ObserverHooks.hpp      the hook forms, their delivery to one observer
+ *   ObserverGroup.hpp      several observers injected as one
+ *   InjectedObservers.hpp  the observers of a machine: their references,
+ *                          hook delivery, what they answer together
  *   Feature.hpp     features as tags and the filter removing one
  *   Traits.hpp      reachability, observer and annotation coverage,
  *                   event coverage - the table-wide proofs
@@ -235,7 +238,9 @@
 
 #include <mtl/statemachine/Core.hpp>
 #include <mtl/statemachine/Feature.hpp>
-#include <mtl/statemachine/Observer.hpp>
+#include <mtl/statemachine/InjectedObservers.hpp>
+#include <mtl/statemachine/ObserverGroup.hpp>
+#include <mtl/statemachine/ObserverHooks.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Queued.hpp>
 #include <mtl/statemachine/Table.hpp>

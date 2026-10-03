@@ -822,6 +822,65 @@ namespace Features {
                                  answering_policy>);
 } // namespace Features
 
+namespace InjectedObservers {
+    struct go {};
+    struct swap_feature {};
+    struct allowed {};
+    struct lamp {
+        constexpr bool operator==(lamp const&) const = default;
+    };
+
+    struct idle {};
+    struct lit {
+        static constexpr auto annotations = fsm::annotate(lamp{});
+    };
+    struct swapping {
+        using feature = swap_feature;
+    };
+
+    struct in_table : fsm::transition_table<
+        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<lit>, fsm::guard<allowed>>,
+        fsm::transition<fsm::from<lit>, fsm::on<go>, fsm::to<swapping>>,
+        fsm::transition<fsm::from<swapping>, fsm::on<go>, fsm::to<idle>>> {};
+
+    struct swap_policy {
+        using enables = swap_feature;
+        bool check(allowed) const { return true; }
+    };
+    struct second_voice {
+        bool check(allowed) const { return false; }
+    };
+    struct lamp_driver : fsm::observing<lamp_driver> {
+        void notifyEntry(lamp) {}
+    };
+    struct bystander {};
+
+    using with_policy = fsm::internal::InjectedObservers<bystander, swap_policy, lamp_driver>;
+    using without     = fsm::internal::InjectedObservers<bystander>;
+
+    static_assert(std::is_same_v<with_policy::observer_list,
+                                 mtl::typelist<bystander, swap_policy, lamp_driver>>);
+
+    static_assert(with_policy::any_observer_enables<swap_feature>);
+    static_assert(!without::any_observer_enables<swap_feature>);
+    static_assert(std::is_same_v<with_policy::table_with_enabled_features<in_table>, in_table>);
+    static_assert(!mtl::has_a_v<without::table_with_enabled_features<in_table>::states, swapping>);
+
+    static_assert(with_policy::any_observer_notified_by<lit>);
+    static_assert(!with_policy::any_observer_notified_by<idle>);
+    static_assert(!without::any_observer_notified_by<lit>);
+
+    static_assert(with_policy::any_observer_answers_guard<allowed, idle>);
+    static_assert(!without::any_observer_answers_guard<allowed, idle>);
+    static_assert(with_policy::every_guard_answered<in_table>);
+    static_assert(!without::every_guard_answered<in_table>);
+    static_assert(with_policy::no_guard_answered_by_two_observers<in_table>);
+    static_assert(!fsm::internal::InjectedObservers<swap_policy, second_voice>::
+                      no_guard_answered_by_two_observers<in_table>);
+
+    static_assert(with_policy::all_observers_validate<in_table>);
+} // namespace InjectedObservers
+
 namespace SharedWildcard {
     struct go {};
     struct kill {

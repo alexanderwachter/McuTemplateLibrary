@@ -9,8 +9,7 @@
 
 #pragma once
 
-#include <mtl/statemachine/Observer.hpp>
-#include <mtl/statemachine/Observing.hpp>
+#include <mtl/statemachine/InjectedObservers.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
@@ -105,11 +104,12 @@ class StateMachine {
     template<concepts::transition_table, concepts::observer...>
     friend class StateMachine;
 
-    using injected = mtl::typelist<OBSERVERs...>;
-    using reaction = internal::reaction;
+    using injected_observers = internal::InjectedObservers<OBSERVERs...>;
+    using injected           = typename injected_observers::observer_list;
+    using reaction           = internal::reaction;
 
-    // The table without the features none of the observers enables
-    using TRANSITIONS = enabled_table_t<TRANSITION_TABLE, injected>;
+    using TRANSITIONS =
+        typename injected_observers::template table_with_enabled_features<TRANSITION_TABLE>;
     static_assert(!mtl::empty_v<typename TRANSITIONS::states>,
                   "StateMachine: every entry of the table belongs to a disabled feature - a "
                   "submachine emptied this way is a feature itself: tag its composite state");
@@ -118,6 +118,8 @@ public:
     // The table as the user named it; a child machine's comes wrapped
     // in internal::nested
     using table         = internal::plain_table_t<TRANSITION_TABLE>;
+    // The table this machine runs: without the features no observer enables
+    using enabled_table = TRANSITIONS;
     using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
     using initial_state = mtl::front_t<typename TRANSITIONS::states>;
 
@@ -173,8 +175,8 @@ public:
     }
 
     // A child machine, built by its parent with the contexts it inherits
-    StateMachine(inherited_context_tuple const& inherited, OBSERVERs&... observers)
-        : contexts_(std::tuple_cat(own_context_tuple{}, inherited)), observers_(observers...),
+    StateMachine(inherited_context_tuple const& inherited, injected_observers const& observers)
+        : contexts_(std::tuple_cat(own_context_tuple{}, inherited)), observers_(observers),
           current_(std::make_from_tuple<state_variant>(
               internal::initialArgs<initial_state>(contexts_)))
     {
@@ -406,15 +408,7 @@ private:
     void leave()
     {
         this->template leaveSubmachine<OLD_STATE>();
-        this->template exitObservers<OLD_STATE, NEW_STATE>(
-            internal::hooked_indices_t<
-                internal::has_exit_hook<OBSERVERs, OLD_STATE, NEW_STATE, StateMachine>...>{});
-    }
-
-    template<concepts::state OLD_STATE, concepts::state NEW_STATE, std::size_t... INDEXs>
-    void exitObservers(std::index_sequence<INDEXs...>)
-    {
-        (internal::exitHook<OLD_STATE, NEW_STATE>(std::get<INDEXs>(observers_), *this), ...);
+        observers_.template deliverExitHooks<OLD_STATE, NEW_STATE>(*this);
     }
 
     template<concepts::state NEW_STATE, typename... ARGs>
@@ -429,32 +423,13 @@ private:
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
     void enter()
     {
-        this->template enterObservers<OLD_STATE, NEW_STATE>(
-            internal::hooked_indices_t<
-                internal::has_enter_hook<OBSERVERs, OLD_STATE, NEW_STATE, StateMachine>...>{});
-    }
-
-    template<concepts::state OLD_STATE, concepts::state NEW_STATE, std::size_t... INDEXs>
-    void enterObservers(std::index_sequence<INDEXs...>)
-    {
-        (internal::enterHook<OLD_STATE, NEW_STATE>(std::get<INDEXs>(observers_), *this), ...);
+        observers_.template deliverEnterHooks<OLD_STATE, NEW_STATE>(*this);
     }
 
     template<concepts::state FROM_STATE, concepts::event EVENT, concepts::state TO_STATE>
     void notifyTransition()
     {
-        this->template transitionObservers<FROM_STATE, EVENT, TO_STATE>(
-            internal::hooked_indices_t<internal::has_transition_hook<
-                OBSERVERs, FROM_STATE, EVENT, TO_STATE, StateMachine>...>{});
-    }
-
-    template<concepts::state FROM_STATE, concepts::event EVENT, concepts::state TO_STATE,
-             std::size_t... INDEXs>
-    void transitionObservers(std::index_sequence<INDEXs...>)
-    {
-        (internal::transitionHook<FROM_STATE, EVENT, TO_STATE>(std::get<INDEXs>(observers_),
-                                                               *this),
-         ...);
+        observers_.template deliverTransitionHooks<FROM_STATE, EVENT, TO_STATE>(*this);
     }
 
     void enterInitialState()
@@ -495,18 +470,15 @@ private:
         }
     }
 
-    // The injected object answering GUARD decides, else the guard's own
-    // static check
+    // The observer answering GUARD decides, else the guard's own static
+    // check
     template<concepts::guard GUARD, concepts::state STATE, concepts::event EVENT>
     bool answerTo(STATE const& state, EVENT const& event)
     {
-        using answerer =
-            mtl::find_if_t<injected, internal::answering<GUARD, STATE>::template pred>;
-        if constexpr (std::is_same_v<answerer, mtl::nil_type>) {
-            return internal::checkStaticGuard<GUARD>(state, event);
+        if constexpr (injected_observers::template any_observer_answers_guard<GUARD, STATE>) {
+            return observers_.template answerToGuard<GUARD>(state, event);
         } else {
-            return internal::askGuard<GUARD>(
-                std::get<mtl::index_of_v<answerer, injected>>(observers_), state, event);
+            return internal::checkStaticGuard<GUARD>(state, event);
         }
     }
 
@@ -558,115 +530,10 @@ private:
         } else {
             this->template construct<NEW_STATE>();
         }
-        this->template enterObserversAfterWildcard<EVENT, NEW_STATE>(
-            state_left, internal::hooked_indices_t<StateMachine::has_enter_hook_after_wildcard<
-                            OBSERVERs, EVENT, NEW_STATE>...>{});
-        this->template transitionObserversAfterWildcard<EVENT, NEW_STATE>(
-            state_left,
-            internal::hooked_indices_t<StateMachine::has_transition_hook_after_wildcard<
-                OBSERVERs, EVENT, NEW_STATE>...>{});
+        observers_.template deliverEnterHooksAfterWildcard<EVENT, NEW_STATE>(*this, state_left);
+        observers_.template deliverTransitionHooksAfterWildcard<EVENT, NEW_STATE>(*this,
+                                                                                  state_left);
         this->template enterSubmachine<NEW_STATE>();
-    }
-
-    template<concepts::event EVENT, concepts::state NEW_STATE, std::size_t... INDEXs>
-    void enterObserversAfterWildcard(std::size_t state_left, std::index_sequence<INDEXs...>)
-    {
-        (this->template enterHookAfterWildcard<EVENT, NEW_STATE>(std::get<INDEXs>(observers_),
-                                                                 state_left),
-         ...);
-    }
-
-    template<concepts::event EVENT, concepts::state NEW_STATE, std::size_t... INDEXs>
-    void transitionObserversAfterWildcard(std::size_t state_left, std::index_sequence<INDEXs...>)
-    {
-        (this->template transitionHookAfterWildcard<EVENT, NEW_STATE>(
-             std::get<INDEXs>(observers_), state_left),
-         ...);
-    }
-
-    // The one-state form once, else the edge form of the state left
-    template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER>
-    void enterHookAfterWildcard(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
-    {
-        if constexpr (internal::has_enter<OBSERVER, NEW_STATE, StateMachine>) {
-            observer.template onEnter<NEW_STATE>(*this);
-        } else {
-            this->template enterFromStateLeft<NEW_STATE>(
-                observer, state_left,
-                wildcard_sources_with_enter_from<OBSERVER, EVENT, NEW_STATE>{});
-        }
-    }
-
-    template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER>
-    void transitionHookAfterWildcard(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)
-    {
-        if constexpr (internal::has_transition<OBSERVER, EVENT, NEW_STATE, StateMachine>) {
-            observer.template onTransition<EVENT, NEW_STATE>(*this);
-        } else {
-            this->template transitionFromStateLeft<EVENT, NEW_STATE>(
-                observer, state_left,
-                wildcard_sources_with_transition_from<OBSERVER, EVENT, NEW_STATE>{});
-        }
-    }
-
-    // The states a wildcard for EVENT can leave from which OBSERVER has
-    // the edge form of the hook
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    struct is_wildcard_source_with_enter_from {
-        template<concepts::state STATE>
-        struct pred
-            : std::bool_constant<
-                  internal::wildcard_source_v<TRANSITIONS, STATE, EVENT> &&
-                  internal::has_enter_from<OBSERVER, STATE, NEW_STATE, StateMachine>> {};
-    };
-
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    using wildcard_sources_with_enter_from = mtl::filter_t<
-        typename TRANSITIONS::states,
-        is_wildcard_source_with_enter_from<OBSERVER, EVENT, NEW_STATE>::template pred>;
-
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    struct is_wildcard_source_with_transition_from {
-        template<concepts::state STATE>
-        struct pred
-            : std::bool_constant<internal::wildcard_source_v<TRANSITIONS, STATE, EVENT> &&
-                                 internal::has_transition_from<OBSERVER, STATE, EVENT, NEW_STATE,
-                                                               StateMachine>> {};
-    };
-
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    using wildcard_sources_with_transition_from = mtl::filter_t<
-        typename TRANSITIONS::states,
-        is_wildcard_source_with_transition_from<OBSERVER, EVENT, NEW_STATE>::template pred>;
-
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    static constexpr bool has_enter_hook_after_wildcard =
-        internal::has_enter<OBSERVER, NEW_STATE, StateMachine> ||
-        !mtl::empty_v<wildcard_sources_with_enter_from<OBSERVER, EVENT, NEW_STATE>>;
-
-    template<concepts::observer OBSERVER, concepts::event EVENT, concepts::state NEW_STATE>
-    static constexpr bool has_transition_hook_after_wildcard =
-        internal::has_transition<OBSERVER, EVENT, NEW_STATE, StateMachine> ||
-        !mtl::empty_v<wildcard_sources_with_transition_from<OBSERVER, EVENT, NEW_STATE>>;
-
-    template<concepts::state NEW_STATE, concepts::observer OBSERVER, concepts::state... SOURCEs>
-    void enterFromStateLeft(OBSERVER& observer, std::size_t state_left, mtl::typelist<SOURCEs...>)
-    {
-        static_cast<void>(
-            ((state_left == mtl::index_of_v<SOURCEs, typename TRANSITIONS::states> &&
-              (observer.template onEnterFrom<SOURCEs, NEW_STATE>(*this), true)) ||
-             ...));
-    }
-
-    template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER,
-             concepts::state... SOURCEs>
-    void transitionFromStateLeft(OBSERVER& observer, std::size_t state_left,
-                                 mtl::typelist<SOURCEs...>)
-    {
-        static_cast<void>(
-            ((state_left == mtl::index_of_v<SOURCEs, typename TRANSITIONS::states> &&
-              (observer.template onTransitionFrom<SOURCEs, EVENT, NEW_STATE>(*this), true)) ||
-             ...));
     }
 
     // --- submachines --------------------------------------------------------
@@ -677,12 +544,8 @@ private:
     void enterSubmachine()
     {
         if constexpr (internal::composite<STATE>) {
-            std::apply(
-                [this](auto&... observer) {
-                    sub_.template emplace<submachine_of<STATE>>(
-                        this->template contextsInheritedBy<STATE>(), observer...);
-                },
-                observers_);
+            sub_.template emplace<submachine_of<STATE>>(
+                this->template contextsInheritedBy<STATE>(), observers_);
         }
     }
 
@@ -792,18 +655,16 @@ private:
     static constexpr bool observersValidated()
     {
         if constexpr (StateMachine::depth == 0) {
-            return (internal::validated<OBSERVERs, table>() && ...);
+            return injected_observers::template all_observers_validate<table>;
         } else {
             return true;
         }
     }
     static_assert(StateMachine::observersValidated());
 
-    static_assert(mtl::all_of_v<typename TRANSITIONS::transitions,
-                                internal::guard_answered_once_in<injected>::template pred>,
+    static_assert(injected_observers::template no_guard_answered_by_two_observers<TRANSITIONS>,
                   "StateMachine: a guard is answered by more than one injected object");
-    static_assert(mtl::all_of_v<typename TRANSITIONS::transitions,
-                                internal::guard_answered_in<injected>::template pred>,
+    static_assert(injected_observers::template every_guard_answered<TRANSITIONS>,
                   "StateMachine: a guard of the table has no static check and no injected "
                   "object answers it - inject one with bool check(GUARD, FROM const&[, EVENT "
                   "const&]) or bool check(GUARD)");
@@ -851,7 +712,7 @@ private:
     // --- data ---------------------------------------------------------------
 
     context_tuple contexts_{}; // the own instances, then the inherited references
-    std::tuple<OBSERVERs&...> observers_;
+    injected_observers observers_;
 #if MTL_FSM_CHECKS
     bool processing_ = false;
 #endif
