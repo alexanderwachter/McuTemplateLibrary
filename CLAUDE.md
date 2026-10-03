@@ -29,6 +29,12 @@ python3 -m unittest tools/fsmview/test_fsmview.py
 Tests follow the repo style: compile-time checks as `static_assert` in named
 namespaces; runtime checks (state machine only) as small isolated test
 functions using `check()`, reported through `main.cpp`.
+Compile-time cost: `benchmarks/typelist_compile_time.py` (mechanical -
+N generated types, one unit per typelist operation, any number of
+include trees side by side; GGC MB from `-ftime-report` is the
+deterministic figure, CPU seconds drift ±10% here). Results and the
+design notes they settled are in `benchmarks/README.md`; a change to an
+algorithm comes with its before/after row.
 Follow the repo's naming conventions: ALL_CAPS template parameters, packs
 ending in `s` (`TRANSITIONs`, `OBSERVERs`), `_t`/`_v` aliases, camelCase
 member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
