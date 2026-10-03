@@ -549,12 +549,19 @@ private:
     {
         if constexpr (internal::has_enter<OBSERVER, NEW_STATE, StateMachine>) {
             observer.template onEnter<NEW_STATE>(*this);
-        } else {
+        } else if constexpr (StateMachine::enters_from_some_state<OBSERVER, NEW_STATE>) {
             this->template forStateLeft<EVENT>(state_left, [&](auto tag) {
                 internal::enterHook<typename decltype(tag)::type, NEW_STATE>(observer, *this);
             });
         }
     }
+
+    // Whether OBSERVER has an edge-form entry hook for NEW_STATE from any
+    // state: without one the switch on the state left has nothing to do
+    template<concepts::observer OBSERVER, concepts::state NEW_STATE>
+    static constexpr bool enters_from_some_state = []<typename... STATEs>(mtl::typelist<STATEs...>) {
+        return (internal::has_enter_from<OBSERVER, STATEs, NEW_STATE, StateMachine> || ...);
+    }(typename TRANSITIONS::states{});
 
     template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER>
     void notifyTransitioned(OBSERVER& observer, [[maybe_unused]] std::size_t state_left)

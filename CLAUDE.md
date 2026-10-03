@@ -300,7 +300,15 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   alive) - each detected by requires. The base implements both hooks
   with the change check as `if constexpr` on constexpr values:
   equal-value transitions emit no code. First `notifyEntry` fires
-  during machine construction; `notifyExit` never does.
+  during machine construction; `notifyExit` never does. The hooks exist
+  only for states whose observation reaches a `notifyEntry`/`notifyExit`
+  overload (`observing::exits_notified<STATE>` /
+  `entries_notified<STATE>`, 2026-10-03): a state the observer ignores
+  costs the machine no function on any of its edges. Both forms go
+  together per state - hiding only the edge form would make the
+  machine fall back to the one-state form and re-notify an unchanged
+  value (tried, caught by `wildcardEntryRenotifiesUnchangedValue`'s
+  neighbours).
   Annotation sets: a state's `static constexpr auto annotations =
   fsm::annotate(a, b)` (`fsm::annotation_set<Ts...>`, types distinct,
   `has<T>`/`get<T>()` keyed by the plain type) is observed without any

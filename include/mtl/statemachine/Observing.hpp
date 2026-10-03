@@ -229,6 +229,59 @@ template<concepts::observer OBSERVER, concepts::state STATE>
 inline constexpr bool values_notified_v =
     mtl::any_of_v<instance_types_t<STATE>, value_notified<OBSERVER, STATE>::template pred>;
 
+// The set elements of STATE that change against OTHER and reach
+// OBSERVER's exit / entry hook: what an edge delivers, as a list
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
+struct exit_delivers {
+    template<concepts::annotation T>
+    struct pred : std::bool_constant<set_annotation_changes_v<T, STATE, OTHER> &&
+                                     requires(OBSERVER observer) {
+                                         observer.notifyExit(STATE::annotations.template get<T>());
+                                     }> {};
+};
+
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
+struct entry_delivers {
+    template<concepts::annotation T>
+    struct pred : std::bool_constant<set_annotation_changes_v<T, STATE, OTHER> &&
+                                     requires(OBSERVER observer) {
+                                         observer.notifyEntry(STATE::annotations.template get<T>());
+                                     }> {};
+};
+
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
+using exit_delivered_t =
+    mtl::filter_t<annotation_types_t<STATE>, exit_delivers<OBSERVER, STATE, OTHER>::template pred>;
+
+template<concepts::observer OBSERVER, concepts::state STATE, concepts::state OTHER>
+using entry_delivered_t =
+    mtl::filter_t<annotation_types_t<STATE>, entry_delivers<OBSERVER, STATE, OTHER>::template pred>;
+
+// The instance values of STATE with an exit / entry hook accepting them
+template<concepts::observer OBSERVER, concepts::state STATE>
+struct value_exit_delivers {
+    template<concepts::annotation T>
+    struct pred : std::bool_constant<requires(OBSERVER observer, STATE const& state) {
+                      observer.notifyExit(instanceValues(state).template get<T>());
+                  }> {};
+};
+
+template<concepts::observer OBSERVER, concepts::state STATE>
+struct value_entry_delivers {
+    template<concepts::annotation T>
+    struct pred : std::bool_constant<requires(OBSERVER observer, STATE const& state) {
+                      observer.notifyEntry(instanceValues(state).template get<T>());
+                  }> {};
+};
+
+template<concepts::observer OBSERVER, concepts::state STATE>
+using value_exit_delivered_t =
+    mtl::filter_t<instance_types_t<STATE>, value_exit_delivers<OBSERVER, STATE>::template pred>;
+
+template<concepts::observer OBSERVER, concepts::state STATE>
+using value_entry_delivered_t =
+    mtl::filter_t<instance_types_t<STATE>, value_entry_delivers<OBSERVER, STATE>::template pred>;
+
 // A state carrying T: as a static annotation or as an instance value
 template<concepts::annotation T>
 struct carrying {
@@ -379,10 +432,30 @@ struct observing {
         }
     }
 
+    // Whether anything of STATE reaches an exit / entry hook of DERIVED.
+    // The hooks exist for such states only, so a state this observer
+    // ignores costs the machine no function on any of its edges. Both
+    // forms go together: the machine takes the one-state form where the
+    // edge form is missing, which would re-notify an unchanged value
+    template<concepts::state STATE>
+    static constexpr bool exits_notified =
+        requires(DERIVED observer) {
+            observer.notifyExit(DERIVED::template annotation<STATE>());
+        } || !mtl::empty_v<internal::exit_delivered_t<DERIVED, STATE, mtl::nil_type>> ||
+        !mtl::empty_v<internal::value_exit_delivered_t<DERIVED, STATE>>;
+
+    template<concepts::state STATE>
+    static constexpr bool entries_notified =
+        requires(DERIVED observer) {
+            observer.notifyEntry(DERIVED::template annotation<STATE>());
+        } || !mtl::empty_v<internal::entry_delivered_t<DERIVED, STATE, mtl::nil_type>> ||
+        !mtl::empty_v<internal::value_entry_delivered_t<DERIVED, STATE>>;
+
     // The edge form. The static path is per edge (the change check needs
     // both states); the instance values delegate to one body per valued
     // state
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
+        requires (exits_notified<OLD_STATE>)
     void onExitFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -391,11 +464,13 @@ struct observing {
                 self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
         }
-        this->template setExit<OLD_STATE, NEW_STATE>(internal::annotation_types_t<OLD_STATE>{});
+        this->template setExit<OLD_STATE>(
+            internal::exit_delivered_t<DERIVED, OLD_STATE, NEW_STATE>{});
         this->template valuesExit<OLD_STATE>(machine);
     }
 
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
+        requires (entries_notified<NEW_STATE>)
     void onEnterFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
@@ -404,19 +479,22 @@ struct observing {
                 self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
         }
-        this->template setEnter<OLD_STATE, NEW_STATE>(internal::annotation_types_t<NEW_STATE>{});
+        this->template setEnter<NEW_STATE>(
+            internal::entry_delivered_t<DERIVED, NEW_STATE, OLD_STATE>{});
         this->template valuesEnter<NEW_STATE>(machine);
     }
 
     // The one-state form: no other state to compare against, which is the
     // edge form against mtl::nil_type - every value counts as a change
     template<concepts::state STATE, typename MACHINE>
+        requires (exits_notified<STATE>)
     void onExit(MACHINE& machine)
     {
         this->template onExitFrom<STATE, mtl::nil_type>(machine);
     }
 
     template<concepts::state STATE, typename MACHINE>
+        requires (entries_notified<STATE>)
     void onEnter(MACHINE& machine)
     {
         this->template onEnterFrom<mtl::nil_type, STATE>(machine);
@@ -429,43 +507,32 @@ protected:
     observing() = default;
 
 private:
-    // The set elements, each on its own change check
-    template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::annotation... Ts>
+    // The set elements the edge delivers, already selected
+    template<concepts::state STATE, concepts::annotation... Ts>
     void setExit(mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        ([&] {
-            if constexpr (internal::set_annotation_changes_v<Ts, OLD_STATE, NEW_STATE>) {
-                if constexpr (requires { self.notifyExit(OLD_STATE::annotations.template get<Ts>()); }) {
-                    self.notifyExit(OLD_STATE::annotations.template get<Ts>());
-                }
-            }
-        }(), ...);
+        (self.notifyExit(STATE::annotations.template get<Ts>()), ...);
     }
 
-    template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::annotation... Ts>
+    template<concepts::state STATE, concepts::annotation... Ts>
     void setEnter(mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        ([&] {
-            if constexpr (internal::set_annotation_changes_v<Ts, NEW_STATE, OLD_STATE>) {
-                if constexpr (requires { self.notifyEntry(NEW_STATE::annotations.template get<Ts>()); }) {
-                    self.notifyEntry(NEW_STATE::annotations.template get<Ts>());
-                }
-            }
-        }(), ...);
+        (self.notifyEntry(STATE::annotations.template get<Ts>()), ...);
     }
 
-    // The instance values, each element with a hook accepting it. The
-    // machine is in STATE here, so getIf() cannot fail; the check is what
-    // stops GCC reporting a potential null dereference inside <variant>
-    // once this inlines at -Os
+    // The instance values with a hook accepting them. The machine is in
+    // STATE here, so getIf() cannot fail; the check is what stops GCC
+    // reporting a potential null dereference inside <variant> once this
+    // inlines at -Os
     template<concepts::state STATE, typename MACHINE>
     void valuesExit(MACHINE& machine)
     {
-        if constexpr (internal::values_notified_v<DERIVED, STATE>) {
+        using delivered = internal::value_exit_delivered_t<DERIVED, STATE>;
+        if constexpr (!mtl::empty_v<delivered>) {
             if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
-                this->exitEach(internal::instanceValues(*state), internal::instance_types_t<STATE>{});
+                this->exitEach(internal::instanceValues(*state), delivered{});
             }
         }
     }
@@ -473,9 +540,10 @@ private:
     template<concepts::state STATE, typename MACHINE>
     void valuesEnter(MACHINE& machine)
     {
-        if constexpr (internal::values_notified_v<DERIVED, STATE>) {
+        using delivered = internal::value_entry_delivered_t<DERIVED, STATE>;
+        if constexpr (!mtl::empty_v<delivered>) {
             if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
-                this->enterEach(internal::instanceValues(*state), internal::instance_types_t<STATE>{});
+                this->enterEach(internal::instanceValues(*state), delivered{});
             }
         }
     }
@@ -484,22 +552,14 @@ private:
     void exitEach(SET const& set, mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        ([&] {
-            if constexpr (requires { self.notifyExit(set.template get<Ts>()); }) {
-                self.notifyExit(set.template get<Ts>());
-            }
-        }(), ...);
+        (self.notifyExit(set.template get<Ts>()), ...);
     }
 
     template<typename SET, concepts::annotation... Ts>
     void enterEach(SET const& set, mtl::typelist<Ts...>)
     {
         auto& self = static_cast<DERIVED&>(*this);
-        ([&] {
-            if constexpr (requires { self.notifyEntry(set.template get<Ts>()); }) {
-                self.notifyEntry(set.template get<Ts>());
-            }
-        }(), ...);
+        (self.notifyEntry(set.template get<Ts>()), ...);
     }
 };
 
