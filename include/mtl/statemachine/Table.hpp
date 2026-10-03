@@ -88,6 +88,16 @@ struct matches_event {
 template<concepts::state STATE>
 struct is_any_state : std::is_same<STATE, any_state> {};
 
+// The transitions leaving FROM, in table order, selected in one pass
+// over the pack
+template<concepts::state FROM, mtl::concepts::typelist TRANSITIONS>
+struct grouped_by_from;
+
+template<concepts::state FROM, concepts::transition... TRANSITIONs>
+struct grouped_by_from<FROM, mtl::typelist<TRANSITIONs...>>
+    : mtl::concat<std::conditional_t<std::is_same_v<typename TRANSITIONs::from, FROM>,
+                                     mtl::typelist<TRANSITIONs>, mtl::typelist<>>...> {};
+
 template<concepts::transition TRANSITION>
 struct event_of : std::type_identity<typename TRANSITION::event> {};
 
@@ -287,10 +297,6 @@ public:
         mtl::transform_t<mtl::filter_t<entries, internal::is_final_role>, internal::unwrap>>;
 
 private:
-    static_assert(internal::no_shadowed_alternatives<transitions>::value,
-                  "transition_table: an unguarded (state, event) transition must be "
-                  "the last of its alternatives");
-
     using endpoints =
         mtl::remove_if_t<mtl::remove_if_t<typename internal::endpoints<transitions>::type,
                                           internal::is_any_state>,
@@ -307,17 +313,10 @@ private:
                   "transition_table: a final state owns a submachine");
 
     // Transitions grouped by their exact source, computed once per
-    // FROM: the per-(FROM, EVENT) lookups filter the small group
-    // instead of the whole table - a large table is otherwise
-    // re-walked for every (state, event) pair the machine dispatches,
-    // which dominates compile time (measured)
+    // FROM: the per-(FROM, EVENT) lookups and the table checks work on
+    // the small group instead of the whole table
     template<concepts::state FROM>
-    struct from_group {
-        template<concepts::transition TRANSITION>
-        struct pred : std::is_same<typename TRANSITION::from, FROM> {};
-
-        using type = mtl::filter_t<transitions, pred>;
-    };
+    struct from_group : internal::grouped_by_from<FROM, transitions> {};
 
 public:
     // Deduplicated in order of first appearance: front is the initial state
@@ -327,6 +326,12 @@ public:
         mtl::prepend_t<explicit_initial, endpoints>>>;
 
 private:
+    template<concepts::state FROM>
+    struct group_unshadowed : internal::no_shadowed_alternatives<typename from_group<FROM>::type> {};
+    static_assert(mtl::all_of_v<mtl::prepend_t<any_state, states>, group_unshadowed>,
+                  "transition_table: an unguarded (state, event) transition must be "
+                  "the last of its alternatives");
+
     static_assert(!mtl::has_a_v<final_states, mtl::front_or_t<states, mtl::nil_type>>,
                   "transition_table: the initial state is a final state");
 
