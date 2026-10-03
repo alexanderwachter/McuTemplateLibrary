@@ -50,7 +50,7 @@ template<concepts::typelist LIST, typename T>
 inline constexpr bool has_a_v = has_a<LIST, T>::value;
 
 template<typename T, typename... ELEMENTs>
-struct has_a<typelist<ELEMENTs...>, T> : std::disjunction<std::is_same<T, ELEMENTs>...> {};
+struct has_a<typelist<ELEMENTs...>, T> : std::bool_constant<(std::is_same_v<T, ELEMENTs> || ...)> {};
 
 // Sum of all values of the types in the list
 template<concepts::typelist LIST>
@@ -190,9 +190,33 @@ struct unique_keep_last<typelist<FIRST, RESTs...>>
     using type = std::conditional_t<has_a_v<typelist<RESTs...>, FIRST>, unique_keep_last_t<typelist<RESTs...>>, prepend_t<FIRST, unique_keep_last_t<typelist<RESTs...>>>>;
 };
 
+namespace internal {
+
+// The types kept so far as bases: membership is one base-class check
+template<typename... KEPTs>
+struct kept_set : std::type_identity<KEPTs>... {};
+
+template<typename T, typename... KEPTs>
+inline constexpr bool kept_v = std::is_base_of_v<std::type_identity<T>, kept_set<KEPTs...>>;
+
+template<concepts::typelist KEPT, typename... RESTs>
+struct unique_helper;
+
+template<typename... KEPTs>
+struct unique_helper<typelist<KEPTs...>> : std::type_identity<typelist<KEPTs...>> {};
+
+template<typename... KEPTs, typename FIRST, typename... RESTs>
+struct unique_helper<typelist<KEPTs...>, FIRST, RESTs...>
+    : unique_helper<std::conditional_t<kept_v<FIRST, KEPTs...>, typelist<KEPTs...>, typelist<KEPTs..., FIRST>>, RESTs...> {};
+
+} // namespace internal
+
 // keeps the first occurrence of a type in the list and removes all further
 template<concepts::typelist LIST>
-struct unique : reverse<unique_keep_last_t<reverse_t<LIST>>> {};
+struct unique;
+
+template<typename... ELEMENTs>
+struct unique<typelist<ELEMENTs...>> : internal::unique_helper<typelist<>, ELEMENTs...> {};
 
 template<concepts::typelist LIST>
 using unique_t = typename unique<LIST>::type;
@@ -205,11 +229,9 @@ struct count_if;
 template<concepts::typelist LIST, template<typename> typename PREDICATE>
 inline constexpr std::size_t count_if_v = count_if<LIST, PREDICATE>::value;
 
-template<template<typename> typename PREDICATE>
-struct count_if<typelist<>, PREDICATE> : std::integral_constant<std::size_t, 0> {};
-
-template<template<typename> typename PREDICATE, typename FIRST, typename... RESTs>
-struct count_if<typelist<FIRST, RESTs...>, PREDICATE> : std::integral_constant<std::size_t, count_if_v<typelist<RESTs...>, PREDICATE> + (PREDICATE<FIRST>::value ? 1U : 0U)> {};
+template<template<typename> typename PREDICATE, typename... ELEMENTs>
+struct count_if<typelist<ELEMENTs...>, PREDICATE>
+    : std::integral_constant<std::size_t, (std::size_t{0} + ... + (PREDICATE<ELEMENTs>::value ? 1U : 0U))> {};
 
 // Apply the operation on each element and make a new list from the operation::type
 template<concepts::typelist LIST, template<typename> typename OPERATION>
