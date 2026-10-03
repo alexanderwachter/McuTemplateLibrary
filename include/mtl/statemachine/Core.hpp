@@ -60,18 +60,19 @@ namespace internal {
 // (Cortex-M0+, 14-state/20-event machine): 3.7 kB smaller - std::visit
 // emits per-(event, state) invoke thunks and tables that dominate at
 // scale.
-template<typename VISITOR, typename... ALTERNATIVEs>
-    requires (std::invocable<VISITOR, ALTERNATIVEs&> && ...)
-constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
+// The visitor answers every alternative with the type it answers the
+// first with
+template<typename VISITOR, typename FIRST, typename... ALTERNATIVEs>
+constexpr auto visit(VISITOR&& visitor, std::variant<FIRST, ALTERNATIVEs...>& variant)
 {
-    using result_type = std::common_type_t<std::invoke_result_t<VISITOR, ALTERNATIVEs&>...>;
+    using result_type = std::remove_cvref_t<decltype(visitor(std::declval<FIRST&>()))>;
     return [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
         result_type result{};
         static_cast<void>(((variant.index() == INDEXs &&
                             (result = visitor(*std::get_if<INDEXs>(&variant)), true)) ||
                            ...));
         return result;
-    }(std::index_sequence_for<ALTERNATIVEs...>{});
+    }(std::index_sequence_for<FIRST, ALTERNATIVEs...>{});
 }
 
 // The fold is the default: it wins clearly on embedded targets with
@@ -83,7 +84,6 @@ constexpr auto visit(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 #endif
 
 template<typename VISITOR, typename... ALTERNATIVEs>
-    requires (std::invocable<VISITOR, ALTERNATIVEs&> && ...)
 constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
 {
 #if MTL_FSM_FOLD_VISIT
