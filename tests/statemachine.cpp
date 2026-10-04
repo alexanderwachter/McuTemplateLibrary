@@ -465,9 +465,9 @@ namespace Payload {
         std::vector<int> transmitted;
     };
 
-    // observing-based counterpart to tx_driver: consumes the state's
-    // instance value by type, no getIf plumbing, no accessor named
-    struct live_driver : fsm::observing<live_driver> {
+    // the same through fsm::observing: the state's instance value
+    // arrives by its type
+    struct message_driver : fsm::observing<message_driver> {
         using observes = fsm::annotations<message>;
 
         void notifyEntry(message const& msg) { entered.push_back(msg.id); }
@@ -477,8 +477,8 @@ namespace Payload {
         std::vector<int> exited;
     };
     // instance values count for coverage and for the declared-type check
-    static_assert(fsm::is_notified_of_v<live_driver, sending>);
-    static_assert(!fsm::is_notified_of_v<live_driver, idle>);
+    static_assert(fsm::is_notified_of_v<message_driver, sending>);
+    static_assert(!fsm::is_notified_of_v<message_driver, idle>);
     static_assert(fsm::annotation_in_table_v<tbl, message>);
 } // namespace Payload
 
@@ -539,7 +539,7 @@ namespace Context {
     static_assert(fsm::concepts::state<trying>);
 } // namespace Context
 
-namespace Internal {
+namespace InternalTransitions {
     struct tick {};
     struct note {
         int value;
@@ -591,7 +591,7 @@ namespace Internal {
             ++exits;
         }
     };
-} // namespace Internal
+} // namespace InternalTransitions
 
 namespace Alternatives {
     struct tick {};
@@ -690,80 +690,80 @@ namespace AnnotationSets {
 
 namespace Features {
     struct go {};
-    struct swap_feature {};
-    struct vconn_feature {};
+    struct tuning_feature {};
+    struct heating_feature {};
 
     struct plain {};
-    struct swapping {
-        using feature = swap_feature;
+    struct tuning {
+        using feature = tuning_feature;
     };
-    struct powering {
-        using feature = vconn_feature;
+    struct heating {
+        using feature = heating_feature;
     };
 
-    struct swap_policy {
-        using enables = swap_feature;
+    struct tuner {
+        using enables = tuning_feature;
     };
-    struct both_policies {
-        using enables = mtl::typelist<vconn_feature, swap_feature>;
+    struct tuner_and_heater {
+        using enables = mtl::typelist<heating_feature, tuning_feature>;
     };
     struct bystander {};
 
-    static_assert(fsm::observer_enables_v<swap_policy, swap_feature>);
-    static_assert(!fsm::observer_enables_v<swap_policy, vconn_feature>);
-    static_assert(fsm::observer_enables_v<both_policies, swap_feature>);
-    static_assert(fsm::observer_enables_v<both_policies, vconn_feature>);
-    static_assert(!fsm::observer_enables_v<bystander, swap_feature>);
+    static_assert(fsm::observer_enables_v<tuner, tuning_feature>);
+    static_assert(!fsm::observer_enables_v<tuner, heating_feature>);
+    static_assert(fsm::observer_enables_v<tuner_and_heater, tuning_feature>);
+    static_assert(fsm::observer_enables_v<tuner_and_heater, heating_feature>);
+    static_assert(!fsm::observer_enables_v<bystander, tuning_feature>);
 
-    static_assert(fsm::state_in_feature_v<swapping, swap_feature>);
-    static_assert(!fsm::state_in_feature_v<swapping, vconn_feature>);
-    static_assert(!fsm::state_in_feature_v<plain, swap_feature>);
+    static_assert(fsm::state_in_feature_v<tuning, tuning_feature>);
+    static_assert(!fsm::state_in_feature_v<tuning, heating_feature>);
+    static_assert(!fsm::state_in_feature_v<plain, tuning_feature>);
 
-    static_assert(fsm::feature_enabled_v<swap_feature, bystander, swap_policy>);
-    static_assert(!fsm::feature_enabled_v<vconn_feature, bystander, swap_policy>);
-    static_assert(!fsm::feature_enabled_v<swap_feature>); // no observers at all
+    static_assert(fsm::feature_enabled_v<tuning_feature, bystander, tuner>);
+    static_assert(!fsm::feature_enabled_v<heating_feature, bystander, tuner>);
+    static_assert(!fsm::feature_enabled_v<tuning_feature>); // no observers at all
 
-    using swap_in    = fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<swapping>>;
-    using swap_out   = fsm::transition<fsm::from<swapping>, fsm::on<go>, fsm::to<plain>>;
-    using power_in   = fsm::transition<fsm::from<plain>, fsm::on<fsm::timeout>, fsm::to<powering>>;
+    using tune_in    = fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<tuning>>;
+    using tune_out   = fsm::transition<fsm::from<tuning>, fsm::on<go>, fsm::to<plain>>;
+    using heat_in    = fsm::transition<fsm::from<plain>, fsm::on<fsm::timeout>, fsm::to<heating>>;
     using plain_self = fsm::transition<fsm::from<plain>, fsm::on<fsm::timeout>, fsm::to<plain>>;
-    using entries    = mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, power_in, plain_self>;
+    using entries    = mtl::typelist<fsm::initial<tuning>, tune_in, tune_out, heat_in, plain_self>;
 
     // one feature removed: its initial<> and both transitions go, the rest stays
-    static_assert(std::is_same_v<fsm::remove_feature_t<entries, swap_feature>,
-                                 mtl::typelist<power_in, plain_self>>);
+    static_assert(std::is_same_v<fsm::remove_feature_t<entries, tuning_feature>,
+                                 mtl::typelist<heat_in, plain_self>>);
 
     // filtered by observers: unenabled features go, featureless states stay
     static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, bystander>,
                                  mtl::typelist<plain_self>>);
-    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, swap_policy>,
-                                 mtl::typelist<fsm::initial<swapping>, swap_in, swap_out, plain_self>>);
-    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, bystander, both_policies>, entries>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, tuner>,
+                                 mtl::typelist<fsm::initial<tuning>, tune_in, tune_out, plain_self>>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<entries, bystander, tuner_and_heater>, entries>);
 
     // the table built from the filtered list: without the initial<>, the
     // first remaining transition's source leads
     using trimmed = mtl::rebind_t<fsm::remove_disabled_features_t<entries, bystander>, fsm::transition_table>;
     static_assert(std::is_same_v<mtl::front_t<trimmed::states>, plain>);
-    static_assert(!mtl::has_a_v<trimmed::states, swapping>);
+    static_assert(!mtl::has_a_v<trimmed::states, tuning>);
 
     // several features in one pass, and the same filter on a timer-range map
     static_assert(std::is_same_v<
-                  fsm::remove_features_t<entries, mtl::typelist<swap_feature, vconn_feature>>,
+                  fsm::remove_features_t<entries, mtl::typelist<tuning_feature, heating_feature>>,
                   mtl::typelist<plain_self>>);
 
     constexpr fsm::timeout_range any_time{0us, 1s};
-    using ranges = fsm::timer_ranges<fsm::timed_by<powering, any_time>, fsm::timed_by<plain, any_time>>;
-    static_assert(std::is_same_v<fsm::remove_feature_t<ranges, vconn_feature>,
+    using ranges = fsm::timer_ranges<fsm::timed_by<heating, any_time>, fsm::timed_by<plain, any_time>>;
+    static_assert(std::is_same_v<fsm::remove_feature_t<ranges, heating_feature>,
                                  fsm::timer_ranges<fsm::timed_by<plain, any_time>>>);
-    static_assert(std::is_same_v<fsm::remove_disabled_features_t<ranges, both_policies>, ranges>);
+    static_assert(std::is_same_v<fsm::remove_disabled_features_t<ranges, tuner_and_heater>, ranges>);
 
     // the table a machine runs: the one given while nothing is disabled
     // (no observer list, or observers enabling every feature), else
     // rebuilt without the disabled features
     struct full_table
-        : fsm::transition_table<fsm::initial<swapping>, swap_in, swap_out, plain_self> {};
+        : fsm::transition_table<fsm::initial<tuning>, tune_in, tune_out, plain_self> {};
     static_assert(std::is_same_v<fsm::enabled_table_t<full_table>, full_table>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<both_policies>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<tuner_and_heater>>,
                                  full_table>);
     using for_bystander = fsm::enabled_table_t<full_table, fsm::observers<bystander>>;
     static_assert(!std::is_same_v<for_bystander, full_table>);
@@ -773,13 +773,13 @@ namespace Features {
     static_assert(std::is_same_v<fsm::StateMachine<full_table, bystander>::table, full_table>);
 
     // a switch enables the tags whose condition holds, nothing else
-    using swap_only = fsm::feature_switch<fsm::enabled<swap_feature, true>,
-                                          fsm::enabled<vconn_feature, false>>;
-    static_assert(std::is_same_v<swap_only::enables, mtl::typelist<swap_feature>>);
-    static_assert(fsm::observer_enables_v<swap_only, swap_feature>);
-    static_assert(!fsm::observer_enables_v<swap_only, vconn_feature>);
+    using tuning_only = fsm::feature_switch<fsm::enabled<tuning_feature, true>,
+                                          fsm::enabled<heating_feature, false>>;
+    static_assert(std::is_same_v<tuning_only::enables, mtl::typelist<tuning_feature>>);
+    static_assert(fsm::observer_enables_v<tuning_only, tuning_feature>);
+    static_assert(!fsm::observer_enables_v<tuning_only, heating_feature>);
     static_assert(std::is_same_v<fsm::feature_switch<>::enables, mtl::typelist<>>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<swap_only>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<full_table, fsm::observers<tuning_only>>,
                                  full_table>);
     static_assert(std::is_same_v<
                   fsm::enabled_table_t<full_table, fsm::observers<fsm::feature_switch<>>>::states,
@@ -787,44 +787,44 @@ namespace Features {
 
     // a tag enabled by a guard: answering the question is what brings
     // the feature in, declaring the tag still works too
-    struct swap_allowed {};
-    struct asked_swap_feature {
-        using enabled_by = swap_allowed;
+    struct tuning_allowed {};
+    struct asked_tuning_feature {
+        using enabled_by = tuning_allowed;
     };
-    struct answering_policy {
-        bool check(swap_allowed) { return true; }
+    struct answering_tuner {
+        bool check(tuning_allowed) { return true; }
     };
-    struct asked_swapping {
-        using feature = asked_swap_feature;
+    struct asked_tuning {
+        using feature = asked_tuning_feature;
     };
-    static_assert(fsm::observer_answers_for_v<asked_swap_feature, answering_policy>);
-    static_assert(!fsm::observer_answers_for_v<asked_swap_feature, bystander>);
-    static_assert(!fsm::observer_answers_for_v<swap_feature, answering_policy>); // no enabled_by
-    static_assert(fsm::feature_enabled_v<asked_swap_feature, bystander, answering_policy>);
-    static_assert(!fsm::feature_enabled_v<asked_swap_feature, bystander>);
+    static_assert(fsm::observer_answers_for_v<asked_tuning_feature, answering_tuner>);
+    static_assert(!fsm::observer_answers_for_v<asked_tuning_feature, bystander>);
+    static_assert(!fsm::observer_answers_for_v<tuning_feature, answering_tuner>); // no enabled_by
+    static_assert(fsm::feature_enabled_v<asked_tuning_feature, bystander, answering_tuner>);
+    static_assert(!fsm::feature_enabled_v<asked_tuning_feature, bystander>);
     struct asked_table : fsm::transition_table<
-        fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<asked_swapping>, fsm::guard<swap_allowed>>,
-        fsm::transition<fsm::from<asked_swapping>, fsm::on<go>, fsm::to<plain>>, plain_self> {};
-    // the guard on the removed row needs no answerer: the machine builds without one
+        fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<asked_tuning>, fsm::guard<tuning_allowed>>,
+        fsm::transition<fsm::from<asked_tuning>, fsm::on<go>, fsm::to<plain>>, plain_self> {};
+    // the guard on the removed transition needs no answerer: the machine builds without one
     static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, fsm::observers<bystander>>::transitions,
                                  mtl::typelist<plain_self>>);
     static_assert(std::is_same_v<fsm::StateMachine<asked_table, bystander>::table, asked_table>);
-    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, fsm::observers<answering_policy>>,
+    static_assert(std::is_same_v<fsm::enabled_table_t<asked_table, fsm::observers<answering_tuner>>,
                                  asked_table>);
     // the feature's voice among the observers, either way of enabling
     static_assert(std::is_same_v<
-                  fsm::feature_enabler_t<swap_feature, fsm::observers<bystander, swap_policy>>,
-                  swap_policy>);
-    static_assert(std::is_same_v<fsm::feature_enabler_t<vconn_feature, fsm::observers<bystander>>,
+                  fsm::feature_enabler_t<tuning_feature, fsm::observers<bystander, tuner>>,
+                  tuner>);
+    static_assert(std::is_same_v<fsm::feature_enabler_t<heating_feature, fsm::observers<bystander>>,
                                  mtl::nil_type>);
-    static_assert(std::is_same_v<fsm::feature_enabler_t<asked_swap_feature,
-                                                        fsm::observers<bystander, answering_policy>>,
-                                 answering_policy>);
+    static_assert(std::is_same_v<fsm::feature_enabler_t<asked_tuning_feature,
+                                                        fsm::observers<bystander, answering_tuner>>,
+                                 answering_tuner>);
 } // namespace Features
 
 namespace InjectedObservers {
     struct go {};
-    struct swap_feature {};
+    struct tuning_feature {};
     struct allowed {};
     struct lamp {
         constexpr bool operator==(lamp const&) const = default;
@@ -834,17 +834,17 @@ namespace InjectedObservers {
     struct lit {
         static constexpr auto annotations = fsm::annotate(lamp{});
     };
-    struct swapping {
-        using feature = swap_feature;
+    struct tuning {
+        using feature = tuning_feature;
     };
 
     struct in_table : fsm::transition_table<
         fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<lit>, fsm::guard<allowed>>,
-        fsm::transition<fsm::from<lit>, fsm::on<go>, fsm::to<swapping>>,
-        fsm::transition<fsm::from<swapping>, fsm::on<go>, fsm::to<idle>>> {};
+        fsm::transition<fsm::from<lit>, fsm::on<go>, fsm::to<tuning>>,
+        fsm::transition<fsm::from<tuning>, fsm::on<go>, fsm::to<idle>>> {};
 
-    struct swap_policy {
-        using enables = swap_feature;
+    struct tuner {
+        using enables = tuning_feature;
         bool check(allowed) const { return true; }
     };
     struct lamp_driver : fsm::observing<lamp_driver> {
@@ -852,22 +852,22 @@ namespace InjectedObservers {
     };
     struct bystander {};
 
-    using with_policy = fsm::internal::InjectedObservers<bystander, swap_policy, lamp_driver>;
+    using with_tuner = fsm::internal::InjectedObservers<bystander, tuner, lamp_driver>;
     using without     = fsm::internal::InjectedObservers<bystander>;
 
-    static_assert(std::is_same_v<with_policy::observer_list,
-                                 mtl::typelist<bystander, swap_policy, lamp_driver>>);
+    static_assert(std::is_same_v<with_tuner::observer_list,
+                                 mtl::typelist<bystander, tuner, lamp_driver>>);
 
-    static_assert(with_policy::any_observer_enables<swap_feature>);
-    static_assert(!without::any_observer_enables<swap_feature>);
-    static_assert(std::is_same_v<with_policy::table_with_enabled_features<in_table>, in_table>);
-    static_assert(!mtl::has_a_v<without::table_with_enabled_features<in_table>::states, swapping>);
+    static_assert(with_tuner::any_observer_enables<tuning_feature>);
+    static_assert(!without::any_observer_enables<tuning_feature>);
+    static_assert(std::is_same_v<with_tuner::table_with_enabled_features<in_table>, in_table>);
+    static_assert(!mtl::has_a_v<without::table_with_enabled_features<in_table>::states, tuning>);
 
-    static_assert(with_policy::any_observer_notified_by<lit>);
-    static_assert(!with_policy::any_observer_notified_by<idle>);
+    static_assert(with_tuner::any_observer_notified_by<lit>);
+    static_assert(!with_tuner::any_observer_notified_by<idle>);
     static_assert(!without::any_observer_notified_by<lit>);
 
-    static_assert(with_policy::all_observers_validate<in_table>);
+    static_assert(with_tuner::all_observers_validate<in_table>);
 } // namespace InjectedObservers
 
 namespace TransitionGuards {
@@ -920,7 +920,7 @@ namespace TransitionGuards {
     static_assert(!with_two_voices::no_guard_answered_by_two_observers<in_table>);
 } // namespace TransitionGuards
 
-namespace SharedWildcard {
+namespace WildcardHooks {
     struct go {};
     struct kill {
         int code;
@@ -953,8 +953,7 @@ namespace SharedWildcard {
         void notifyEntry(mode_tag) { ++notified; }
     };
 
-    // an exit hook: notified per source, so the value of the state
-    // left arrives on a wildcard edge too
+    // notifyExit: the value of the state left arrives on a wildcard too
     struct exit_watcher : fsm::observing<exit_watcher> {
         int exits = 0;
         template<typename STATE>
@@ -990,7 +989,7 @@ namespace SharedWildcard {
         fsm::transition<fsm::from<b>, fsm::on<go>, fsm::to<a>>,
         fsm::transition<fsm::from<b>, fsm::on<kill>, fsm::to<a>, fsm::guard<never>>,
         fsm::transition<fsm::from<fsm::any_state>, fsm::on<kill>, fsm::to<dead>>> {};
-} // namespace SharedWildcard
+} // namespace WildcardHooks
 
 namespace Deadline {
     struct step {};
@@ -1201,7 +1200,7 @@ struct never {
     static bool check() { return false; }
 };
 
-// the sub-states: a timed one, a guarded row that always refuses
+// the sub-states: a timed one, a guarded transition that always refuses
 struct low {
     static constexpr auto annotations = fsm::annotate(lamp{false});
 };
@@ -1320,12 +1319,12 @@ struct owes_tick : std::type_identity<fsm::events<>> {};
 template<>
 struct owes_tick<low> : std::type_identity<fsm::events<tick>> {};
 template<>
-struct owes_tick<high> : std::type_identity<fsm::events<tick>> {}; // a guarded row counts
+struct owes_tick<high> : std::type_identity<fsm::events<tick>> {}; // a guarded transition counts
 static_assert(fsm::all_states_handle_v<outer_table, owes_tick>);
 template<typename STATE>
 struct owes_stop : std::type_identity<fsm::events<>> {};
 template<>
-struct owes_stop<low> : std::type_identity<fsm::events<stop>> {}; // the parent's row is not low's
+struct owes_stop<low> : std::type_identity<fsm::events<stop>> {}; // the parent's transition is not low's
 static_assert(!fsm::all_states_handle_v<outer_table, owes_stop>);
 
 // a composite without a timeout of its own: the table is timed through its child
@@ -1387,26 +1386,26 @@ static_assert(!fsm::internal::annotation_levels_exclusive<refining>::value);
 // --- inherited contexts: a composite state's child shares its
 // machine's instance, everything else the child declares is its own
 
-struct port_line {
-    int cc = 0; // the root's, inherited two levels down
+struct signal_line {
+    int level = 0; // the root's, inherited two levels down
 };
 struct phase_budget {
     int tries = 0; // the probing phase's own, fresh on every entry
 };
 struct sense {
-    int cc;
+    int level;
 };
 
 struct probing {
-    using contexts = fsm::contexts<port_line, phase_budget>;
-    probing(port_line& line_ref, phase_budget& budget_ref) : line(line_ref), budget(budget_ref) {}
-    probing(sense const& event, port_line& line_ref, phase_budget& budget_ref)
+    using contexts = fsm::contexts<signal_line, phase_budget>;
+    probing(signal_line& line_ref, phase_budget& budget_ref) : line(line_ref), budget(budget_ref) {}
+    probing(sense const& event, signal_line& line_ref, phase_budget& budget_ref)
         : probing(line_ref, budget_ref)
     {
-        line.cc = event.cc;
+        line.level = event.level;
         ++budget.tries;
     }
-    port_line& line;
+    signal_line& line;
     phase_budget& budget;
 };
 
@@ -1417,7 +1416,7 @@ struct probe_table : fsm::transition_table<
 // child inherits what it inherited
 struct trying {
     using submachine      = probe_table;
-    using parent_contexts = fsm::contexts<port_line>;
+    using parent_contexts = fsm::contexts<signal_line>;
 };
 struct waiting {};
 
@@ -1425,12 +1424,12 @@ struct session_table : fsm::transition_table<
     fsm::transition<fsm::from<waiting>, fsm::on<go>, fsm::to<trying>>> {};
 
 struct resting {
-    using contexts = fsm::contexts<port_line>;
-    explicit resting(port_line&) {}
+    using contexts = fsm::contexts<signal_line>;
+    explicit resting(signal_line&) {}
 };
 struct session {
     using submachine      = session_table;
-    using parent_contexts = fsm::contexts<port_line>;
+    using parent_contexts = fsm::contexts<signal_line>;
 };
 
 struct inheriting_table : fsm::transition_table<
@@ -1442,7 +1441,7 @@ using inheriting_machine = fsm::StateMachine<inheriting_table>;
 // the declaration
 static_assert(fsm::internal::declares_parent_contexts<trying>);
 static_assert(!fsm::internal::declares_parent_contexts<waiting>);
-static_assert(std::is_same_v<fsm::internal::parent_contexts_t<trying>, mtl::typelist<port_line>>);
+static_assert(std::is_same_v<fsm::internal::parent_contexts_t<trying>, mtl::typelist<signal_line>>);
 static_assert(std::is_same_v<fsm::internal::parent_contexts_t<waiting>, mtl::typelist<>>);
 
 // each level's contexts: the root owns the line, the session only
@@ -1452,24 +1451,24 @@ namespace MachineContexts {
     using fsm::internal::nested;
 
     using of_root    = machine_contexts_t<inheriting_table, inheriting_table>;
-    using session_in = nested<session_table, 1, mtl::typelist<port_line>>;
+    using session_in = nested<session_table, 1, mtl::typelist<signal_line>>;
     using of_session = machine_contexts_t<session_in, session_in>;
-    using probe_in   = nested<probe_table, 2, mtl::typelist<port_line>>;
+    using probe_in   = nested<probe_table, 2, mtl::typelist<signal_line>>;
     using of_probe   = machine_contexts_t<probe_in, probe_in>;
 
-    static_assert(std::is_same_v<of_root::own_contexts, mtl::typelist<port_line>>);
+    static_assert(std::is_same_v<of_root::own_contexts, mtl::typelist<signal_line>>);
     static_assert(std::is_same_v<of_root::inherited_contexts, mtl::typelist<>>);
     static_assert(std::is_same_v<of_session::own_contexts, mtl::typelist<>>);
-    static_assert(std::is_same_v<of_session::inherited_contexts, mtl::typelist<port_line>>);
+    static_assert(std::is_same_v<of_session::inherited_contexts, mtl::typelist<signal_line>>);
     static_assert(std::is_same_v<of_probe::own_contexts, mtl::typelist<phase_budget>>);
-    static_assert(std::is_same_v<of_probe::inherited_contexts, mtl::typelist<port_line>>);
-    static_assert(std::is_same_v<of_probe::context_types, mtl::typelist<phase_budget, port_line>>);
+    static_assert(std::is_same_v<of_probe::inherited_contexts, mtl::typelist<signal_line>>);
+    static_assert(std::is_same_v<of_probe::context_types, mtl::typelist<phase_budget, signal_line>>);
 
     // the class is named by the two lists alone
     static_assert(std::is_same_v<of_probe, fsm::internal::MachineContexts<
-                                               mtl::typelist<port_line, phase_budget>,
-                                               mtl::typelist<port_line>>>);
-    static_assert(std::is_same_v<of_root::inherited_by<session>, mtl::typelist<port_line>>);
+                                               mtl::typelist<signal_line, phase_budget>,
+                                               mtl::typelist<signal_line>>>);
+    static_assert(std::is_same_v<of_root::inherited_by<session>, mtl::typelist<signal_line>>);
 
     // a child's is built from its parent's, a root's from nothing
     static_assert(std::is_default_constructible_v<of_root>);
@@ -1509,8 +1508,8 @@ namespace MachineContexts {
                       own_contexts_default_constructible);
 
     struct needs_more {
-        using contexts = fsm::contexts<port_line>;
-        needs_more(port_line&, int) {}
+        using contexts = fsm::contexts<signal_line>;
+        needs_more(signal_line&, int) {}
     };
     struct needy_table : fsm::transition_table<
         fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<needs_more>>> {};
@@ -1518,7 +1517,7 @@ namespace MachineContexts {
     static_assert(!of_root::every_state_constructible_from_its_contexts<needy_table>);
 
     struct plain_inheriting {
-        using parent_contexts = fsm::contexts<port_line>; // no submachine to inherit it
+        using parent_contexts = fsm::contexts<signal_line>; // no submachine to inherit it
     };
     struct misplaced_table : fsm::transition_table<
         fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<plain_inheriting>>> {};
@@ -1533,7 +1532,7 @@ namespace MachineContexts {
 
     struct inheriting_unused {
         using submachine      = inner_table; // low and high declare no context
-        using parent_contexts = fsm::contexts<port_line>;
+        using parent_contexts = fsm::contexts<signal_line>;
     };
     struct unused_table : fsm::transition_table<
         fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<inheriting_unused>>> {};
@@ -1543,16 +1542,16 @@ namespace MachineContexts {
 
 // the checks on a parent_contexts declaration, each askable per state
 struct plain_with_parent_contexts {
-    using parent_contexts = fsm::contexts<port_line>; // no submachine to inherit it
+    using parent_contexts = fsm::contexts<signal_line>; // no submachine to inherit it
 };
 struct parent_contexts_unused {
     using submachine      = inner_table; // low and high declare no context
-    using parent_contexts = fsm::contexts<port_line>;
+    using parent_contexts = fsm::contexts<signal_line>;
 };
 static_assert(fsm::internal::parent_contexts_on_composite<trying>::value);
 static_assert(fsm::internal::parent_contexts_on_composite<waiting>::value);
 static_assert(!fsm::internal::parent_contexts_on_composite<plain_with_parent_contexts>::value);
-static_assert(fsm::internal::parent_contexts_held_in<mtl::typelist<port_line>>::pred<trying>::value);
+static_assert(fsm::internal::parent_contexts_held_in<mtl::typelist<signal_line>>::pred<trying>::value);
 static_assert(
     !fsm::internal::parent_contexts_held_in<mtl::typelist<phase_budget>>::pred<trying>::value);
 static_assert(fsm::internal::parent_contexts_declared_in_submachine<trying>::value);
@@ -1613,7 +1612,7 @@ static_assert(std::is_same_v<fsm::nested_tables_t<featured_table, fsm::observers
 static_assert(std::is_same_v<fsm::nested_tables_t<featured_table>,
                              mtl::typelist<featured_table, deep_table>>);
 static_assert(mtl::has_a_v<fsm::nested_events_t<featured_table>, push>);
-// the queued machine's ring follows its observers
+// the queued machine's queue follows its observers
 using queued_off = fsm::QueuedMachine<featured_table, 4, fsm::inline_work, fsm::no_lock, recorder>;
 using queued_on =
     fsm::QueuedMachine<featured_table, 4, fsm::inline_work, fsm::no_lock, booster, recorder>;
@@ -1734,7 +1733,7 @@ static_assert(std::is_same_v<fsm::for_level_t<fsm::timeout, 2>,
                              fsm::for_submachine<fsm::for_submachine<fsm::timeout>>>);
 static_assert(!fsm::local_event_v<fsm::for_submachine<fsm::timeout>>);
 
-// an emitted event is taken inside the machine: the ring does not carry it
+// an emitted event is taken inside the machine: the queue does not carry it
 using queued_timers = fsm::timed<fsm::OwningQueuedTimer<manual_timer>, 2>;
 using queued_job =
     fsm::QueuedMachine<job_table, 4, fsm::inline_work, fsm::no_lock, queued_timers, interrupter>;
@@ -2011,21 +2010,21 @@ void eventPayloadConstructsTargetState()
     check(sm.is<idle>());
 }
 
-void liveObservationDeliversInstanceValues()
+void instanceValuesAreNotifiedOnEveryEdge()
 {
     using namespace Payload;
 
-    live_driver driver;
-    fsm::StateMachine<tbl, live_driver> sm{driver};
+    message_driver driver;
+    fsm::StateMachine<tbl, message_driver> sm{driver};
 
     check(sm.process(send{.msg = {.id = 7}}));
     check(driver.entered.size() == 1 && driver.entered.back() == 7);
-    check(driver.exited.empty()); // idle has no msg: exit hook dropped out
+    check(driver.exited.empty()); // idle carries no message: nothing to notify
 
     check(sm.process(cancel{}));
     check(driver.exited.size() == 1 && driver.exited.back() == 7);
 
-    // an equal value notifies again: live observation has no suppression
+    // an equal value notifies again: instance values are not suppressed
     check(sm.process(send{.msg = {.id = 7}}));
     check(driver.entered.size() == 2 && driver.entered.back() == 7);
 }
@@ -2055,7 +2054,7 @@ void machineWithOnlyATimerObserver()
 }
 
 // --- entry is construction, exit is destruction -----------------------------
-namespace lifetime {
+namespace Lifetime {
     int entries = 0;
     int exits   = 0;
 
@@ -2066,11 +2065,11 @@ namespace lifetime {
     struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<plain>,   fsm::on<ping>, fsm::to<counted>>,
         fsm::transition<fsm::from<counted>, fsm::on<ping>, fsm::to<plain>>> {};
-} // namespace lifetime
+} // namespace Lifetime
 
 void entryIsConstructionExitIsDestruction()
 {
-    using namespace lifetime;
+    using namespace Lifetime;
     fsm::StateMachine<tbl> sm; // no timed states, no observers: nothing to inject
     check(entries == 0 && exits == 0); // the initial state is constructed in place, once
 
@@ -2084,7 +2083,7 @@ void entryIsConstructionExitIsDestruction()
 }
 
 // --- guarded transitions ----------------------------------------------------
-namespace guards {
+namespace GuardedTransitions {
     struct push {};
     struct unlock {};
     struct gate {
@@ -2107,7 +2106,7 @@ namespace guards {
         fsm::internal_transition<fsm::from<gate>, fsm::on<unlock>>,
         fsm::transition<fsm::from<passed>, fsm::on<push>, fsm::to<gate>,
                         fsm::guard<return_allowed>>> {};
-} // namespace guards
+} // namespace GuardedTransitions
 
 // --- injected guards: the table asks, an injected object answers -----------
 namespace InjectedGuards {
@@ -2176,7 +2175,7 @@ namespace CombinedGuards {
     };
 
     // unlocked and not late opens; unlocked but late is refused; locked
-    // stays - a disjunction is the next row of the pair
+    // stays - a disjunction is the next alternative of the pair
     struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<closed>, fsm::on<push>, fsm::to<open>,
                         fsm::guard<door_unlocked, fsm::not_<after_hours>>>,
@@ -2227,7 +2226,7 @@ void combinedGuardsAskEveryPart()
     fsm::StateMachine<tbl, wall_clock> sm{clock};
 
     door_unlocked::unlocked = false;
-    check(sm.process(push{})); // the internal row: locked, nothing changes
+    check(sm.process(push{})); // the internal alternative: locked, nothing changes
     check(sm.is<closed>());
 
     door_unlocked::unlocked = true; // both parts hold: static yes, inverted injected no
@@ -2235,14 +2234,14 @@ void combinedGuardsAskEveryPart()
     check(sm.is<open>());
     check(sm.process(push{})); // back
 
-    clock.late = true; // the inverted part refuses, the next row takes it
+    clock.late = true; // the inverted part refuses, the next alternative takes it
     check(sm.process(push{}));
     check(sm.is<refused>());
 }
 
 void guardBlocksAndAllows()
 {
-    using namespace guards;
+    using namespace GuardedTransitions;
     fsm::StateMachine<tbl> sm;
 
     check(!sm.process(push{})); // gate closed: guard blocks, nothing happens
@@ -2294,7 +2293,7 @@ void staticGuardIsTheDefaultAnswer()
 }
 
 // --- raw lifecycle hooks (observer without the fsm::observing base) ---------
-namespace raw_hooks {
+namespace RawHooks {
     struct transition_counter {
         template<typename STATE, typename MACHINE>
         void onExit(MACHINE&) { ++exits; }
@@ -2305,10 +2304,10 @@ namespace raw_hooks {
         int exits  = 0;
         int enters = 0;
     };
-} // namespace raw_hooks
+} // namespace RawHooks
 
 // --- transition hook: the edge and its event, after the change --------------
-namespace transition_hook {
+namespace TransitionHook {
     struct go {};
     struct tick {};
     struct kill {
@@ -2339,7 +2338,7 @@ namespace transition_hook {
         bool operator==(step const&) const = default;
     };
 
-    // the edge form: pays one body per possible source on a wildcard
+    // the edge form: a wildcard is delivered with the state it left
     struct recorder {
         template<typename FROM_STATE, typename EVENT, typename TO_STATE, typename MACHINE>
         void onTransitionFrom(MACHINE&)
@@ -2350,19 +2349,19 @@ namespace transition_hook {
         std::vector<step> steps;
     };
 
-    // the one-state form on top: on a wildcard the machine takes it, once,
-    // and the recorder writes any_state for the source it did not ask for
-    struct agnostic_recorder : recorder {
+    // both forms: a wildcard is delivered through the one-state form,
+    // once, recorded here with any_state as its source
+    struct both_forms_recorder : recorder {
         template<typename EVENT, typename TO_STATE, typename MACHINE>
         void onTransition(MACHINE&)
         {
             steps.push_back({"any_state", mtl::short_name<EVENT>(), mtl::short_name<TO_STATE>()});
         }
     };
-} // namespace transition_hook
+} // namespace TransitionHook
 
 // --- guards deciding on the event payload ------------------------------------
-namespace event_guard {
+namespace EventGuard {
     struct reading {
         int value = 0;
     };
@@ -2378,11 +2377,11 @@ namespace event_guard {
     struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<closed>, fsm::on<reading>, fsm::to<open>,
                         fsm::guard<above_threshold>>> {};
-} // namespace event_guard
+} // namespace EventGuard
 
 void guardSeesTheEventPayload()
 {
-    using namespace event_guard;
+    using namespace EventGuard;
     fsm::StateMachine<tbl> sm;
 
     check(!sm.process(reading{.value = 5})); // below: guard blocks
@@ -2391,8 +2390,8 @@ void guardSeesTheEventPayload()
     check(sm.is<open>());
 }
 
-// --- static-before-nonstatic ordering within one observer -------------------
-namespace ordering {
+// --- static value before instance value within one observer -----------------
+namespace NotificationOrder {
     struct go {
         int value = 0;
     };
@@ -2412,8 +2411,8 @@ namespace ordering {
         int values() const { return value; } // one value: a one-element set
     };
 
-    // observes the static mode and the instance value; the contract
-    // guarantees the static hook runs first on the same entry
+    // observes the static mode and the instance value: the static one
+    // is notified first on the same entry
     struct dual_observer : fsm::observing<dual_observer> {
         template<typename STATE>
         static constexpr auto observe_static() -> decltype(STATE::mode)
@@ -2421,7 +2420,7 @@ namespace ordering {
             return STATE::mode;
         }
         void notifyEntry(mode_t const&) { sequence.push_back('s'); }
-        void notifyEntry(int value) { sequence.push_back('n'); last_value = value; }
+        void notifyEntry(int value) { sequence.push_back('i'); last_value = value; }
 
         std::vector<char> sequence;
         int last_value = -1;
@@ -2429,7 +2428,7 @@ namespace ordering {
 
     struct tbl : fsm::transition_table<
         fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<active>>> {};
-} // namespace ordering
+} // namespace NotificationOrder
 
 void declaredObservationsAreValidated()
 {
@@ -2493,15 +2492,15 @@ void annotationSetElementsAreNotifiedIndependently()
     check(p.lights.size() == 3);
 }
 
-void staticHookRunsBeforeNonstaticHook()
+void staticValueIsNotifiedBeforeInstanceValue()
 {
-    ordering::dual_observer observer;
-    fsm::StateMachine<ordering::tbl, ordering::dual_observer> sm{observer};
+    NotificationOrder::dual_observer observer;
+    fsm::StateMachine<NotificationOrder::tbl, NotificationOrder::dual_observer> sm{observer};
 
     check(observer.sequence == std::vector{'s'}); // initial entry: static only
 
-    check(sm.process(ordering::go{.value = 7}));
-    check(observer.sequence == std::vector{'s', 's', 'n'});
+    check(sm.process(NotificationOrder::go{.value = 7}));
+    check(observer.sequence == std::vector{'s', 's', 'i'});
     check(observer.last_value == 7);
 }
 
@@ -2509,9 +2508,9 @@ void observerGroupForwardsHooksInMemberOrder()
 {
     fsm::timed<manual_timer> tim;
     output_controller ctrl;
-    raw_hooks::transition_counter counter;
+    RawHooks::transition_counter counter;
     fsm::ObserverGroup<fsm::timed<manual_timer>, output_controller,
-                        raw_hooks::transition_counter>
+                        RawHooks::transition_counter>
         group{tim, ctrl, counter};
     fsm::StateMachine<table, decltype(group)> sm{group}; // one reference, three observers
 
@@ -2529,9 +2528,9 @@ void observerGroupForwardsHooksInMemberOrder()
 
 void rawHookObserverSeesEveryTransition()
 {
-    raw_hooks::transition_counter counter;
+    RawHooks::transition_counter counter;
     fsm::timed<manual_timer> tim;
-    fsm::StateMachine<table, fsm::timed<manual_timer>, raw_hooks::transition_counter> sm{tim, counter};
+    fsm::StateMachine<table, fsm::timed<manual_timer>, RawHooks::transition_counter> sm{tim, counter};
 
     check(counter.enters == 1); // initial entry, no exit
     check(counter.exits == 0);
@@ -2542,8 +2541,6 @@ void rawHookObserverSeesEveryTransition()
     check(!sm.process(lock_key{})); // ignored event: no hooks
     check(counter.enters == 2 && counter.exits == 1);
 }
-
-} // namespace
 
 void contextIsMachineOwnedAndShared()
 {
@@ -2587,10 +2584,10 @@ void contextSurvivesTimeoutRetry()
 void contextInitialState()
 {
     using namespace Context;
-    struct tbl2 : fsm::transition_table<
+    struct starting_in_trying : fsm::transition_table<
         fsm::initial<trying>,
         fsm::transition<fsm::from<trying>, fsm::on<done>, fsm::to<succeeded>>> {};
-    fsm::StateMachine<tbl2> sm; // initial state constructed from its context
+    fsm::StateMachine<starting_in_trying> sm; // initial state constructed from its context
 
     check(sm.is<trying>());
     check(sm.getIf<trying>()->context.attempts == 1);
@@ -2598,7 +2595,7 @@ void contextInitialState()
 
 void internalTransitionHandlesInPlace()
 {
-    using namespace Internal;
+    using namespace InternalTransitions;
 
     fsm::timed<manual_timer> tim;
     hook_counter hooks;
@@ -2642,9 +2639,9 @@ void guardedAlternativesFirstPassWins()
     check(sm.getIf<pending>()->context.used == 3);
 }
 
-void sharedWildcardFiresLikePerSource()
+void wildcardStopsTimerAndCarriesPayload()
 {
-    using namespace SharedWildcard;
+    using namespace WildcardHooks;
     mode_watcher watcher;
     fsm::timed<manual_timer> tim;
     fsm::StateMachine<tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
@@ -2652,7 +2649,7 @@ void sharedWildcardFiresLikePerSource()
     check(watcher.notified == 1); // initial entry into a
     check(tim.timer().armed);       // a is timed
 
-    check(sm.process(kill{7}));   // wildcard from a, delivered shared
+    check(sm.process(kill{7}));   // wildcard from a
     check(sm.is<dead>() && sm.getIf<dead>()->code == 7); // payload arrived
     check(!tim.timer().armed);      // the left state's timer was stopped
     check(watcher.notified == 1); // dead carries no mode annotation
@@ -2662,9 +2659,9 @@ void sharedWildcardFiresLikePerSource()
     check(!sm.process(go{}));     // no transition at all still reports false
 }
 
-void sharedWildcardDeliversExitValues()
+void wildcardNotifiesExitValueOfStateLeft()
 {
-    using namespace SharedWildcard;
+    using namespace WildcardHooks;
     exit_watcher watcher;
     fsm::StateMachine<tbl, exit_watcher> sm{watcher};
 
@@ -2677,7 +2674,7 @@ void sharedWildcardDeliversExitValues()
 
 void wildcardEntryRenotifiesUnchangedValue()
 {
-    using namespace SharedWildcard;
+    using namespace WildcardHooks;
     mode_watcher watcher;
     fsm::StateMachine<home_tbl, mode_watcher> sm{watcher};
 
@@ -2691,7 +2688,7 @@ void wildcardEntryRenotifiesUnchangedValue()
 
 void refusedOwnGroupFallsThroughToWildcard()
 {
-    using namespace SharedWildcard;
+    using namespace WildcardHooks;
     mode_watcher watcher;
     fsm::timed<manual_timer> tim;
     fsm::StateMachine<guarded_tbl, fsm::timed<manual_timer>, mode_watcher> sm{tim, watcher};
@@ -2713,7 +2710,7 @@ void unguardedOwnEntryOverridesWildcard()
     check(sm.is<stage2>());
     check(sm.process(shutdown{})); // stage2 has no own pair: the wildcard
     check(sm.is<idle>());
-    check(edges.entries == 4);     // the wildcard's entry delivered per source once
+    check(edges.entries == 4);     // one entry per firing
 }
 
 void deadlineSpansPhaseWithoutRearming()
@@ -2752,7 +2749,7 @@ void deadlineSpansPhaseWithoutRearming()
 
 void transitionHookSeesEdgeAndEvent()
 {
-    using namespace transition_hook;
+    using namespace TransitionHook;
     recorder rec;
     fsm::StateMachine<tbl, recorder> sm{rec};
 
@@ -2771,16 +2768,16 @@ void transitionHookSeesEdgeAndEvent()
     check(rec.steps.size() == 3);
 }
 
-void sourceAgnosticHookSeesAnyState()
+void wildcardTakesOneStateTransitionHookOnce()
 {
-    using namespace transition_hook;
-    agnostic_recorder rec;
-    fsm::StateMachine<tbl, agnostic_recorder> sm{rec};
+    using namespace TransitionHook;
+    both_forms_recorder rec;
+    fsm::StateMachine<tbl, both_forms_recorder> sm{rec};
 
     check(sm.process(go{}));
-    check(rec.steps.back() == step{"idle", "go", "busy"}); // exact edges unchanged
+    check(rec.steps.back() == step{"idle", "go", "busy"}); // an exact edge: the edge form
 
-    check(sm.process(kill{5})); // shared body: the source is any_state
+    check(sm.process(kill{5})); // wildcard: the one-state form
     check(rec.steps.back() == step{"any_state", "kill", "dead"});
     check(rec.steps.size() == 2); // exactly one notification per firing
     check(sm.getIf<dead>()->code == 5);
@@ -2788,24 +2785,24 @@ void sourceAgnosticHookSeesAnyState()
 
 void observerGroupForwardsTransitionHook()
 {
-    using namespace transition_hook;
+    using namespace TransitionHook;
     recorder rec;
     fsm::ObserverGroup<recorder> group{rec};
     fsm::StateMachine<tbl, fsm::ObserverGroup<recorder>> sm{group};
 
     check(sm.process(go{}));
     check(rec.steps == std::vector<step>{{"idle", "go", "busy"}});
-    check(sm.process(kill{1})); // the member is not agnostic: the real source
+    check(sm.process(kill{1})); // the member has only the edge form: the real source
     check(rec.steps.back() == step{"busy", "kill", "dead"});
 }
 
-// A group is source-agnostic when every member is
-void observerGroupOfAgnosticMembersIsAgnostic()
+// A group offers the one-state form when every member has it
+void observerGroupOffersOneStateFormOfItsMembers()
 {
-    using namespace transition_hook;
-    agnostic_recorder rec;
-    fsm::ObserverGroup<agnostic_recorder> group{rec};
-    fsm::StateMachine<tbl, fsm::ObserverGroup<agnostic_recorder>> sm{group};
+    using namespace TransitionHook;
+    both_forms_recorder rec;
+    fsm::ObserverGroup<both_forms_recorder> group{rec};
+    fsm::StateMachine<tbl, fsm::ObserverGroup<both_forms_recorder>> sm{group};
 
     check(sm.process(kill{2}));
     check(rec.steps == std::vector<step>{{"any_state", "kill", "dead"}});
@@ -2824,8 +2821,8 @@ void timerInjectedByReference()
     check(sm.is<cooldown>());
 }
 
-// The regression all of these guard: a hook driving the queue used to
-// re-enter process() and trip the machine's assert - now it queues
+// A hook may process an event on the queued machine: it is queued and
+// delivered after the running transition, process() is not re-entered
 void queuedDeliversAfterTransitionCompletes()
 {
     manual_timer clock;
@@ -2985,7 +2982,7 @@ void nestedUnhandledEventBubblesUp()
     sm.process(go{});
     rec.log.clear();
 
-    check(sm.process(stop{})); // the child has no row for stop: the parent's fires
+    check(sm.process(stop{})); // the child has no transition for stop: the parent's fires
     check(sm.is<done>());
     check(sm.submachine<active>() == nullptr);
     // innermost first: the child's active state is left, then the composite
@@ -3001,7 +2998,7 @@ void nestedRefusedChildFallsThroughToParent()
     level_watcher watcher;
     nested_machine sm{rec, watcher};
     sm.process(go{});
-    sm.process(tick{}); // -> high, whose tick row is guarded by never
+    sm.process(tick{}); // -> high, whose tick transition is guarded by never
 
     check(sm.process(tick{})); // refused in the child: active -(tick)-> idle
     check(sm.is<idle>());
@@ -3038,7 +3035,7 @@ void nestedInternalTransitionStaysInChild()
     check(rec.log == (std::vector<std::string>{"transition inner_table:internal_target"}));
     check(!sm.process(inner_only{}) == false); // still handled...
     sm.process(stop{});
-    check(!sm.process(inner_only{})); // ...and ignored once no level has a row
+    check(!sm.process(inner_only{})); // ...and ignored once no level handles it
 }
 
 void nestedLocalEventStaysAtItsLevel()
@@ -3048,9 +3045,9 @@ void nestedLocalEventStaysAtItsLevel()
     level_watcher watcher;
     nested_machine sm{rec, watcher};
     sm.process(go{});
-    sm.process(tick{}); // high: a timed sub-state with its own timeout row
+    sm.process(tick{}); // high: a timed sub-state with its own timeout transition
 
-    check(sm.process(fsm::timeout{})); // injected at the root: the root's row fires
+    check(sm.process(fsm::timeout{})); // processed at the root: the root's transition fires
     check(sm.is<done>());
 }
 
@@ -3153,14 +3150,14 @@ void nestedInheritedContextIsTheParentsInstance()
     sm.process(go{}); // trying: probing, two levels below the line's owner
 
     check(sm.process(sense{5}));
-    check(sm.context<port_line>().cc == 5); // the child wrote the root's instance
+    check(sm.context<signal_line>().level == 5); // the child wrote the root's instance
     auto const* probe = sm.submachine<session>()->submachine<trying>();
     check(probe != nullptr);
-    check(&probe->context<port_line>() == &sm.context<port_line>()); // one instance
+    check(&probe->context<signal_line>() == &sm.context<signal_line>()); // one instance
     check(probe->context<phase_budget>().tries == 1);
 
     sm.process(sense{7});
-    check(sm.context<port_line>().cc == 7);
+    check(sm.context<signal_line>().level == 7);
     check(probe->context<phase_budget>().tries == 2);
 }
 
@@ -3174,13 +3171,13 @@ void nestedOwnContextIsFreshOnReentryInheritedOnePersists()
 
     sm.process(stop{}); // leaves the session: the probe's budget dies with it
     check(sm.is<resting>());
-    check(sm.context<port_line>().cc == 5); // the root's line outlives the phase
+    check(sm.context<signal_line>().level == 5); // the root's line outlives the phase
 
     sm.process(go{});
     sm.process(go{});
     auto const* probe = sm.submachine<session>()->submachine<trying>();
     check(probe->context<phase_budget>().tries == 0); // fresh
-    check(probe->context<port_line>().cc == 5);       // still the root's
+    check(probe->context<signal_line>().level == 5);       // still the root's
 }
 
 void nestedFeatureDisabledAtEveryLevel()
@@ -3195,7 +3192,7 @@ void nestedFeatureDisabledAtEveryLevel()
     sm.process(go{});
     check(sm.submachine<engine>()->is<calm>());
     check(!sm.process(push{})); // boost is gone from the child: no level handles push
-    check(sm.process(tick{}));  // the child's featureless rows stay
+    check(sm.process(tick{}));  // the child's featureless transitions stay
     check(sm.submachine<engine>()->is<warm>());
 }
 
@@ -3222,12 +3219,12 @@ void machineFiltersItsOwnTable()
 {
     using namespace Features;
     bystander nobody;
-    swap_policy policy;
+    tuner policy;
     fsm::StateMachine<full_table, bystander> without{nobody};
-    fsm::StateMachine<full_table, swap_policy> with{policy};
+    fsm::StateMachine<full_table, tuner> with{policy};
 
-    check(without.is<plain>());   // the initial<swapping> went with its feature
-    check(with.is<swapping>());
+    check(without.is<plain>());   // the initial<tuning> went with its feature
+    check(with.is<tuning>());
 }
 
 static_assert(fsm::deadlined<manual_timer, 2>::levels == 2); // the same slots for deadlines
@@ -3238,7 +3235,7 @@ void queuedNestedExpiryReachesItsLevel()
     using timers = fsm::timed<fsm::OwningQueuedTimer<manual_timer>, 2>;
     using queued =
         fsm::QueuedMachine<outer_table, 4, fsm::inline_work, fsm::no_lock, timers, recorder>;
-    // the ring takes every level's events
+    // the queue takes every level's events
     static_assert(mtl::has_a_v<queued::queueable_events, inner_only>);
     static_assert(!mtl::has_a_v<queued::queueable_events, fsm::timeout>);
 
@@ -3328,7 +3325,7 @@ void silentFinalStateRestsUntilTheParentLeaves()
     check(!sm.isFinished()); // the parent has not ended
     check(!sm.process(start{})); // a finished submachine handles nothing
 
-    check(sm.process(retry{})); // the parent's own row: re-entry restarts the submachine
+    check(sm.process(retry{})); // the parent's own transition: re-entry restarts the submachine
     check(sm.submachine<attempt>()->is<trying>());
     check(!sm.submachine<attempt>()->isFinished());
 }
@@ -3383,6 +3380,8 @@ void queuedSubStateTimeoutEndsItsCompositeState()
     check(sm.is<broken>());
 }
 
+} // namespace
+
 int statemachineTests()
 {
     initialStateAndNotification();
@@ -3397,7 +3396,7 @@ int statemachineTests()
     anyStateReachesTargetFromEverywhere();
     eventPayloadConstructsTargetState();
     payloadReachesObserverThroughState();
-    liveObservationDeliversInstanceValues();
+    instanceValuesAreNotifiedOnEveryEdge();
     machineWithOnlyATimerObserver();
     entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
@@ -3409,7 +3408,7 @@ int statemachineTests()
     guardSeesTheEventPayload();
     activeStateAnnotationIsQueried();
     annotationSetElementsAreNotifiedIndependently();
-    staticHookRunsBeforeNonstaticHook();
+    staticValueIsNotifiedBeforeInstanceValue();
     observerGroupForwardsHooksInMemberOrder();
     contextIsMachineOwnedAndShared();
     contextSurvivesTimeoutRetry();
@@ -3418,11 +3417,11 @@ int statemachineTests()
     internalTransitionHandlesInPlace();
     timerInjectedByReference();
     transitionHookSeesEdgeAndEvent();
-    sourceAgnosticHookSeesAnyState();
+    wildcardTakesOneStateTransitionHookOnce();
     observerGroupForwardsTransitionHook();
-    observerGroupOfAgnosticMembersIsAgnostic();
-    sharedWildcardFiresLikePerSource();
-    sharedWildcardDeliversExitValues();
+    observerGroupOffersOneStateFormOfItsMembers();
+    wildcardStopsTimerAndCarriesPayload();
+    wildcardNotifiesExitValueOfStateLeft();
     wildcardEntryRenotifiesUnchangedValue();
     refusedOwnGroupFallsThroughToWildcard();
     unguardedOwnEntryOverridesWildcard();
