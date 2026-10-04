@@ -1399,10 +1399,6 @@ struct inheriting_table : fsm::transition_table<
     fsm::transition<fsm::from<session>, fsm::on<stop>, fsm::to<resting>>> {};
 
 using inheriting_machine = fsm::StateMachine<inheriting_table>;
-using session_machine = std::remove_cvref_t<
-    decltype(*std::declval<inheriting_machine const&>().submachine<session>())>;
-using probe_machine =
-    std::remove_cvref_t<decltype(*std::declval<session_machine const&>().submachine<trying>())>;
 
 // the declaration
 static_assert(fsm::internal::declares_parent_contexts<trying>);
@@ -1412,19 +1408,80 @@ static_assert(std::is_same_v<fsm::internal::parent_contexts_t<waiting>, mtl::typ
 
 // each level's contexts: the root owns the line, the session only
 // inherits it, the probe inherits it next to its own budget
-static_assert(std::is_same_v<inheriting_machine::own_contexts, mtl::typelist<port_line>>);
-static_assert(std::is_same_v<inheriting_machine::inherited_contexts, mtl::typelist<>>);
-static_assert(std::is_same_v<session_machine::own_contexts, mtl::typelist<>>);
-static_assert(std::is_same_v<session_machine::inherited_contexts, mtl::typelist<port_line>>);
-static_assert(std::is_same_v<probe_machine::own_contexts, mtl::typelist<phase_budget>>);
-static_assert(std::is_same_v<probe_machine::inherited_contexts, mtl::typelist<port_line>>);
-static_assert(std::is_same_v<probe_machine::context_types, mtl::typelist<phase_budget, port_line>>);
+namespace MachineContexts {
+    using fsm::internal::machine_contexts_t;
+    using fsm::internal::nested;
 
-// the tuple holds an inherited context as a reference
-static_assert(
-    fsm::internal::holds_inherited_context<port_line, std::tuple<phase_budget, port_line&>>::value);
-static_assert(!fsm::internal::holds_inherited_context<phase_budget,
-                                                      std::tuple<phase_budget, port_line&>>::value);
+    using of_root    = machine_contexts_t<inheriting_table, inheriting_table>;
+    using session_in = nested<session_table, 1, mtl::typelist<port_line>>;
+    using of_session = machine_contexts_t<session_in, session_in>;
+    using probe_in   = nested<probe_table, 2, mtl::typelist<port_line>>;
+    using of_probe   = machine_contexts_t<probe_in, probe_in>;
+
+    static_assert(std::is_same_v<of_root::own_contexts, mtl::typelist<port_line>>);
+    static_assert(std::is_same_v<of_root::inherited_contexts, mtl::typelist<>>);
+    static_assert(std::is_same_v<of_session::own_contexts, mtl::typelist<>>);
+    static_assert(std::is_same_v<of_session::inherited_contexts, mtl::typelist<port_line>>);
+    static_assert(std::is_same_v<of_probe::own_contexts, mtl::typelist<phase_budget>>);
+    static_assert(std::is_same_v<of_probe::inherited_contexts, mtl::typelist<port_line>>);
+    static_assert(std::is_same_v<of_probe::context_types, mtl::typelist<phase_budget, port_line>>);
+
+    // the class is named by the two lists alone
+    static_assert(std::is_same_v<of_probe, fsm::internal::MachineContexts<
+                                               mtl::typelist<port_line, phase_budget>,
+                                               mtl::typelist<port_line>>>);
+    static_assert(std::is_same_v<of_root::inherited_by<session>, mtl::typelist<port_line>>);
+
+    // a child's is built from its parent's, a root's from nothing
+    static_assert(std::is_default_constructible_v<of_root>);
+    static_assert(!std::is_default_constructible_v<of_session>);
+    static_assert(std::is_constructible_v<of_session, of_root&>);
+    static_assert(std::is_constructible_v<of_probe, of_session&>);
+    static_assert(!std::is_copy_constructible_v<of_root>);
+
+    struct no_default {
+        explicit no_default(int) {}
+    };
+    static_assert(of_probe::own_contexts_default_constructible);
+    static_assert(!fsm::internal::MachineContexts<mtl::typelist<no_default>, mtl::typelist<>>::
+                      own_contexts_default_constructible);
+    // inherited: the parent constructed it
+    static_assert(fsm::internal::MachineContexts<mtl::typelist<no_default>,
+                                                 mtl::typelist<no_default>>::
+                      own_contexts_default_constructible);
+
+    struct needs_more {
+        using contexts = fsm::contexts<port_line>;
+        needs_more(port_line&, int) {}
+    };
+    struct needy_table : fsm::transition_table<
+        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<needs_more>>> {};
+    static_assert(of_root::every_state_constructible_from_its_contexts<inheriting_table>);
+    static_assert(!of_root::every_state_constructible_from_its_contexts<needy_table>);
+
+    struct plain_inheriting {
+        using parent_contexts = fsm::contexts<port_line>; // no submachine to inherit it
+    };
+    struct misplaced_table : fsm::transition_table<
+        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<plain_inheriting>>> {};
+    static_assert(of_root::parent_contexts_only_on_composites<inheriting_table>);
+    static_assert(!of_root::parent_contexts_only_on_composites<misplaced_table>);
+
+    // the root holds the line; a machine of the session table alone does not
+    static_assert(of_root::holds_parent_contexts_of_every_composite<inheriting_table>);
+    static_assert(of_session::holds_parent_contexts_of_every_composite<session_table>);
+    static_assert(!machine_contexts_t<session_table, session_table>::
+                      holds_parent_contexts_of_every_composite<session_table>);
+
+    struct inheriting_unused {
+        using submachine      = inner_table; // low and high declare no context
+        using parent_contexts = fsm::contexts<port_line>;
+    };
+    struct unused_table : fsm::transition_table<
+        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<inheriting_unused>>> {};
+    static_assert(of_root::every_submachine_declares_its_parent_contexts<inheriting_table>);
+    static_assert(!of_root::every_submachine_declares_its_parent_contexts<unused_table>);
+} // namespace MachineContexts
 
 // the checks on a parent_contexts declaration, each askable per state
 struct plain_with_parent_contexts {

@@ -419,52 +419,6 @@ using submachine_t = typename submachine<STATE>::type;
 template<concepts::state STATE>
 struct is_composite : std::bool_constant<composite<STATE>> {};
 
-// Every context type the states of TABLE declare, deduplicated, in
-// order of first appearance
-template<concepts::transition_table TABLE>
-using table_contexts_t =
-    mtl::unique_t<mtl::linearize_t<mtl::transform_t<typename TABLE::states, contexts_of>>>;
-
-// A composite state names the contexts of its own machine that its
-// submachine inherits:
-//   using parent_contexts = fsm::contexts<line_status>;
-// A sub-state declaring an inherited type binds to the parent
-// machine's instance instead of a fresh one - the same lifetime as the
-// parent's; every other context type of the sub-table is the child's
-// own, fresh on each entry of the composite. An inherited type the
-// submachine does not use itself may be inherited further down through
-// a composite of the sub-table
-template<typename STATE>
-concept declares_parent_contexts =
-    concepts::state<STATE> && requires { typename STATE::parent_contexts; } &&
-    mtl::concepts::typelist<typename STATE::parent_contexts>;
-
-template<concepts::state STATE>
-struct parent_contexts_of : std::type_identity<mtl::typelist<>> {};
-
-template<declares_parent_contexts STATE>
-struct parent_contexts_of<STATE> : std::type_identity<typename STATE::parent_contexts> {};
-
-template<concepts::state STATE>
-using parent_contexts_t = typename parent_contexts_of<STATE>::type;
-
-// The checks on a parent_contexts declaration, each a trait so a
-// failing one can be asked per state: only a composite has a child to
-// inherit; the child inherits what the machine holds (CONTEXTS: the
-// machine's own and inherited contexts); and some state of the
-// submachine declares every inherited type - one nobody uses is a dead
-// declaration
-template<concepts::state STATE>
-struct parent_contexts_on_composite
-    : std::bool_constant<!declares_parent_contexts<STATE> || composite<STATE>> {};
-
-template<mtl::concepts::typelist CONTEXTS>
-struct parent_contexts_held_in {
-    template<concepts::state STATE>
-    struct pred : std::bool_constant<mtl::all_of_v<parent_contexts_t<STATE>,
-                                                   member_of<CONTEXTS>::template pred>> {};
-};
-
 // The table a parent machine builds its child machine from: the
 // sub-table itself plus the child's nesting depth (the root is 0),
 // which the timer observers use to pick their timer slot, and the
@@ -491,16 +445,6 @@ inline constexpr std::size_t table_depth_v = 0;
 
 template<concepts::transition_table TABLE, std::size_t DEPTH, mtl::concepts::typelist INHERITED>
 inline constexpr std::size_t table_depth_v<nested<TABLE, DEPTH, INHERITED>> = DEPTH;
-
-// The contexts a machine inherits from its parent: none for a root
-template<concepts::transition_table TABLE>
-struct inherited_contexts : std::type_identity<mtl::typelist<>> {};
-
-template<concepts::transition_table TABLE, std::size_t DEPTH, mtl::concepts::typelist INHERITED>
-struct inherited_contexts<nested<TABLE, DEPTH, INHERITED>> : std::type_identity<INHERITED> {};
-
-template<concepts::transition_table TABLE>
-using inherited_contexts_t = typename inherited_contexts<TABLE>::type;
 
 // The number of machine levels a state's submachine spans: none for a
 // plain state, the levels of its submachine table for a composite one
@@ -585,22 +529,6 @@ using nested_events_t = mtl::unique_t<
     mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE, OBSERVER_LIST>, internal::events_of_table>>>;
 
 namespace internal {
-
-// The contexts declared by the states of a composite's submachine, at
-// any level: what its child can usefully inherit
-template<concepts::state STATE>
-struct submachine_contexts : std::type_identity<mtl::typelist<>> {};
-
-template<composite STATE>
-struct submachine_contexts<STATE>
-    : std::type_identity<mtl::unique_t<mtl::linearize_t<
-          mtl::transform_t<all_states_t<submachine_t<STATE>>, contexts_of>>>> {};
-
-template<concepts::state STATE>
-struct parent_contexts_declared_in_submachine
-    : std::bool_constant<
-          mtl::all_of_v<parent_contexts_t<STATE>,
-                        member_of<typename submachine_contexts<STATE>::type>::template pred>> {};
 
 // The states of the submachine a composite STATE owns that emit an
 // event, as the observers enable that submachine

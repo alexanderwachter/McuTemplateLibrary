@@ -113,8 +113,8 @@
  * nests, names what its child inherits. Checked at compile time: only
  * a composite declares parent_contexts, the parent machine holds every
  * named type (declared by a state of its table or inherited in turn),
- * and some state below declares it. A machine's `own_contexts` /
- * `inherited_contexts` spell the split; context<T>() answers for both.
+ * and some state below declares it. context<T>() answers for an own
+ * and an inherited context alike.
  *
  * Final states: a table entry fsm::final<STATE> - next to
  * fsm::initial<STATE>, one entry per state - marks a state the
@@ -236,6 +236,7 @@
 
 #pragma once
 
+#include <mtl/statemachine/Contexts.hpp>
 #include <mtl/statemachine/Core.hpp>
 #include <mtl/statemachine/Feature.hpp>
 #include <mtl/statemachine/InjectedObservers.hpp>

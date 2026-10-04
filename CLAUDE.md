@@ -9,7 +9,7 @@ C++20 header-only state machine built on the mtl library in this repo
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
 `Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
-`InjectedObservers.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
+`InjectedObservers.hpp`, `Contexts.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -224,14 +224,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   at a root). One word for it everywhere: the child *inherits*. The
   list rides on the nesting wrapper (`internal::nested<TABLE, DEPTH,
   INHERITED>`, `inherited_contexts_t`); the child's
-  `inherited_contexts` are held as references in its context tuple
-  behind its `own_contexts` (declared minus inherited; `context_types`
-  = own ++ inherited), `internal::contextOf<T>(tuple)` resolves either
-  (`holds_inherited_context`), and the parent constructs the child
-  through the second constructor `StateMachine(inherited_context_tuple
-  const&, OBSERVERs&...)` with `contextsInheritedBy<STATE>()` - a
-  std::tie of its own resolved instances, so a middle machine passes
-  on what it inherited. Static checks per composite:
+  `inherited_contexts` are held as references behind its
+  `own_contexts` (declared minus inherited; `context_types` = own ++
+  inherited) in its `internal::MachineContexts`, and the parent
+  constructs the child through the second constructor
+  `StateMachine(MachineContexts<...>& parent_contexts,
+  injected_observers const&)`: the child's contexts pick their
+  references out of the parent's with `context<T>()`, own or inherited
+  there, so a middle machine passes on what it inherited. Static checks per composite:
   `parent_contexts_on_composite`, `parent_contexts_held_in<
   context_types>` (the parent holds it),
   `parent_contexts_declared_in_submachine` (some state of the
@@ -271,6 +271,42 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   active state must answer with ONE value (a reaction, or
   `exited_for_wildcard + index`) - passing the wildcard index out
   through a captured local cost +432 B on pd_drp.
+- Contexts are a class of their own (2026-10-04):
+  `internal::MachineContexts<DECLARED_CONTEXTS, INHERITED_CONTEXTS>`
+  (Contexts.hpp), the machine's `contexts_`, named by two lists of
+  context types - never by the table, whose unnamed enabled form
+  would be spelled out in every symbol; the type factory
+  `internal::machine_contexts_t<TABLE, ENABLED_TABLE>` computes them
+  (`table_contexts_t`, `inherited_contexts_t`), so Core.hpp names no
+  context trait. The class owns the type computation (`own_contexts`,
+  `inherited_contexts`, `context_types`, `inherited_by<COMPOSITE>` -
+  the list on the child's `nested<>`), the instances (storage order
+  is private: access is by type), construction (default for a root,
+  from the parent machine's `MachineContexts&` for a child; copying is
+  deleted - a copy would take the parent's own values where a child
+  must start fresh), access (`context<T>()`, `contextsOf<STATE>()` -
+  a std::tie the machine applies to its emplace,
+  `initialArgumentsOf<STATE>()` for make_from_tuple) and the
+  questions under the machine's static_asserts:
+  `own_contexts_default_constructible`,
+  `every_state_constructible_from_its_contexts<TABLE>`,
+  `parent_contexts_only_on_composites<TABLE>`,
+  `holds_parent_contexts_of_every_composite<TABLE>`,
+  `every_submachine_declares_its_parent_contexts<TABLE>`. The machine
+  keeps `current_`, the emplace, `sub_` and the forwarding
+  `context<T>()`; its public `own_contexts` / `inherited_contexts` /
+  `context_types` aliases are gone (ask the class). Table.hpp knows
+  contexts only as the third parameter of `nested`; all
+  `parent_contexts` traits live in Contexts.hpp, Transition.hpp keeps
+  what `concepts::state` is defined from (`contexts_of_t`,
+  `context_constructible`). No friendship, no member of another
+  class named. Measured on pd_drp: +12 B flash (62216 -> 62228 B),
+  RAM equal (13008 B), main.cpp compile time equal (about 22 s) -
+  `construct` applies the `contextsOf` tuple and GCC inlines two
+  edges differently. Tried: the machine expanding `contexts_of_t`
+  over `contexts_.context<T>()` itself 0 B (rejected: leaves a
+  context trait in Core.hpp), the class emplacing into the variant
+  the machine hands it +36 B. Tests: namespace `MachineContexts`.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine

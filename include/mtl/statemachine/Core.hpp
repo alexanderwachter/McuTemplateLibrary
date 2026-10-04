@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <mtl/statemachine/Contexts.hpp>
 #include <mtl/statemachine/InjectedObservers.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
@@ -126,20 +127,8 @@ public:
     // 0 for a root, one more per composite state above this machine
     static constexpr std::size_t depth = internal::table_depth_v<TRANSITION_TABLE>;
 
-    // inherited: references to the parent machine's instances.
-    // own: one instance per other type the states declare
-    using inherited_contexts = internal::inherited_contexts_t<TRANSITION_TABLE>;
-    using own_contexts =
-        mtl::remove_if_t<internal::table_contexts_t<TRANSITIONS>,
-                         internal::member_of<inherited_contexts>::template pred>;
-    using context_types = mtl::concat_t<own_contexts, inherited_contexts>;
-
 private:
-    using own_context_tuple = mtl::rebind_t<own_contexts, std::tuple>;
-    using inherited_context_tuple =
-        mtl::rebind_t<mtl::transform_t<inherited_contexts, std::add_lvalue_reference>, std::tuple>;
-    using context_tuple =
-        decltype(std::tuple_cat(own_context_tuple{}, std::declval<inherited_context_tuple>()));
+    using contexts = internal::machine_contexts_t<TRANSITION_TABLE, TRANSITIONS>;
 
     using final_states    = typename TRANSITIONS::final_states;
     using emitting_states = mtl::filter_t<typename TRANSITIONS::states, internal::is_emitting>;
@@ -150,7 +139,7 @@ private:
     template<internal::composite COMPOSITE>
     using submachine_of =
         StateMachine<internal::nested<internal::submachine_t<COMPOSITE>, StateMachine::depth + 1,
-                                      internal::parent_contexts_t<COMPOSITE>>,
+                                      typename contexts::template inherited_by<COMPOSITE>>,
                      OBSERVERs...>;
 
     template<internal::composite COMPOSITE>
@@ -169,16 +158,18 @@ public:
     explicit StateMachine(OBSERVERs&... observers)
         : observers_(observers...),
           current_(std::make_from_tuple<state_variant>(
-              internal::initialArgs<initial_state>(contexts_)))
+              contexts_.template initialArgumentsOf<initial_state>()))
     {
         this->enterInitialState();
     }
 
     // A child machine, built by its parent with the contexts it inherits
-    StateMachine(inherited_context_tuple const& inherited, injected_observers const& observers)
-        : contexts_(std::tuple_cat(own_context_tuple{}, inherited)), observers_(observers),
+    template<mtl::concepts::typelist PARENT_DECLARED, mtl::concepts::typelist PARENT_INHERITED>
+    StateMachine(internal::MachineContexts<PARENT_DECLARED, PARENT_INHERITED>& parent_contexts,
+                 injected_observers const& observers)
+        : contexts_(parent_contexts), observers_(observers),
           current_(std::make_from_tuple<state_variant>(
-              internal::initialArgs<initial_state>(contexts_)))
+              contexts_.template initialArgumentsOf<initial_state>()))
     {
         this->enterInitialState();
     }
@@ -220,7 +211,7 @@ public:
     template<concepts::context T>
     [[nodiscard]] T const& context() const
     {
-        return internal::contextOf<T>(contexts_);
+        return contexts_.template context<T>();
     }
 
     // The child machine of COMPOSITE while that state is active,
@@ -414,10 +405,11 @@ private:
     template<concepts::state NEW_STATE, typename... ARGs>
     void construct(ARGs const&... args)
     {
-        [&]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
-            current_.template emplace<NEW_STATE>(args...,
-                                                 internal::contextOf<CONTEXTs>(contexts_)...);
-        }(internal::contexts_of_t<NEW_STATE>{});
+        std::apply(
+            [&](auto&... state_contexts) {
+                current_.template emplace<NEW_STATE>(args..., state_contexts...);
+            },
+            contexts_.template contextsOf<NEW_STATE>());
     }
 
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
@@ -544,8 +536,7 @@ private:
     void enterSubmachine()
     {
         if constexpr (internal::composite<STATE>) {
-            sub_.template emplace<submachine_of<STATE>>(
-                this->template contextsInheritedBy<STATE>(), observers_);
+            sub_.template emplace<submachine_of<STATE>>(contexts_, observers_);
         }
     }
 
@@ -580,15 +571,6 @@ private:
         MTL_FSM_ASSERT(child != nullptr, "fsm: composite state active without its submachine");
 #endif
         return *child;
-    }
-
-    // References to this machine's instances - own, or inherited in turn
-    template<internal::composite COMPOSITE>
-    auto contextsInheritedBy()
-    {
-        return [this]<typename... INHERITEDs>(mtl::typelist<INHERITEDs...>) {
-            return std::tie(internal::contextOf<INHERITEDs>(contexts_)...);
-        }(internal::parent_contexts_t<COMPOSITE>{});
     }
 
     // --- annotation query ---------------------------------------------------
@@ -669,9 +651,9 @@ private:
                   "object answers it - inject one with bool check(GUARD, FROM const&[, EVENT "
                   "const&]) or bool check(GUARD)");
 
-    static_assert(mtl::all_of_v<own_contexts, std::is_default_constructible>,
+    static_assert(contexts::own_contexts_default_constructible,
                   "StateMachine: context types must be default constructible");
-    static_assert(mtl::all_of_v<typename TRANSITIONS::states, internal::context_constructible>,
+    static_assert(contexts::template every_state_constructible_from_its_contexts<TRANSITIONS>,
                   "StateMachine: a state must be constructible from its declared contexts "
                   "alone, in their order (default constructible without any)");
 
@@ -684,13 +666,13 @@ private:
                   "submachine - annotate at the level where the value changes");
 
     static_assert(
-        mtl::all_of_v<typename TRANSITIONS::states, internal::parent_contexts_on_composite>,
+        contexts::template parent_contexts_only_on_composites<TRANSITIONS>,
         "StateMachine: parent_contexts is declared by a state without a submachine");
     static_assert(
-        mtl::all_of_v<composites, internal::parent_contexts_held_in<context_types>::template pred>,
+        contexts::template holds_parent_contexts_of_every_composite<TRANSITIONS>,
         "StateMachine: a submachine inherits a context its parent machine does not hold - a "
         "state of this table declares it, or this machine inherits it in turn");
-    static_assert(mtl::all_of_v<composites, internal::parent_contexts_declared_in_submachine>,
+    static_assert(contexts::template every_submachine_declares_its_parent_contexts<TRANSITIONS>,
                   "StateMachine: a submachine inherits a context no state of it (or of the "
                   "submachines inside it) declares");
 
@@ -711,7 +693,7 @@ private:
 
     // --- data ---------------------------------------------------------------
 
-    context_tuple contexts_{}; // the own instances, then the inherited references
+    contexts contexts_;
     injected_observers observers_;
 #if MTL_FSM_CHECKS
     bool processing_ = false;
