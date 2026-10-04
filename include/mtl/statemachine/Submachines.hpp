@@ -99,7 +99,7 @@ struct submachine_starts_silent {
 // owns while active, in the same order. A friend of the machine: the
 // class drives a child through its processWithReaction() and
 // leaveActiveState() and hands an emitted event to the parent machine's
-// reactInOwnTable()
+// processInThisTable()
 template<mtl::concepts::typelist COMPOSITES, mtl::concepts::typelist CHILD_MACHINES>
 class Submachines {
 public:
@@ -241,7 +241,7 @@ private:
             [[maybe_unused]] auto const& child = activeChildOf<COMPOSITE>();
             static_cast<void>(
                 ((child.template is<EMITTINGs>() &&
-                  (result = parent.reactInOwnTable(emitted_t<EMITTINGs>{}), true)) ||
+                  (result = parent.processInThisTable(emitted_t<EMITTINGs>{}), true)) ||
                  ...));
         }(emitting_states{});
         return result;

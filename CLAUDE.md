@@ -157,7 +157,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   member's preferred form and offers a one-state form only when every
   member has it.
 - Wildcards: a `from<any_state>` transition changes the state through
-  one shared body per (event, target) (`changeShared`; expanding whole
+  one shared body per (event, target) (`enterStateAfterWildcard`; expanding whole
   edges per source cost 2780 B on the firmware's `pd_drp`, 14 states).
   Its guards and exit hooks run in the visitor arm, where the state left
   is known (`leaveForWildcard`, which returns the chosen alternative as
@@ -188,14 +188,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   children...>` next to its state variant (`submachines_`, an
   `internal::Submachines`, below; empty in a flat table), constructs it
   in `enterSubmachine<STATE>` after the entry and
-  transition hooks (constructor, `fire`, `enterShared`), and
-  tears it down first thing in `leave<OLD, NEW>` via the child's private
+  transition hooks (constructor, `doTransition`, `enterStateAfterWildcard`), and
+  tears it down first thing in `leaveState<OLD, NEW>` via the child's private
   `leaveActiveState()` - the active state left with `TO = nil_type`,
   innermost first (`Submachines` is a friend of the machine).
   A root's destructor still runs no hooks. Dispatch: public `process`
   is `processWithReaction(event) != reaction::none`;
   `processWithReaction` = `submachines_.react` (the active composite's
-  child processes the event first) then `reactInOwnTable`
+  child processes the event first) then `processInThisTable`
   (guarded, unguarded, wildcards). `internal::reaction {none, in_place,
   state_entered}` is the child's answer to its parent. Every event
   enters at the root, timer expiries included: `fsm::is_local_event`
@@ -254,7 +254,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   emits = EVENT;` (`internal::emitting`, `emitted_t`,
   `fsm::emitted_events_t`): when a child's `processWithReaction` answers
   `state_entered`, `Submachines::reactToEmittedEvent<COMPOSITE>` finds
-  the emitting state the child is in and runs the parent's `reactInOwnTable` with
+  the emitting state the child is in and runs the parent's `processInThisTable` with
   the default-constructed event - own rows with their guards, then
   wildcards, not offered back to the child. So the parent's table
   decides whether the composite is left; an internal transition in the
@@ -268,8 +268,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
 - Core.hpp readability pass (2026-10-01, on the author's request:
   many comments = code not self-explaining): the table checks sit in
   one block at the end of the class, names say what a function does
-  (`react*`, `fire`, `fireFirstAllowed`, `exitForFirstAllowed`,
-  `enterTargetOf`, `enterShared`, `forStateLeft`, `guardsHold`,
+  (`process*`, `doTransition`, `doFirstAllowedTransition`,
+  `leaveStateForFirstAllowedWildcard`,
+  `enterTargetStateOfWildcard`, `enterStateAfterWildcard`, `forStateLeft`, `guardsHold`,
   `partHolds`, `answerTo`). One measured limit: the visitor of the
   active state must answer with ONE value (a reaction, or
   `exited_for_wildcard + index`) - passing the wildcard index out
@@ -291,7 +292,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   one, `element<ELEMENT>(parent)`. Measured on pd_drp: RAM equal at
   13008 B - its contexts had no holes to close - flash 62228 ->
   62152 B, 64 B below the state before the split: the contexts sit
-  at other offsets and the `construct` bodies reaching them come
+  at other offsets and the `emplaceNewState` bodies reaching them come
   out 2-4 B smaller each), construction (default for a root,
   from the parent machine's `MachineContexts&` for a child; copying is
   deleted - a copy would take the parent's own values where a child
@@ -313,7 +314,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `context_constructible`). No friendship, no member of another
   class named. Measured on pd_drp: +12 B flash (62216 -> 62228 B),
   RAM equal (13008 B), main.cpp compile time equal (about 22 s) -
-  `construct` applies the `contextsOf` tuple and GCC inlines two
+  `emplaceNewState` applies the `contextsOf` tuple and GCC inlines two
   edges differently. Tried: the machine expanding `contexts_of_t`
   over `contexts_.context<T>()` itself 0 B (rejected: leaves a
   context trait in Core.hpp), the class emplacing into the variant
@@ -332,7 +333,8 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (the injected answer wins, else the static check),
   `any_observer_answers`, `askObserver` / `checkStatic` (the most
   specific form wins). Core.hpp names no guard trait and evaluates
-  nothing: `fireFirstAllowed` and `exitForFirstAllowed` ask
+  nothing: `doFirstAllowedTransition` and
+  `leaveStateForFirstAllowedWildcard` ask
   `guards::allow`. Guards.hpp also holds the traits only answering
   needs (`answering`, `part_answered_in`, `part_answered_once_in`,
   `guard_answered_in`, `guard_answered_once_in`, from Table.hpp).
@@ -362,7 +364,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   Unlike the observers, contexts and guards classes it IS a friend of
   the machine (the author's decision: the no-friend rule came from
   those): it calls a child's private `processWithReaction()` and
-  `leaveActiveState()` and the parent's `reactInOwnTable()`; the
+  `leaveActiveState()` and the parent's `processInThisTable()`; the
   machines no longer befriend each other. Core.hpp asks it three
   things: `react(parent, event)` (the active composite's child first;
   a local event does not descend, `passedDown` strips a decoration;
@@ -578,21 +580,21 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   highlights `g.edge[id^="<from>__<event>__<to>__"]` and nodes by
   `<title>`.
 - Transition bodies live in `changeState<OLD, NEW>(event)` (payload) /
-  `changeState<OLD, NEW>()` / `leave`/`enter<OLD, NEW>`, instantiated
+  `changeState<OLD, NEW>()` / `leaveState`/`enterState<OLD, NEW>`, instantiated
   per EDGE, not per event: all events triggering the same edge share one
   instantiation. The `onTransition` hook is called from
   `doTransition<TRANSITION, STATE, EVENT>` (already per (transition,
   state, event)) so the bodies stay event-agnostic. Measured 17% .text reduction vs. inlining per event
   (GCC 13, -Os).
-- Dispatch in `process` goes through `internal::dispatch` (Visit.hpp,
+- Dispatch in `process` goes through `internal::visit` (Visit.hpp,
   moved out of Core.hpp 2026-10-04 - a variant utility that knows no
   state, event or table; the machine's event dispatch stays in
-  Core.hpp, it is the core): the
-  fold-expression `internal::visit` by default (measured 3.7 kB smaller
+  Core.hpp, it is the core): a fold expression, measured 3.7 kB smaller
   than `std::visit` on arm-zephyr-eabi GCC 14.3 -Os for a 14-state
-  machine; 32 bytes larger on hosted libstdc++ for traffic_light.cpp),
-  `MTL_FSM_FOLD_VISIT=0` selects `std::visit`. Both paths run the full
-  test suite.
+  machine; 32 bytes larger on hosted libstdc++ for traffic_light.cpp.
+  The `std::visit` path (`MTL_FSM_FOLD_VISIT=0`, `internal::dispatch`
+  choosing between the two) was removed 2026-10-04 on the author's
+  word: it was never the better one.
 - The visitor in `process` instantiates `operator()` for EVERY state, also
   states with no transition for the event - this is NOT waste, do not
   "optimize" it: the `return false` arms are the ignore semantics (process
@@ -643,7 +645,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   triggering event (`std::constructible_from<NEW, EVENT const&>`) is
   emplaced with it; otherwise default-constructed. Only the thin payload
   `changeState` overload is per (edge, event); the shared bodies live in
-  `leave<OLD, NEW>`/`enter<OLD, NEW>`, still per edge. Observer hooks run
+  `leaveState<OLD, NEW>`/`enterState<OLD, NEW>`, still per edge. Observer hooks run
   after the emplace and can read the payload via `getIf<NEW>()` (e.g. a
   driver observer transmitting a message stored in the state).
 

@@ -156,8 +156,8 @@ namespace Concepts {
 
 namespace MachineTypes {
     static_assert(std::is_same_v<machine::initial_state, off>);
-    static_assert(std::is_same_v<machine::state_variant,
-                                 std::variant<off, running, cooldown, locked>>);
+    static_assert(std::is_same_v<machine::enabled_table::states,
+                                 mtl::typelist<off, running, cooldown, locked>>);
     // observers may retain the machine address from a hook
     static_assert(!std::is_copy_constructible_v<machine>);
     static_assert(!std::is_move_constructible_v<machine>);
