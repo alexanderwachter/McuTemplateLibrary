@@ -9,7 +9,8 @@ C++20 header-only state machine built on the mtl library in this repo
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
 `Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
-`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Visit.hpp`, `Core.hpp` - the machine and
+`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Visit.hpp`,
+`Checks.hpp`, `Submachines.hpp`, `Core.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -184,14 +185,15 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (`internal::composite`, `submachine_t`) owns a `StateMachine<
   internal::nested<sub_table, depth + 1>, OBSERVERs...>` while active.
   The parent keeps the active child in one `std::variant<std::monostate,
-  children...>` next to its state variant (`sub_`; `nil_type` in a flat
-  table), constructs it in `enterSubmachine<STATE>` after the entry and
-  transition hooks (constructor, `doTransition`, `changeShared`), and
+  children...>` next to its state variant (`submachines_`, an
+  `internal::Submachines`, below; empty in a flat table), constructs it
+  in `enterSubmachine<STATE>` after the entry and
+  transition hooks (constructor, `fire`, `enterShared`), and
   tears it down first thing in `leave<OLD, NEW>` via the child's private
   `leaveActiveState()` - the active state left with `TO = nil_type`,
-  innermost first (`StateMachine` befriends all its specializations).
+  innermost first (`Submachines` is a friend of the machine).
   A root's destructor still runs no hooks. Dispatch: public `process`
-  is `react(event) != reaction::none`; `react` = `reactInSubmachine`
+  is `react(event) != reaction::none`; `react` = `submachines_.react`
   (the active composite's child `react`s first) then `reactInOwnTable`
   (guarded, unguarded, wildcards). `internal::reaction {none, in_place,
   state_entered}` is the child's answer to its parent. Every event
@@ -250,8 +252,8 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   Independent of that, any state of a submachine may declare `using
   emits = EVENT;` (`internal::emitting`, `emitted_t`,
   `fsm::emitted_events_t`): when a child's `react` answers
-  `state_entered`, the parent's `reactToEmittedEvent<COMPOSITE>` finds
-  the emitting state the child is in and runs `reactInOwnTable` with
+  `state_entered`, `Submachines::reactToEmittedEvent<COMPOSITE>` finds
+  the emitting state the child is in and runs the parent's `reactInOwnTable` with
   the default-constructed event - own rows with their guards, then
   wildcards, not offered back to the child. So the parent's table
   decides whether the composite is left; an internal transition in the
@@ -349,6 +351,58 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   stays as the one that cannot grow a member. Not built: the class
   holding a reference as a machine member (4 B RAM per level for
   nothing). Tests: namespace `TransitionGuards`.
+- Submachines are a class of their own (2026-10-04):
+  `internal::Submachines<COMPOSITES, CHILD_MACHINES>`
+  (Submachines.hpp), the machine's `submachines_` - named by two
+  parallel lists, the composite states of the enabled table and the
+  child machine of each, never by the table. Only the machine can
+  spell a child machine, so the type factory stays in Core.hpp
+  (`child_machine_of`, `composites`, `child_machines`, `submachines`).
+  Unlike the observers, contexts and guards classes it IS a friend of
+  the machine (the author's decision: the no-friend rule came from
+  those): it calls a child's private `react()` and
+  `leaveActiveState()` and the parent's `reactInOwnTable()`; the
+  machines no longer befriend each other. Core.hpp asks it three
+  things: `react(parent, event)` (the active composite's child first;
+  a local event does not descend, `passedDown` strips a decoration;
+  private `reactInActiveChild`, `reactInChildOf`,
+  `reactToEmittedEvent`), `enterWith<STATE>(contexts, observers)` and
+  `leaveWith<STATE>()` (no-ops for a plain state; `activeChildOf` holds
+  the `MTL_FSM_CHECKS` assert). Queries: `childOf<COMPOSITE>()` behind
+  the public `submachine<>()` (now returning `auto const*`),
+  `annotationOfActiveChild<T>(parent, optional&)`. Storage: one variant
+  alternative per distinct child machine, `nil_type` without
+  composites (the class is empty). Questions under the machine's
+  static_asserts: `no_composite_nests_its_own_table<TABLE>`,
+  `annotations_exclusive_per_level`,
+  `emitted_events_default_constructible<TABLE>`,
+  `every_composite_takes_emitted_events<TABLE, OBSERVER_LIST>`,
+  `every_submachine_starts_silent<OBSERVER_LIST>`. Moved here:
+  `reaction` (from Core.hpp), `emitted_events_taken_in`,
+  `submachine_starts_silent`, `submachine_emitting_states_t` (from
+  Table.hpp), `nesting_carrier`, `annotation_levels_exclusive` (from
+  Observing.hpp); the debug-check macros went to Checks.hpp, which
+  both headers include. Everything a concept or public trait is
+  defined from stays in Table.hpp (`composite`, `submachine_t`,
+  `emitting`, `emitted_t`, `nested`, `levels`, `nested_tables`).
+  Measured: pd_drp runs `drp_preference::none` and has NO composite
+  state - 0 B there (62152 B, no symbol changed) proves nothing; the
+  hot path is a copy of pd_drp with `drp_preference::sink` (Try.SNK,
+  TryWait.SRC: composites, emitted events, inherited contexts),
+  baseline 64124 B flash / 13072 B RAM. Final: 64116 B (-8 B, RAM
+  equal), sensor sample on nucleo_g474re 33144 B (0 B), main.cpp
+  compile time equal (24-25 s both, within drift). The machine keeps
+  a one-line `enterSubmachine<STATE>()` handing in `contexts_` and
+  `observers_`: with the three call sites calling `enterWith`
+  directly GCC inlines the emplace into each, +68 B (64192 B).
+  Tried on top of that +68 B state: the react functions static,
+  taking only the parent and reaching `parent.submachines_` +80 B;
+  the emitted event staying in the machine (per-composite fold and
+  `reactToEmittedEvent` in Core.hpp, the class only handing out the
+  child) +80 B - the cost was on the enter side in all three. Not
+  built: a callable for the emitted event (the parent reference is
+  the same thing), the class answering an index into the emitted
+  events. Tests: namespace `Submachines`.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine

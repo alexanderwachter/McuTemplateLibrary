@@ -1785,6 +1785,69 @@ static_assert(mtl::empty_v<
 
 } // namespace Final
 
+namespace Submachines {
+    using fsm::internal::nested;
+
+    using inner_machine   = fsm::StateMachine<nested<Nested::inner_table, 1>>;
+    using attempt_machine = fsm::StateMachine<nested<Final::attempt_table, 1>>;
+
+    using of_flat   = fsm::internal::Submachines<mtl::typelist<>, mtl::typelist<>>;
+    using of_outer  = fsm::internal::Submachines<mtl::typelist<Nested::active>,
+                                                 mtl::typelist<inner_machine>>;
+    using of_job    = fsm::internal::Submachines<mtl::typelist<Final::attempt>,
+                                                 mtl::typelist<attempt_machine>>;
+    using of_shared = fsm::internal::Submachines<mtl::typelist<Nested::active, Nested::wrapper>,
+                                                 mtl::typelist<inner_machine, inner_machine>>;
+
+    // the child of each composite; a flat table stores nothing, two
+    // composites with the same child machine share one alternative
+    static_assert(std::is_same_v<of_outer::child_of<Nested::active>, inner_machine>);
+    static_assert(std::is_same_v<of_shared::child_of<Nested::wrapper>, inner_machine>);
+    static_assert(of_outer::has_composite<Nested::active>);
+    static_assert(!of_outer::has_composite<Nested::wrapper>);
+    static_assert(std::is_empty_v<of_flat>);
+    static_assert(sizeof(of_shared) == sizeof(of_outer));
+
+    static_assert(of_outer::no_composite_nests_its_own_table<Nested::outer_table>);
+    static_assert(!of_outer::no_composite_nests_its_own_table<Nested::inner_table>);
+
+    using of_refining = fsm::internal::Submachines<mtl::typelist<Nested::refining>,
+                                                   mtl::typelist<inner_machine>>;
+    static_assert(of_outer::annotations_exclusive_per_level);
+    static_assert(of_flat::annotations_exclusive_per_level);
+    static_assert(!of_refining::annotations_exclusive_per_level);
+
+    struct report {
+        explicit report(int) {}
+    };
+    struct reporting {
+        using emits = report;
+    };
+    struct reporting_table : fsm::transition_table<
+        fsm::transition<fsm::from<Final::trying>, fsm::on<Final::start>, fsm::to<reporting>>> {};
+    static_assert(of_flat::emitted_events_default_constructible<Final::attempt_table>);
+    static_assert(of_flat::emitted_events_default_constructible<Final::job_table>); // emits none
+    static_assert(!of_flat::emitted_events_default_constructible<reporting_table>);
+
+    // attempt without a transition for what its submachine emits
+    struct deaf_table : fsm::transition_table<
+        fsm::transition<fsm::from<Final::idle>, fsm::on<Final::start>, fsm::to<Final::attempt>>> {};
+    static_assert(of_job::every_composite_takes_emitted_events<Final::job_table, mtl::nil_type>);
+    static_assert(!of_job::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
+    static_assert(of_flat::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
+
+    struct loud_table : fsm::transition_table<
+        fsm::transition<fsm::from<Final::succeeded>, fsm::on<Final::start>,
+                        fsm::to<Final::trying>>> {};
+    struct loud {
+        using submachine = loud_table;
+    };
+    using of_loud = fsm::internal::Submachines<
+        mtl::typelist<loud>, mtl::typelist<fsm::StateMachine<nested<loud_table, 1>>>>;
+    static_assert(of_job::every_submachine_starts_silent<mtl::nil_type>);
+    static_assert(!of_loud::every_submachine_starts_silent<mtl::nil_type>);
+} // namespace Submachines
+
 // --- runtime checks ---------------------------------------------------------
 
 namespace {

@@ -453,45 +453,6 @@ template<concepts::transition_table TABLE, concepts::observer_list OBSERVER_LIST
 using nested_events_t = mtl::unique_t<
     mtl::linearize_t<mtl::transform_t<nested_tables_t<TABLE, OBSERVER_LIST>, internal::events_of_table>>>;
 
-namespace internal {
-
-// The states of the submachine a composite STATE owns that emit an
-// event, as the observers enable that submachine
-template<composite STATE, concepts::observer_list OBSERVER_LIST>
-using submachine_emitting_states_t = mtl::filter_t<
-    typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::states, is_emitting>;
-
-// What a composite state of TABLE owes its submachine: a transition
-// for every event a state of it emits - own or through a wildcard,
-// guarded or not. An event nobody could take is a dead declaration
-template<concepts::transition_table TABLE, concepts::observer_list OBSERVER_LIST>
-struct emitted_events_taken_in {
-    template<composite STATE>
-    struct taken_by {
-        template<emitting EMITTING>
-        struct pred
-            : std::bool_constant<
-                  !mtl::empty_v<transitions_for_t<TABLE, STATE, emitted_t<EMITTING>>>> {};
-    };
-
-    template<composite STATE>
-    struct pred
-        : std::bool_constant<mtl::all_of_v<submachine_emitting_states_t<STATE, OBSERVER_LIST>,
-                                           taken_by<STATE>::template pred>> {};
-};
-
-// A submachine is entered at its initial state before anyone could
-// take an event: that state does not emit
-template<concepts::observer_list OBSERVER_LIST>
-struct submachine_starts_silent {
-    template<composite STATE>
-    struct pred
-        : std::bool_constant<!emitting<mtl::front_t<
-              typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::states>>> {};
-};
-
-} // namespace internal
-
 // The states TABLE ends in, as its final<> entries name them
 template<concepts::transition_table TABLE>
 using final_states_t = typename TABLE::final_states;

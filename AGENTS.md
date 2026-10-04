@@ -11,7 +11,7 @@ its design.
 | `include/mtl/Typelist.hpp`, `TypelistAlgorithms.hpp` | typelists and compile-time algorithms; everything else builds on them |
 | `include/mtl/TypeName.hpp` | compile-time type names (`short_name_of<T>` is the machine/state/event id everywhere) |
 | `include/mtl/StateMachine.hpp` | the `fsm` state machine: the contract comment, includes the parts below |
-| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `ObserverHooks.hpp` (hook forms, delivery to one observer), `ObserverGroup.hpp` (`ObserverGroup`), `InjectedObservers.hpp` (`internal::InjectedObservers`: a machine's observer references, hook delivery, what the observers answer together), `Guards.hpp` (`internal::TransitionGuards`: who answers the guards of a transition, whether they hold for an event), `Contexts.hpp` (`internal::MachineContexts`: a machine's own and inherited context instances, what its states are constructed with, the checks on `parent_contexts`), `Traits.hpp` (reachability, features, coverage), `Visit.hpp` (`internal::dispatch`: the fold visit of the active state, or `std::visit`), `Core.hpp` (`StateMachine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
+| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `ObserverHooks.hpp` (hook forms, delivery to one observer), `ObserverGroup.hpp` (`ObserverGroup`), `InjectedObservers.hpp` (`internal::InjectedObservers`: a machine's observer references, hook delivery, what the observers answer together), `Guards.hpp` (`internal::TransitionGuards`: who answers the guards of a transition, whether they hold for an event), `Contexts.hpp` (`internal::MachineContexts`: a machine's own and inherited context instances, what its states are constructed with, the checks on `parent_contexts`), `Traits.hpp` (reachability, features, coverage), `Visit.hpp` (`internal::dispatch`: the fold visit of the active state, or `std::visit`), `Checks.hpp` (`MTL_FSM_CHECKS`, `MTL_FSM_ASSERT`), `Submachines.hpp` (`internal::Submachines`: the child machine of the active composite state - entered and left with it, the first to react to an event, the checks on submachines and emitted events), `Core.hpp` (`StateMachine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
 | `include/mtl/StateMachineTrace.hpp` | `fsm::tracing` observer and the trace line grammar (target code) |
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |
@@ -125,7 +125,9 @@ expecting the specific `static_assert` message - a class template's
   new hook chooses its cost by its form: one state, or the edge
   (expanding whole edges per source cost 2780 B on `pd_drp`, measured).
   Measure a library change on the firmware's `pd_drp` sample
-  (stm32g081b_eval, 58728 B at the time of writing) before and after,
+  (stm32g081b_eval, 58728 B at the time of writing) before and after
+  (it runs `drp_preference::none` and has no composite state: a change
+  to the submachine path is measured with `drp_preference::sink`),
   with the firmware's own observers compiling against the library
   version under test: a hook the machine does not detect (an old name)
   vanishes silently and makes the number look better than it is.

@@ -329,26 +329,6 @@ struct carried_in {
     struct pred : annotation_in_table<TABLE, T> {};
 };
 
-// An annotation type belongs to one level of a nesting path: a
-// composite state carrying T forbids T below it. A sub-state refining
-// the parent's value would leave the observers and the machine's
-// annotation<T>() query disagreeing - moving on to a sibling without T
-// re-notifies nothing, while the parent's T is still the active one
-// A composite state whose hierarchy carries T somewhere below it
-template<concepts::annotation T>
-struct nesting_carrier {
-    template<composite STATE>
-    struct pred : annotation_in_table<submachine_t<STATE>, T> {};
-};
-
-template<concepts::state STATE>
-struct annotation_levels_exclusive : std::true_type {};
-
-template<composite STATE>
-struct annotation_levels_exclusive<STATE>
-    : std::bool_constant<mtl::none_of_v<annotation_types_t<STATE>,
-                                        carried_in<submachine_t<STATE>>::template pred>> {};
-
 } // namespace internal
 
 // The annotation types an observer declares it observes

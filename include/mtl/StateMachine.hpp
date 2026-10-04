@@ -231,6 +231,9 @@
  *   Traits.hpp      reachability, observer and annotation coverage,
  *                   event coverage - the table-wide proofs
  *   Visit.hpp       the visit of the active state: the fold, or std::visit
+ *   Checks.hpp      the debug checks: MTL_FSM_CHECKS, MTL_FSM_ASSERT
+ *   Submachines.hpp the child machine of the active composite state:
+ *                   entered and left with it, the first to react
  *   Core.hpp        the state machine and its dispatch
  *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
  *                   through a bounded FIFO + WORK policy; QueuedTimer
@@ -248,6 +251,7 @@
 #include <mtl/statemachine/ObserverHooks.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Queued.hpp>
+#include <mtl/statemachine/Submachines.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Timeout.hpp>
 #include <mtl/statemachine/Timer.hpp>

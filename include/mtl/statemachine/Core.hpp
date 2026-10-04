@@ -9,16 +9,17 @@
 
 #pragma once
 
+#include <mtl/statemachine/Checks.hpp>
 #include <mtl/statemachine/Contexts.hpp>
 #include <mtl/statemachine/Guards.hpp>
 #include <mtl/statemachine/InjectedObservers.hpp>
+#include <mtl/statemachine/Submachines.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/statemachine/Visit.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
 
-#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -28,41 +29,13 @@
 #include <utility>
 #include <variant>
 
-// Debug checks on the machine's use: process() re-entered from a hook
-// (the contract forbids it: on the wildcard path the exit hooks have
-// run but the state has not changed yet), or a state constructor that
-// threw and left the machine without a state. On without NDEBUG;
-// define MTL_FSM_CHECKS to 0 or 1 to decide explicitly - the same
-// value in every translation unit, the flag is a member. The failing
-// check goes through MTL_FSM_ASSERT(condition, "message"), assert() by
-// default
-#ifndef MTL_FSM_CHECKS
-#  ifdef NDEBUG
-#    define MTL_FSM_CHECKS 0
-#  else
-#    define MTL_FSM_CHECKS 1
-#  endif
-#endif
-
-#ifndef MTL_FSM_ASSERT
-#  define MTL_FSM_ASSERT(condition, message) assert((condition) && message)
-#endif
-
 namespace fsm {
-
-namespace internal {
-
-// What an event did to a machine's active state. A child machine
-// answers its parent with it: only a state entered emits its event
-enum class reaction : std::size_t { none, in_place, state_entered };
-
-} // namespace internal
 
 template<concepts::transition_table TRANSITION_TABLE, concepts::observer... OBSERVERs>
 class StateMachine {
-    // a parent machine drives and leaves its child machines
-    template<concepts::transition_table, concepts::observer...>
-    friend class StateMachine;
+    // drives and leaves the child machines, for their parent
+    template<mtl::concepts::typelist, mtl::concepts::typelist>
+    friend class internal::Submachines;
 
     using injected_observers = internal::InjectedObservers<OBSERVERs...>;
     using injected           = typename injected_observers::observer_list;
@@ -90,29 +63,20 @@ private:
     using contexts = internal::machine_contexts_t<TRANSITION_TABLE, TRANSITIONS>;
     using guards   = internal::TransitionGuards<OBSERVERs...>;
 
-    using final_states    = typename TRANSITIONS::final_states;
-    using emitting_states = mtl::filter_t<typename TRANSITIONS::states, internal::is_emitting>;
+    using final_states = typename TRANSITIONS::final_states;
 
-    using composites = mtl::filter_t<typename TRANSITIONS::states, internal::is_composite>;
-    static constexpr bool has_composites = !mtl::empty_v<composites>;
-
+    // The machine a composite state owns while active: of its
+    // submachine's table, one level down, with the contexts it inherits
     template<internal::composite COMPOSITE>
-    using submachine_of =
-        StateMachine<internal::nested<internal::submachine_t<COMPOSITE>, StateMachine::depth + 1,
-                                      typename contexts::template inherited_by<COMPOSITE>>,
-                     OBSERVERs...>;
+    struct child_machine_of
+        : std::type_identity<StateMachine<
+              internal::nested<internal::submachine_t<COMPOSITE>, StateMachine::depth + 1,
+                               typename contexts::template inherited_by<COMPOSITE>>,
+              OBSERVERs...>> {};
 
-    template<internal::composite COMPOSITE>
-    struct make_submachine : std::type_identity<submachine_of<COMPOSITE>> {};
-
-    // At most one composite state is active: one alternative per
-    // distinct child machine, std::monostate while none is
-    using submachine_variant = mtl::rebind_t<
-        mtl::prepend_t<std::monostate,
-                       mtl::unique_t<mtl::transform_t<composites, make_submachine>>>,
-        std::variant>;
-    using submachine_storage =
-        std::conditional_t<StateMachine::has_composites, submachine_variant, mtl::nil_type>;
+    using composites     = mtl::filter_t<typename TRANSITIONS::states, internal::is_composite>;
+    using child_machines = mtl::transform_t<composites, child_machine_of>;
+    using submachines    = internal::Submachines<composites, child_machines>;
 
 public:
     explicit StateMachine(OBSERVERs&... observers)
@@ -177,11 +141,11 @@ public:
     // The child machine of COMPOSITE while that state is active,
     // nullptr otherwise
     template<internal::composite COMPOSITE>
-    [[nodiscard]] submachine_of<COMPOSITE> const* submachine() const
+    [[nodiscard]] auto const* submachine() const
     {
-        static_assert(mtl::has_a_v<composites, COMPOSITE>,
+        static_assert(submachines::template has_composite<COMPOSITE>,
                       "StateMachine::submachine: not a composite state of this table");
-        return this->template is<COMPOSITE>() ? std::get_if<submachine_of<COMPOSITE>>(&sub_)
+        return this->template is<COMPOSITE>() ? submachines_.template childOf<COMPOSITE>()
                                               : nullptr;
     }
 
@@ -193,72 +157,24 @@ public:
         static_assert(annotation_in_table_v<table, T>,
                       "StateMachine::annotation: no state of the table carries this annotation");
         std::optional<T> result = this->template annotationOfActiveState<T>();
-        if constexpr (StateMachine::has_composites) {
-            this->template annotationOfSubmachine<T>(result);
-        }
+        submachines_.annotationOfActiveChild(*this, result);
         return result;
     }
 
 private:
     // --- an event arrives ---------------------------------------------------
 
-    // The submachine first, then this machine's own table. A local
-    // event (fsm::timeout) belongs to one level and does not descend
+    // The active composite state's child machine first, then this
+    // machine's own table
     template<concepts::event EVENT>
     reaction react(EVENT const& event)
     {
         this->beginProcessing();
-        reaction result = reaction::none;
-        if constexpr (!local_event_v<EVENT>) {
-            result = this->reactInSubmachine(internal::passedDown(event));
-        }
+        reaction result = submachines_.react(*this, event);
         if (result == reaction::none) {
             result = this->reactInOwnTable(event);
         }
         this->endProcessing();
-        return result;
-    }
-
-    template<concepts::event EVENT>
-    reaction reactInSubmachine([[maybe_unused]] EVENT const& event)
-    {
-        reaction result = reaction::none;
-        [&]<typename... COMPOSITEs>(mtl::typelist<COMPOSITEs...>) {
-            static_cast<void>(
-                ((this->template is<COMPOSITEs>() &&
-                  (result = this->template reactInSubmachineOf<COMPOSITEs>(event), true)) ||
-                 ...));
-        }(composites{});
-        return result;
-    }
-
-    // Whatever the submachine does happens in place for this machine -
-    // unless it entered a state whose emitted event moves this machine on
-    template<internal::composite COMPOSITE, concepts::event EVENT>
-    reaction reactInSubmachineOf(EVENT const& event)
-    {
-        reaction const of_submachine = this->template submachineOf<COMPOSITE>().react(event);
-        if (of_submachine == reaction::state_entered &&
-            this->template reactToEmittedEvent<COMPOSITE>() == reaction::state_entered) {
-            return reaction::state_entered;
-        }
-        return of_submachine == reaction::none ? reaction::none : reaction::in_place;
-    }
-
-    // The event the submachine's active state emits goes to this
-    // machine's own table. The reaction may destroy the submachine: the
-    // fold stops at the first match
-    template<internal::composite COMPOSITE>
-    reaction reactToEmittedEvent()
-    {
-        reaction result = reaction::none;
-        [&]<typename... EMITTINGs>(mtl::typelist<EMITTINGs...>) {
-            auto const& submachine = this->template submachineOf<COMPOSITE>();
-            static_cast<void>(
-                ((submachine.template is<EMITTINGs>() &&
-                  (result = this->reactInOwnTable(internal::emitted_t<EMITTINGs>{}), true)) ||
-                 ...));
-        }(typename submachine_of<COMPOSITE>::emitting_states{});
         return result;
     }
 
@@ -354,11 +270,11 @@ private:
         this->template enter<OLD_STATE, NEW_STATE>();
     }
 
-    // A composite state's submachine is left before the state itself
+    // A composite state's child machine is left before the state itself
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
     void leave()
     {
-        this->template leaveSubmachine<OLD_STATE>();
+        submachines_.template leaveWith<OLD_STATE>();
         observers_.template deliverExitHooks<OLD_STATE, NEW_STATE>(*this);
     }
 
@@ -389,6 +305,28 @@ private:
         this->beginProcessing();
         this->template enter<mtl::nil_type, initial_state>();
         this->template enterSubmachine<initial_state>();
+        this->endProcessing();
+    }
+
+    // A composite state's child machine is entered after the state
+    // itself, from this machine's contexts and observers
+    template<concepts::state STATE>
+    void enterSubmachine()
+    {
+        submachines_.template enterWith<STATE>(contexts_, observers_);
+    }
+
+    // What a parent machine does to its child before destroying it; a
+    // root's destructor runs no hooks
+    void leaveActiveState()
+    {
+        this->beginProcessing();
+        internal::dispatch(
+            [this](auto& state) {
+                this->template leave<std::decay_t<decltype(state)>, mtl::nil_type>();
+                return true;
+            },
+            current_);
         this->endProcessing();
     }
 
@@ -446,51 +384,6 @@ private:
         this->template enterSubmachine<NEW_STATE>();
     }
 
-    // --- submachines --------------------------------------------------------
-
-    // After the composite state's own entry hooks: the child machine's
-    // constructor enters its initial state
-    template<concepts::state STATE>
-    void enterSubmachine()
-    {
-        if constexpr (internal::composite<STATE>) {
-            sub_.template emplace<submachine_of<STATE>>(contexts_, observers_);
-        }
-    }
-
-    template<concepts::state STATE>
-    void leaveSubmachine()
-    {
-        if constexpr (internal::composite<STATE>) {
-            this->template submachineOf<STATE>().leaveActiveState();
-            sub_.template emplace<std::monostate>();
-        }
-    }
-
-    // What a parent machine does to its child before destroying it; a
-    // root's destructor runs no hooks
-    void leaveActiveState()
-    {
-        this->beginProcessing();
-        internal::dispatch(
-            [this](auto& state) {
-                this->template leave<std::decay_t<decltype(state)>, mtl::nil_type>();
-                return true;
-            },
-            current_);
-        this->endProcessing();
-    }
-
-    template<internal::composite COMPOSITE>
-    submachine_of<COMPOSITE>& submachineOf()
-    {
-        auto* const child = std::get_if<submachine_of<COMPOSITE>>(&sub_);
-#if MTL_FSM_CHECKS
-        MTL_FSM_ASSERT(child != nullptr, "fsm: composite state active without its submachine");
-#endif
-        return *child;
-    }
-
     // --- annotation query ---------------------------------------------------
 
     // A compare chain over the states carrying T, each yielding its constant
@@ -506,21 +399,6 @@ private:
                                ...));
             return annotation;
         }(carriers{});
-    }
-
-    // Only the composite states with T somewhere below ask their child
-    template<concepts::annotation T>
-    void annotationOfSubmachine(std::optional<T>& annotation) const
-    {
-        using states  = typename TRANSITIONS::states;
-        using nesting = mtl::filter_t<composites, internal::nesting_carrier<T>::template pred>;
-        [&]<typename... NESTINGs>(mtl::typelist<NESTINGs...>) {
-            static_cast<void>(
-                ((current_.index() == mtl::index_of_v<NESTINGs, states> &&
-                  (annotation = this->template submachine<NESTINGs>()->template annotation<T>(),
-                   true)) ||
-                 ...));
-        }(nesting{});
     }
 
     // --- the re-entrancy check ----------------------------------------------
@@ -575,11 +453,9 @@ private:
                   "StateMachine: a state must be constructible from its declared contexts "
                   "alone, in their order (default constructible without any)");
 
-    template<internal::composite COMPOSITE>
-    struct nests_this_table : std::is_same<internal::submachine_t<COMPOSITE>, table> {};
-    static_assert(mtl::none_of_v<composites, nests_this_table>,
+    static_assert(submachines::template no_composite_nests_its_own_table<table>,
                   "StateMachine: a state's submachine is the table it belongs to");
-    static_assert(mtl::all_of_v<composites, internal::annotation_levels_exclusive>,
+    static_assert(submachines::annotations_exclusive_per_level,
                   "StateMachine: an annotation of a composite state may not recur in its "
                   "submachine - annotate at the level where the value changes");
 
@@ -594,18 +470,14 @@ private:
                   "StateMachine: a submachine inherits a context no state of it (or of the "
                   "submachines inside it) declares");
 
-    template<internal::emitting STATE>
-    struct emits_default_constructible
-        : std::is_default_constructible<internal::emitted_t<STATE>> {};
-    static_assert(mtl::all_of_v<emitting_states, emits_default_constructible>,
+    static_assert(submachines::template emitted_events_default_constructible<TRANSITIONS>,
                   "StateMachine: the event a state emits must be default constructible");
     static_assert(
-        mtl::all_of_v<composites,
-                      internal::emitted_events_taken_in<TRANSITIONS, injected>::template pred>,
+        submachines::template every_composite_takes_emitted_events<TRANSITIONS, injected>,
         "StateMachine: a composite state has no transition for an event a state of its "
         "submachine emits");
     static_assert(
-        mtl::all_of_v<composites, internal::submachine_starts_silent<injected>::template pred>,
+        submachines::template every_submachine_starts_silent<injected>,
         "StateMachine: the initial state of a submachine emits an event - nobody is there to "
         "take it yet");
 
@@ -617,7 +489,7 @@ private:
     bool processing_ = false;
 #endif
     state_variant current_;
-    [[no_unique_address]] submachine_storage sub_{}; // the active composite state's child machine
+    [[no_unique_address]] submachines submachines_{};
 };
 
 } // namespace fsm
