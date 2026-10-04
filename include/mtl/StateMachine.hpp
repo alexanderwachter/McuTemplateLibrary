@@ -221,37 +221,37 @@
  *   Timeout.hpp     timeout/deadline annotations, timer-range maps
  *   Timer.hpp       the timer policy contract, fsm::timed, fsm::deadlined
  *   Observing.hpp   annotation sets, fsm::observing
- *   ObserverHooks.hpp      the hook forms, their delivery to one observer
  *   ObserverGroup.hpp      several observers injected as one
+ *   Feature.hpp     features as tags and the filter removing one
+ *   Lists.hpp       the lists an author writes: fsm::contexts,
+ *                   annotations, events, observers, timer_ranges
+ *   Traits.hpp      reachability, observer and annotation coverage,
+ *                   event coverage - the table-wide proofs
+ *   StateMachine.hpp  fsm::StateMachine and its dispatch
+ *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
+ *                   through a bounded FIFO + WORK policy; QueuedTimer
+ *                   latches expiries into the same serialized drain
+ * and what only the machine itself uses, in statemachine/internal/:
+ *   ObserverHooks.hpp      the hook forms, their delivery to one observer
  *   InjectedObservers.hpp  the observers of a machine: their references,
  *                          hook delivery, what they answer together
  *   Guards.hpp      the guards of a transition: who answers them,
  *                   whether they hold for an event
- *   Feature.hpp     features as tags and the filter removing one
- *   Traits.hpp      reachability, observer and annotation coverage,
- *                   event coverage - the table-wide proofs
- *   Visit.hpp       the visit of the active state: a fold, not std::visit
- *   Checks.hpp      the debug checks: MTL_FSM_CHECKS, MTL_FSM_ASSERT
+ *   Contexts.hpp    a machine's own and inherited context instances
  *   Submachines.hpp the child machine of the active composite state:
  *                   entered and left with it, the first to react
- *   Core.hpp        the state machine and its dispatch
- *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
- *                   through a bounded FIFO + WORK policy; QueuedTimer
- *                   latches expiries into the same serialized drain
+ *   Visit.hpp       the visit of the active state: a fold, not std::visit
+ *   Checks.hpp      the debug checks: MTL_FSM_CHECKS, MTL_FSM_ASSERT
  */
 
 #pragma once
 
-#include <mtl/statemachine/Contexts.hpp>
-#include <mtl/statemachine/Core.hpp>
 #include <mtl/statemachine/Feature.hpp>
-#include <mtl/statemachine/Guards.hpp>
-#include <mtl/statemachine/InjectedObservers.hpp>
+#include <mtl/statemachine/Lists.hpp>
 #include <mtl/statemachine/ObserverGroup.hpp>
-#include <mtl/statemachine/ObserverHooks.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Queued.hpp>
-#include <mtl/statemachine/Submachines.hpp>
+#include <mtl/statemachine/StateMachine.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Timeout.hpp>
 #include <mtl/statemachine/Timer.hpp>

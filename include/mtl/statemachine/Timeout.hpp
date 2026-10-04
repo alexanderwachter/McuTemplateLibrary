@@ -155,10 +155,6 @@ concept timed_by_or_timer_ranges = internal::is_timed_by_or_timer_ranges<T>::val
 
 } // namespace concepts
 
-// A timer-range map. Maps compose like the tables they describe
-template<concepts::timed_by_or_timer_ranges... TIMED_BY_OR_TIMER_RANGEs>
-using timer_ranges = mtl::linearize_t<mtl::typelist<TIMED_BY_OR_TIMER_RANGEs...>>;
-
 namespace internal {
 
 template<concepts::state STATE>

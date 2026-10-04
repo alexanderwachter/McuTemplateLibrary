@@ -226,10 +226,6 @@ template<concepts::transition_table TABLE, concepts::annotation T,
          mtl::concepts::typelist EXCEPTIONS = mtl::typelist<>>
 inline constexpr bool all_states_carry_v = all_states_carry<TABLE, T, EXCEPTIONS>::value;
 
-// The events a state owes a transition for
-template<concepts::event... EVENTs>
-using events = mtl::typelist<EVENTs...>;
-
 // Proves every state handles the events it owes: REQUIRED_EVENTS<STATE>
 // ::type is the fsm::events<...> STATE must have a transition
 // for in its own table (empty for a state owing nothing) - an

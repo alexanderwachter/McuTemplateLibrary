@@ -116,7 +116,7 @@ namespace internal {
 
 // An observer enabling TAG, by declaring it or by answering its guard
 template<concepts::feature_tag TAG>
-struct enabling {
+struct enabler_of {
     template<concepts::observer OBSERVER>
     struct pred : std::bool_constant<observer_enables_v<OBSERVER, TAG> ||
                                      observer_answers_for_v<TAG, OBSERVER>> {};
@@ -128,19 +128,14 @@ struct enabling {
 // answering the guard it is enabled by
 template<concepts::feature_tag TAG, concepts::observer... OBSERVERs>
 inline constexpr bool feature_enabled_v =
-    (internal::enabling<TAG>::template pred<OBSERVERs>::value || ...);
-
-// The observers of a machine, for the traits asking what they enable
-// together
-template<concepts::observer... OBSERVERs>
-using observers = mtl::typelist<OBSERVERs...>;
+    (internal::enabler_of<TAG>::template pred<OBSERVERs>::value || ...);
 
 // The first of the observers (fsm::observers<...>) enabling TAG,
 // mtl::nil_type when none does: how a facade finds the object that is
 // the feature's voice, to hold it to the feature's contract or hand
 // it the hardware
 template<concepts::feature_tag TAG, mtl::concepts::typelist OBSERVER_LIST>
-using feature_enabler_t = mtl::find_if_t<OBSERVER_LIST, internal::enabling<TAG>::template pred>;
+using feature_enabler_t = mtl::find_if_t<OBSERVER_LIST, internal::enabler_of<TAG>::template pred>;
 
 // A feature following a compile-time condition rather than an
 // observer's own say - a policy answering a guard, a configuration

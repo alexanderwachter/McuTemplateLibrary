@@ -9,7 +9,7 @@
 
 #pragma once
 
-#include <mtl/statemachine/InjectedObservers.hpp>
+#include <mtl/statemachine/internal/InjectedObservers.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>

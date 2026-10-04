@@ -9,8 +9,8 @@
 
 #pragma once
 
+#include <mtl/statemachine/internal/ObserverHooks.hpp>
 #include <mtl/statemachine/Feature.hpp>
-#include <mtl/statemachine/ObserverHooks.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>

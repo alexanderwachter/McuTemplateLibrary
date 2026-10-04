@@ -8,9 +8,11 @@ C++20 header-only state machine built on the mtl library in this repo
 (`include/mtl`: `typelist`, `find_if`, `count_if`, `unique`, `all_of`, `front`).
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
-`Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
-`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Visit.hpp`,
-`Checks.hpp`, `Submachines.hpp`, `Core.hpp` - the machine and
+`Observing.hpp`, `ObserverGroup.hpp`, `Feature.hpp`, `Lists.hpp`,
+`Traits.hpp`, and - what only the machine itself uses, everything in
+them `fsm::internal` - in `statemachine/internal/`: `ObserverHooks.hpp`,
+`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Submachines.hpp`,
+`Visit.hpp`, `Checks.hpp`; `statemachine/StateMachine.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -80,7 +82,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (what a state owes), `fsm::observers<...>` (the observer list of
   `enabled_table_t` / `feature_enabler_t`), `fsm::timer_ranges<...>` (a
   timer-range map; takes other maps in place of their entries). All are
-  aliases of `mtl::typelist`. No generic `fsm::list`: a list that is
+  aliases of `mtl::typelist` and live together in `Lists.hpp` (public
+  API, grouped 2026-10-04; they used to sit next to their concepts).
+  No generic `fsm::list`: a list that is
   only a list stays `mtl::typelist`.
 - Optional `guard<G>` role (`mtl::count_if` allows 0 or 1; `transition::guard`
   is `mtl::nil_type` when absent). G is a question, a default-constructible
@@ -265,7 +269,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   constructible. The queued ring leaves emitted events out. Tests:
   namespace `Final`. DOT: `peripheries=2` on a final state, an
   "emits X" row.
-- Core.hpp readability pass (2026-10-01, on the author's request:
+- statemachine/StateMachine.hpp readability pass (2026-10-01, on the author's request:
   many comments = code not self-explaining): the table checks sit in
   one block at the end of the class, names say what a function does
   (`process*`, `doTransition`, `doFirstAllowedTransition`,
@@ -281,7 +285,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   context types - never by the table, whose unnamed enabled form
   would be spelled out in every symbol; the type factory
   `internal::machine_contexts_t<TABLE, ENABLED_TABLE>` computes them
-  (`table_contexts_t`, `inherited_contexts_t`), so Core.hpp names no
+  (`table_contexts_t`, `inherited_contexts_t`), so statemachine/StateMachine.hpp names no
   context trait. The class owns the type computation (`own_contexts`,
   `inherited_contexts`, `context_types`, `inherited_by<COMPOSITE>` -
   the list on the child's `nested<>`), the instances (access is by type;
@@ -317,7 +321,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `emplaceNewState` applies the `contextsOf` tuple and GCC inlines two
   edges differently. Tried: the machine expanding `contexts_of_t`
   over `contexts_.context<T>()` itself 0 B (rejected: leaves a
-  context trait in Core.hpp), the class emplacing into the variant
+  context trait in statemachine/StateMachine.hpp), the class emplacing into the variant
   the machine hands it +36 B. Tests: namespace `MachineContexts`.
 - Guards are a class of their own (2026-10-04):
   `internal::TransitionGuards<OBSERVERs...>` (Guards.hpp), the
@@ -332,7 +336,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (one body per guard list), `partHolds` (`not_<guard>`), `answerTo`
   (the injected answer wins, else the static check),
   `any_observer_answers`, `askObserver` / `checkStatic` (the most
-  specific form wins). Core.hpp names no guard trait and evaluates
+  specific form wins). statemachine/StateMachine.hpp names no guard trait and evaluates
   nothing: `doFirstAllowedTransition` and
   `leaveStateForFirstAllowedWildcard` ask
   `guards::allow`. Guards.hpp also holds the traits only answering
@@ -359,13 +363,13 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (Submachines.hpp), the machine's `submachines_` - named by two
   parallel lists, the composite states of the enabled table and the
   child machine of each, never by the table. Only the machine can
-  spell a child machine, so the type factory stays in Core.hpp
+  spell a child machine, so the type factory stays in statemachine/StateMachine.hpp
   (`child_machine_of`, `composites`, `child_machines`, `submachines`).
   Unlike the observers, contexts and guards classes it IS a friend of
   the machine (the author's decision: the no-friend rule came from
   those): it calls a child's private `processWithReaction()` and
   `leaveActiveState()` and the parent's `processInThisTable()`; the
-  machines no longer befriend each other. Core.hpp asks it three
+  machines no longer befriend each other. statemachine/StateMachine.hpp asks it three
   things: `react(parent, event)` (the active composite's child first;
   a local event does not descend, `passedDown` strips a decoration;
   private `reactInActiveChild`, `reactInChildOf`,
@@ -381,7 +385,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `emitted_events_default_constructible<TABLE>`,
   `every_composite_takes_emitted_events<TABLE, OBSERVER_LIST>`,
   `every_submachine_starts_silent<OBSERVER_LIST>`. Moved here:
-  `reaction` (from Core.hpp), `emitted_events_taken_in`,
+  `reaction` (from statemachine/StateMachine.hpp), `emitted_events_taken_in`,
   `submachine_starts_silent`, `submachine_emitting_states_t` (from
   Table.hpp), `nesting_carrier`, `annotation_levels_exclusive` (from
   Observing.hpp); the debug-check macros went to Checks.hpp, which
@@ -401,7 +405,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   Tried on top of that +68 B state: the react functions static,
   taking only the parent and reaching `parent.submachines_` +80 B;
   the emitted event staying in the machine (per-composite fold and
-  `reactToEmittedEvent` in Core.hpp, the class only handing out the
+  `reactToEmittedEvent` in statemachine/StateMachine.hpp, the class only handing out the
   child) +80 B - the cost was on the enter side in all three. Not
   built: a callable for the emitted event (the parent reference is
   the same thing), the class answering an index into the emitted
@@ -587,9 +591,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   state, event)) so the bodies stay event-agnostic. Measured 17% .text reduction vs. inlining per event
   (GCC 13, -Os).
 - Dispatch in `process` goes through `internal::visit` (Visit.hpp,
-  moved out of Core.hpp 2026-10-04 - a variant utility that knows no
+  moved out of statemachine/StateMachine.hpp 2026-10-04 - a variant utility that knows no
   state, event or table; the machine's event dispatch stays in
-  Core.hpp, it is the core): a fold expression, measured 3.7 kB smaller
+  statemachine/StateMachine.hpp, it is the core): a fold expression, measured 3.7 kB smaller
   than `std::visit` on arm-zephyr-eabi GCC 14.3 -Os for a 14-state
   machine; 32 bytes larger on hosted libstdc++ for traffic_light.cpp.
   The `std::visit` path (`MTL_FSM_FOLD_VISIT=0`, `internal::dispatch`

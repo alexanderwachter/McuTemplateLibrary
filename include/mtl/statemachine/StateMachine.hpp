@@ -9,14 +9,14 @@
 
 #pragma once
 
-#include <mtl/statemachine/Checks.hpp>
-#include <mtl/statemachine/Contexts.hpp>
-#include <mtl/statemachine/Guards.hpp>
-#include <mtl/statemachine/InjectedObservers.hpp>
-#include <mtl/statemachine/Submachines.hpp>
+#include <mtl/statemachine/internal/Checks.hpp>
+#include <mtl/statemachine/internal/Contexts.hpp>
+#include <mtl/statemachine/internal/Guards.hpp>
+#include <mtl/statemachine/internal/InjectedObservers.hpp>
+#include <mtl/statemachine/internal/Submachines.hpp>
+#include <mtl/statemachine/internal/Visit.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
-#include <mtl/statemachine/Visit.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
 

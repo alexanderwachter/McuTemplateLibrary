@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <mtl/statemachine/ObserverHooks.hpp>
+#include <mtl/statemachine/internal/ObserverHooks.hpp>
 #include <mtl/statemachine/Table.hpp>
 
 #include <cstddef>

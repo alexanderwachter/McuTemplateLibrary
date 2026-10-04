@@ -58,7 +58,7 @@
 
 #pragma once
 
-#include <mtl/statemachine/Core.hpp>
+#include <mtl/statemachine/StateMachine.hpp>
 #include <mtl/statemachine/Timer.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 

@@ -331,10 +331,6 @@ struct carried_in {
 
 } // namespace internal
 
-// The annotation types an observer declares it observes
-template<concepts::annotation... ANNOTATIONs>
-using annotations = mtl::typelist<ANNOTATIONs...>;
-
 // Value observer base: the derived class names the watched member once and
 // provides notifyEntry(value) (new state's value) and/or notifyExit(value)
 // (old state's value, old state still alive), each optional:

@@ -107,11 +107,6 @@ concept context = std::default_initializable<T>;
 
 } // namespace concepts
 
-// The context types a state declares for itself (contexts) or a
-// composite state for its submachine (parent_contexts)
-template<concepts::context... CONTEXTs>
-using contexts = mtl::typelist<CONTEXTs...>;
-
 namespace internal {
 
 // A state opts into machine-owned context by declaring the context

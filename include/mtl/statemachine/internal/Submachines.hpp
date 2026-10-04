@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <mtl/statemachine/Checks.hpp>
+#include <mtl/statemachine/internal/Checks.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
