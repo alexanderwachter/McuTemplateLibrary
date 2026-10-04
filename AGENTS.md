@@ -11,7 +11,7 @@ its design.
 | `include/mtl/Typelist.hpp`, `TypelistAlgorithms.hpp` | typelists and compile-time algorithms; everything else builds on them |
 | `include/mtl/TypeName.hpp` | compile-time type names (`short_name_of<T>` is the machine/state/event id everywhere) |
 | `include/mtl/StateMachine.hpp` | the `fsm` state machine: the contract comment, includes the parts below |
-| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `ObserverHooks.hpp` (hook forms, delivery to one observer), `ObserverGroup.hpp` (`ObserverGroup`), `InjectedObservers.hpp` (`internal::InjectedObservers`: a machine's observer references, hook delivery, what the observers answer together), `Guards.hpp` (`internal::TransitionGuards`: who answers the guards of a transition, whether they hold for an event), `Contexts.hpp` (`internal::MachineContexts`: a machine's own and inherited context instances, what its states are constructed with, the checks on `parent_contexts`), `Traits.hpp` (reachability, features, coverage), `Visit.hpp` (`internal::dispatch`: the fold visit of the active state, or `std::visit`), `Checks.hpp` (`MTL_FSM_CHECKS`, `MTL_FSM_ASSERT`), `Submachines.hpp` (`internal::Submachines`: the child machine of the active composite state - entered and left with it, the first to react to an event, the checks on submachines and emitted events), `Core.hpp` (`StateMachine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
+| `include/mtl/statemachine/` | the parts: `Transition.hpp` (states, roles, transition types), `Table.hpp` (`transition_table`, lookups), `Timeout.hpp` (timeout/deadline annotations, `timed_by` maps), `Timer.hpp` (`timed`, `deadlined`), `Observing.hpp` (annotation sets, `observing`), `ObserverHooks.hpp` (hook forms, delivery to one observer), `ObserverGroup.hpp` (`ObserverGroup`), `InjectedObservers.hpp` (`internal::InjectedObservers`: a machine's observer references, hook delivery, what the observers answer together), `Guards.hpp` (`internal::TransitionGuards`: who answers the guards of a transition, whether they hold for an event), `Contexts.hpp` (`internal::MachineContexts`: a machine's own and inherited context instances, what its states are constructed with, the checks on `parent_contexts`), `Traits.hpp` (reachability, features, coverage), `Visit.hpp` (`internal::visit`: the fold visit of the active state), `Checks.hpp` (`MTL_FSM_CHECKS`, `MTL_FSM_ASSERT`), `Submachines.hpp` (`internal::Submachines`: the child machine of the active composite state - entered and left with it, the first to react to an event, the checks on submachines and emitted events), `Core.hpp` (`StateMachine`, dispatch), `Queued.hpp` (`QueuedMachine`: run-to-completion delivery through a bounded FIFO and a WORK/LOCK policy; `QueuedTimer`, `OwningQueuedTimer`) |
 | `include/mtl/StateMachineTrace.hpp` | `fsm::tracing` observer and the trace line grammar (target code) |
 | `include/mtl/StateMachineDot.hpp` | Graphviz output (host tooling only) |
 | `tests/` | one `int xTests()` per file, summed in `main.cpp` |
@@ -25,12 +25,10 @@ its design.
 
 ```sh
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
-cmake -B build-visit -G Ninja -DCMAKE_CXX_FLAGS="-DMTL_FSM_FOLD_VISIT=0" && cmake --build build-visit && ./build-visit/tests/TemplateMetaProgrammingTests
 python3 -m unittest tools/fsmview/test_fsmview.py tools/dotgen/test_dotgen.py
 ```
 
-Both dispatch paths (the fold and `std::visit`) run the full suite. A
-change under `zephyr/` needs a real Zephyr build of both samples from a
+A change under `zephyr/` needs a real Zephyr build of both samples from a
 west workspace (`west build -b nucleo_g474re <repo>/zephyr/samples/sensor`,
 plus `-- -DCONFIG_SAMPLE_CALIBRATION=n`, plus `-t dot`); GCC 15 on the
 host, arm-zephyr-eabi GCC 14 on the target. Use your own Python venv for

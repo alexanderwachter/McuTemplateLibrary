@@ -230,7 +230,7 @@
  *   Feature.hpp     features as tags and the filter removing one
  *   Traits.hpp      reachability, observer and annotation coverage,
  *                   event coverage - the table-wide proofs
- *   Visit.hpp       the visit of the active state: the fold, or std::visit
+ *   Visit.hpp       the visit of the active state: a fold, not std::visit
  *   Checks.hpp      the debug checks: MTL_FSM_CHECKS, MTL_FSM_ASSERT
  *   Submachines.hpp the child machine of the active composite state:
  *                   entered and left with it, the first to react

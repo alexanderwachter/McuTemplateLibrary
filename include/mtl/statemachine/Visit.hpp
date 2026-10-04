@@ -15,16 +15,15 @@
 
 namespace fsm::internal {
 
-// Fold-based alternative to std::visit for process(): every visitor
-// instantiation is inlinable and no function-pointer table or
-// bad_variant_access path can be emitted. A valueless variant matches no
-// alternative and yields a value-initialized result (unreachable in
-// process(): the states can never make the variant valueless).
-// Measured GCC 15.2 x86-64 -Os (traffic_light.cpp): 32 bytes .text
-// larger than std::visit. Measured arm-zephyr-eabi GCC 14.3 -Os
-// (Cortex-M0+, 14-state/20-event machine): 3.7 kB smaller - std::visit
-// emits per-(event, state) invoke thunks and tables that dominate at
-// scale.
+// A fold in place of std::visit: every visitor instantiation is
+// inlinable and no function-pointer table or bad_variant_access path
+// can be emitted. A valueless variant matches no alternative and
+// yields a value-initialized result (unreachable in process(): the
+// states can never make the variant valueless).
+// std::visit measured 3.7 kB larger on arm-zephyr-eabi GCC 14.3 -Os
+// (Cortex-M0+, 14-state/20-event machine) - it emits per-(event,
+// state) invoke thunks and tables that dominate at scale - and 32
+// bytes .text smaller on GCC 15.2 x86-64 -Os (traffic_light.cpp).
 // The visitor answers every alternative with the type it answers the
 // first with
 template<typename VISITOR, typename FIRST, typename... ALTERNATIVEs>
@@ -38,24 +37,6 @@ constexpr auto visit(VISITOR&& visitor, std::variant<FIRST, ALTERNATIVEs...>& va
                            ...));
         return result;
     }(std::index_sequence_for<FIRST, ALTERNATIVEs...>{});
-}
-
-// The fold is the default: it wins clearly on embedded targets with
-// large machines (measurements above), losing only a few bytes on
-// hosted libstdc++ with small ones. Define MTL_FSM_FOLD_VISIT to 0 to
-// use std::visit instead.
-#ifndef MTL_FSM_FOLD_VISIT
-#  define MTL_FSM_FOLD_VISIT 1
-#endif
-
-template<typename VISITOR, typename... ALTERNATIVEs>
-constexpr auto dispatch(VISITOR&& visitor, std::variant<ALTERNATIVEs...>& variant)
-{
-#if MTL_FSM_FOLD_VISIT
-    return internal::visit(std::forward<VISITOR>(visitor), variant);
-#else
-    return std::visit(std::forward<VISITOR>(visitor), variant);
-#endif
 }
 
 } // namespace fsm::internal

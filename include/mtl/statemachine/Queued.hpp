@@ -411,7 +411,7 @@ private:
             }
             event_variant event{}; // copied out: a delivery may refill the slot
             if (popInto(event)) {
-                internal::dispatch(
+                internal::visit(
                     [this](auto const& popped) -> bool {
                         using event_type = std::decay_t<decltype(popped)>;
                         if constexpr (!std::is_same_v<event_type, std::monostate>) {

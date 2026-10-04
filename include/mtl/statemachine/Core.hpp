@@ -186,7 +186,7 @@ private:
     reaction reactInOwnTable(EVENT const& event)
     {
         using wildcards = wildcard_transitions_t<TRANSITIONS, EVENT>;
-        std::size_t const outcome = internal::dispatch(
+        std::size_t const outcome = internal::visit(
             [this, &event](auto& state) -> std::size_t {
                 using state_type = std::decay_t<decltype(state)>;
                 using own        = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
@@ -321,7 +321,7 @@ private:
     void leaveActiveState()
     {
         beginProcessing();
-        internal::dispatch(
+        internal::visit(
             [this](auto& state) {
                 leave<std::decay_t<decltype(state)>, mtl::nil_type>();
                 return true;
