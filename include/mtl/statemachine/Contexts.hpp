@@ -94,6 +94,18 @@ struct inherited_contexts<nested<TABLE, DEPTH, INHERITED>> : std::type_identity<
 template<concepts::transition_table TABLE>
 using inherited_contexts_t = typename inherited_contexts<TABLE>::type;
 
+// What an element of a machine's context storage is aligned to: an
+// inherited context is held as a reference, a pointer in storage
+template<typename ELEMENT>
+inline constexpr std::size_t stored_alignment_v = alignof(ELEMENT);
+
+template<typename T>
+inline constexpr std::size_t stored_alignment_v<T&> = alignof(T*);
+
+template<typename LHS, typename RHS>
+struct stored_no_less_aligned
+    : std::bool_constant<(stored_alignment_v<LHS> >= stored_alignment_v<RHS>)> {};
+
 // The contexts of one machine. DECLARED_CONTEXTS: what the states of
 // its table declare; INHERITED_CONTEXTS: what its parent machine
 // hands down - held as references to the parent's instances, every
@@ -116,7 +128,7 @@ public:
     // A child machine's, inheriting from its parent machine's
     template<mtl::concepts::typelist PARENT_DECLARED, mtl::concepts::typelist PARENT_INHERITED>
     explicit MachineContexts(MachineContexts<PARENT_DECLARED, PARENT_INHERITED>& parent)
-        : contexts_(std::tuple_cat(own_context_tuple{}, inheritedFrom(parent, inherited_contexts{})))
+        : MachineContexts(parent, std::type_identity<context_tuple>{})
     {
     }
 
@@ -187,10 +199,29 @@ public:
     }
 
 private:
-    using own_context_tuple = mtl::rebind_t<own_contexts, std::tuple>;
-    using context_tuple     = mtl::rebind_t<
-        mtl::concat_t<own_contexts, mtl::transform_t<inherited_contexts, std::add_lvalue_reference>>,
-        std::tuple>;
+    using inherited_references =
+        mtl::transform_t<inherited_contexts, std::add_lvalue_reference>;
+    // The most aligned first: no padding between them
+    using stored_contexts =
+        mtl::sort_t<mtl::concat_t<own_contexts, inherited_references>, stored_no_less_aligned>;
+    using context_tuple = mtl::rebind_t<stored_contexts, std::tuple>;
+
+    template<typename PARENT, typename... ELEMENTs>
+    MachineContexts(PARENT& parent, std::type_identity<std::tuple<ELEMENTs...>>)
+        : contexts_(element<ELEMENTs>(parent)...)
+    {
+    }
+
+    // A fresh own instance, or the reference to the parent's
+    template<typename ELEMENT, typename PARENT>
+    static ELEMENT element(PARENT& parent)
+    {
+        if constexpr (std::is_reference_v<ELEMENT>) {
+            return parent.template context<std::remove_reference_t<ELEMENT>>();
+        } else {
+            return ELEMENT{};
+        }
+    }
 
     // An own instance held by value, or the parent machine's behind
     // the inherited reference
@@ -204,13 +235,7 @@ private:
         }
     }
 
-    template<typename PARENT, typename... INHERITEDs>
-    static auto inheritedFrom(PARENT& parent, mtl::typelist<INHERITEDs...>)
-    {
-        return std::tie(parent.template context<INHERITEDs>()...);
-    }
-
-    context_tuple contexts_{}; // the own instances, then the inherited references
+    context_tuple contexts_{};
 };
 
 // The contexts of the machine built from TABLE (a child machine's

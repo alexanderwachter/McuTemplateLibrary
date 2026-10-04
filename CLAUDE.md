@@ -280,8 +280,16 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (`table_contexts_t`, `inherited_contexts_t`), so Core.hpp names no
   context trait. The class owns the type computation (`own_contexts`,
   `inherited_contexts`, `context_types`, `inherited_by<COMPOSITE>` -
-  the list on the child's `nested<>`), the instances (storage order
-  is private: access is by type), construction (default for a root,
+  the list on the child's `nested<>`), the instances (access is by type;
+  the storage order is private: own instances and inherited
+  references together, the most aligned first - `stored_contexts`,
+  `stored_no_less_aligned`, a reference counting as a pointer - so no
+  padding lies between them; a child's elements are constructed one by
+  one, `element<ELEMENT>(parent)`. Measured on pd_drp: RAM equal at
+  13008 B - its contexts had no holes to close - flash 62228 ->
+  62152 B, 64 B below the state before the split: the contexts sit
+  at other offsets and the `construct` bodies reaching them come
+  out 2-4 B smaller each), construction (default for a root,
   from the parent machine's `MachineContexts&` for a child; copying is
   deleted - a copy would take the parent's own values where a child
   must start fresh), access (`context<T>()`, `contextsOf<STATE>()` -

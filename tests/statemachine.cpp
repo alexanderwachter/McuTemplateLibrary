@@ -1439,6 +1439,25 @@ namespace MachineContexts {
     static_assert(std::is_constructible_v<of_probe, of_session&>);
     static_assert(!std::is_copy_constructible_v<of_root>);
 
+    // stored by alignment, whatever the order of declaration
+    struct flag {
+        char set = 0;
+    };
+    struct mark {
+        char set = 0;
+    };
+    struct count {
+        long long value = 0;
+    };
+    static_assert(sizeof(fsm::internal::MachineContexts<mtl::typelist<flag, count, mark>,
+                                                        mtl::typelist<>>) ==
+                  2 * sizeof(long long));
+    static_assert(sizeof(fsm::internal::MachineContexts<mtl::typelist<flag, count, mark>,
+                                                        mtl::typelist<count>>) ==
+                  2 * sizeof(void*));
+    static_assert(fsm::internal::stored_alignment_v<flag&> == alignof(void*));
+    static_assert(fsm::internal::stored_alignment_v<flag> == 1);
+
     struct no_default {
         explicit no_default(int) {}
     };
