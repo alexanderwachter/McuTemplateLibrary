@@ -230,6 +230,7 @@
  *   Feature.hpp     features as tags and the filter removing one
  *   Traits.hpp      reachability, observer and annotation coverage,
  *                   event coverage - the table-wide proofs
+ *   Visit.hpp       the visit of the active state: the fold, or std::visit
  *   Core.hpp        the state machine and its dispatch
  *   Queued.hpp      fsm::QueuedMachine - run-to-completion delivery
  *                   through a bounded FIFO + WORK policy; QueuedTimer

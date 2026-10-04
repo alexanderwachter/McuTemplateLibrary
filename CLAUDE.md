@@ -9,7 +9,7 @@ C++20 header-only state machine built on the mtl library in this repo
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
 `Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
-`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
+`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Visit.hpp`, `Core.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -529,7 +529,10 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `doTransition<TRANSITION, STATE, EVENT>` (already per (transition,
   state, event)) so the bodies stay event-agnostic. Measured 17% .text reduction vs. inlining per event
   (GCC 13, -Os).
-- Dispatch in `process` goes through `internal::dispatch`: the
+- Dispatch in `process` goes through `internal::dispatch` (Visit.hpp,
+  moved out of Core.hpp 2026-10-04 - a variant utility that knows no
+  state, event or table; the machine's event dispatch stays in
+  Core.hpp, it is the core): the
   fold-expression `internal::visit` by default (measured 3.7 kB smaller
   than `std::visit` on arm-zephyr-eabi GCC 14.3 -Os for a 14-state
   machine; 32 bytes larger on hosted libstdc++ for traffic_light.cpp),
