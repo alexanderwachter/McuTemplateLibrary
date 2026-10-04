@@ -107,7 +107,7 @@ public:
     template<concepts::event EVENT>
     bool process(EVENT const& event)
     {
-        return this->react(event) != reaction::none;
+        return this->processWithReaction(event) != reaction::none;
     }
 
     template<concepts::state STATE>
@@ -167,7 +167,7 @@ private:
     // The active composite state's child machine first, then this
     // machine's own table
     template<concepts::event EVENT>
-    reaction react(EVENT const& event)
+    reaction processWithReaction(EVENT const& event)
     {
         this->beginProcessing();
         reaction result = submachines_.react(*this, event);

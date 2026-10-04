@@ -97,8 +97,9 @@ struct submachine_starts_silent {
 // active composite state. COMPOSITES: the composite states of the
 // table the machine runs; CHILD_MACHINES: the machine each of them
 // owns while active, in the same order. A friend of the machine: the
-// class drives a child through its react() and leaveActiveState() and
-// hands an emitted event to the parent machine's reactInOwnTable()
+// class drives a child through its processWithReaction() and
+// leaveActiveState() and hands an emitted event to the parent machine's
+// reactInOwnTable()
 template<mtl::concepts::typelist COMPOSITES, mtl::concepts::typelist CHILD_MACHINES>
 class Submachines {
 public:
@@ -219,7 +220,7 @@ private:
     template<composite COMPOSITE, typename PARENT, concepts::event EVENT>
     reaction reactInChildOf(PARENT& parent, EVENT const& event)
     {
-        reaction const of_child = this->template activeChildOf<COMPOSITE>().react(event);
+        reaction const of_child = this->template activeChildOf<COMPOSITE>().processWithReaction(event);
         if (of_child == reaction::state_entered &&
             this->template reactToEmittedEvent<COMPOSITE>(parent) == reaction::state_entered) {
             return reaction::state_entered;

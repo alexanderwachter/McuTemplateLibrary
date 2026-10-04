@@ -193,8 +193,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `leaveActiveState()` - the active state left with `TO = nil_type`,
   innermost first (`Submachines` is a friend of the machine).
   A root's destructor still runs no hooks. Dispatch: public `process`
-  is `react(event) != reaction::none`; `react` = `submachines_.react`
-  (the active composite's child `react`s first) then `reactInOwnTable`
+  is `processWithReaction(event) != reaction::none`;
+  `processWithReaction` = `submachines_.react` (the active composite's
+  child processes the event first) then `reactInOwnTable`
   (guarded, unguarded, wildcards). `internal::reaction {none, in_place,
   state_entered}` is the child's answer to its parent. Every event
   enters at the root, timer expiries included: `fsm::is_local_event`
@@ -251,7 +252,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (`internal::refers_to_state_where`, formerly `entry_touching`).
   Independent of that, any state of a submachine may declare `using
   emits = EVENT;` (`internal::emitting`, `emitted_t`,
-  `fsm::emitted_events_t`): when a child's `react` answers
+  `fsm::emitted_events_t`): when a child's `processWithReaction` answers
   `state_entered`, `Submachines::reactToEmittedEvent<COMPOSITE>` finds
   the emitting state the child is in and runs the parent's `reactInOwnTable` with
   the default-constructed event - own rows with their guards, then
@@ -360,7 +361,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   (`child_machine_of`, `composites`, `child_machines`, `submachines`).
   Unlike the observers, contexts and guards classes it IS a friend of
   the machine (the author's decision: the no-friend rule came from
-  those): it calls a child's private `react()` and
+  those): it calls a child's private `processWithReaction()` and
   `leaveActiveState()` and the parent's `reactInOwnTable()`; the
   machines no longer befriend each other. Core.hpp asks it three
   things: `react(parent, event)` (the active composite's child first;
