@@ -27,7 +27,12 @@ its design.
 ```sh
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
 python3 -m unittest tools/fsmview/test_fsmview.py tools/dotgen/test_dotgen.py
+clang++ -std=c++23 -Iinclude tests/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
 ```
+
+The suite passes under GCC 15 and clang 21; `mtl::value_name` is the one
+place with per-compiler expectations (`#if defined(__clang__)` in
+`tests/typename.cpp`).
 
 A change under `zephyr/` needs a real Zephyr build of both samples from a
 west workspace (`west build -b nucleo_g474re <repo>/zephyr/samples/sensor`,

@@ -11,7 +11,11 @@
  * compiler does (an enumerator as ns::color::red, an aggregate as
  * ns::lamp{true}), short_value_name<V>() without the namespaces
  * (color::red, lamp{true}) - for diagrams showing a state's constexpr
- * annotations.
+ * annotations. The type in front and an enumerator are the same on GCC
+ * and Clang; what stands inside a class value's braces is the
+ * compiler's spelling: GCC names member types and enumerators
+ * (ns::pair{ns::lamp{false}, ns::color::green}) and writes an empty
+ * class as inner(), Clang prints pair{{false}, 1} and inner{}.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -53,8 +57,10 @@ constexpr std::string_view short_name()
     return name;
 }
 
+namespace internal {
+
 template<auto VALUE>
-constexpr std::string_view value_name()
+constexpr std::string_view compilerSpelling()
 {
 #if defined(__GNUC__) || defined(__clang__)
     std::string_view const function = __PRETTY_FUNCTION__;
@@ -65,10 +71,60 @@ constexpr std::string_view value_name()
 #endif
 }
 
+#if defined(__clang__)
+
+// The brace matching the last one
+constexpr std::size_t classInitializerStart(std::string_view name)
+{
+    std::size_t depth = 0;
+    for (auto pos = name.size(); pos-- > 0;) {
+        if (name[pos] == '}') {
+            ++depth;
+        } else if (name[pos] == '{' && --depth == 0) {
+            return pos;
+        }
+    }
+    return std::string_view::npos;
+}
+
+// Clang spells a class value's type the way it was written where the
+// value was first named (an alias, std::get's __tuple_element_t<...>),
+// without its namespaces: the type's own name replaces that spelling
+template<auto VALUE>
+inline constexpr auto class_value_name_storage = [] {
+    constexpr auto type        = type_name<std::remove_const_t<decltype(VALUE)>>();
+    constexpr auto spelling    = compilerSpelling<VALUE>();
+    constexpr auto initializer = spelling.substr(classInitializerStart(spelling));
+    std::array<char, type.size() + initializer.size()> chars{};
+    for (std::size_t i = 0; i < type.size(); ++i) {
+        chars[i] = type[i];
+    }
+    for (std::size_t i = 0; i < initializer.size(); ++i) {
+        chars[type.size() + i] = initializer[i];
+    }
+    return chars;
+}();
+
+#endif
+
+} // namespace internal
+
+template<auto VALUE>
+constexpr std::string_view value_name()
+{
+#if defined(__clang__)
+    if constexpr (std::is_class_v<decltype(VALUE)>) {
+        auto const& name = internal::class_value_name_storage<VALUE>;
+        return {name.data(), name.size()};
+    }
+#endif
+    return internal::compilerSpelling<VALUE>();
+}
+
 namespace internal {
 
 // Where a class value's initializer starts: the first brace - or
-// parenthesis, an empty aggregate is spelled inner() - that is not the
+// parenthesis, GCC spells an empty aggregate inner() - that is not the
 // anonymous-namespace marker ({anonymous} on GCC, (anonymous namespace)
 // on Clang)
 constexpr std::size_t initializerStart(std::string_view name)
@@ -87,7 +143,8 @@ constexpr std::size_t initializerStart(std::string_view name)
 
 // An enumerator keeps its enum (color::red), a class value keeps its
 // type before the braces (lamp{true}, nested arguments untouched; an
-// empty one is spelled inner()), anything else is spelled as is
+// empty one is spelled inner() by GCC, inner{} by Clang), anything else
+// is spelled as is
 template<auto VALUE>
 constexpr std::string_view short_value_name()
 {

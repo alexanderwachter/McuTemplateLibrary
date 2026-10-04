@@ -29,7 +29,10 @@ feed for `tools/fsmview`), `tools/fsmview/` (Python live/replay viewer).
 ```
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
 python3 -m unittest tools/fsmview/test_fsmview.py
+clang++ -std=c++23 -Iinclude tests/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
 ```
+(clang is on the host, not in the flatpak sandbox: `flatpak-spawn --host
+sh -c 'cd <repo> && ...'`; the host does not see the sandbox's /tmp.)
 Tests follow the repo style: compile-time checks as `static_assert` in named
 namespaces; runtime checks (state machine only) as small isolated test
 functions using `check()`, reported through `main.cpp`.
@@ -576,7 +579,17 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   fsmview colors only the node's `<path>`/`<ellipse>`), lists a state's
   annotation set (`mtl::short_value_name<V>()`: the
   compiler's spelling of the constexpr value via `__PRETTY_FUNCTION__` with
-  the value as template argument - `color::red`, `lamp{true}`; an element
+  the value as template argument - `color::red`, `lamp{true}`; under
+  clang a class value's type in front comes from `type_name<decltype(V)>`
+  (`internal::class_value_name_storage`, one char array per value):
+  clang spells that type as written where the value was first named,
+  `std::get`'s `__tuple_element_t<...>{3}` in writeDot, which the short
+  form cut to `level>>{3}`. Inside the braces the spelling stays the
+  compiler's - GCC `pair{ns::lamp{false}, ns::color::green}` and
+  `inner()`, clang `pair{{false}, 1}` and `inner{}` - tested per
+  compiler behind `__clang__` in tests/typename.cpp; the GCC path is
+  untouched, so GCC still spells a value named through an alias with
+  the alias (`ns::lamp_alias{false}`). An element
   whose type is not structural falls back to its type name), and gives every edge
   `id="<from>__<event>__<to>__<index>"` (index in `TABLE::transitions`,
   keeps guarded alternatives distinct; `internal_target` as `<to>` for

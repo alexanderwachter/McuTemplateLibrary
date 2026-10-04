@@ -46,11 +46,17 @@ static_assert(mtl::value_name<color::red>() == "names::color::red");
 static_assert(mtl::short_value_name<color::red>() == "color::red");
 static_assert(mtl::value_name<lamp{true}>() == "names::lamp{true}");
 static_assert(mtl::short_value_name<lamp{true}>() == "lamp{true}");
+// inside the braces the compiler's spelling is kept
+#if defined(__clang__)
+static_assert(mtl::value_name<nested::inner{}>() == "names::nested::inner{}");
+static_assert(mtl::short_value_name<nested::inner{}>() == "inner{}");
+static_assert(mtl::short_value_name<pair{{false}, color::green}>() == "pair{{false}, 1}");
+#else
 static_assert(mtl::value_name<nested::inner{}>() == "names::nested::inner()"); // empty: parentheses
 static_assert(mtl::short_value_name<nested::inner{}>() == "inner()");
-// nested arguments keep the compiler's spelling
 static_assert(mtl::short_value_name<pair{{false}, color::green}>() ==
               "pair{names::lamp{false}, names::color::green}");
+#endif
 static_assert(mtl::short_value_name<42>() == "42");
 static_assert(mtl::short_value_name<true>() == "true");
 
@@ -63,5 +69,12 @@ struct box {
 } // namespace
 static_assert(mtl::short_value_name<hidden::a>() == "hidden::a");
 static_assert(mtl::short_value_name<box{7}>() == "box{7}");
+
+#if defined(__clang__)
+// a class value named through an alias is spelled with its own type
+// (GCC: names::lamp_alias{false})
+using lamp_alias = lamp;
+static_assert(mtl::value_name<lamp_alias{false}>() == "names::lamp{false}");
+#endif
 
 } // namespace names

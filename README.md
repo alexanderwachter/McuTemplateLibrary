@@ -57,7 +57,9 @@ yielding `::value`, `template<typename, typename> typename COMPARE`).
 null-terminated `char const*` in static storage, for C APIs and
 deferred loggers. `value_name<V>()` / `short_value_name<V>()` spell a
 constant of structural type (`ns::color::red` / `color::red`,
-`ns::lamp{true}` / `lamp{true}`), for diagrams of constexpr annotations.
+`ns::lamp{true}` / `lamp{true}`), for diagrams of constexpr annotations;
+nested members inside the braces are the compiler's spelling (GCC
+`pair{ns::lamp{false}, ns::color::green}`, Clang `pair{{false}, 1}`).
 
 **`Utils.hpp`** - `width_to_uint_t<WIDTH>` / `width_to_int_t<WIDTH>`:
 the smallest fixed-width integer holding WIDTH bits (`bool` for 1);
