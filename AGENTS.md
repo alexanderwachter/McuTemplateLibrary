@@ -27,7 +27,7 @@ its design.
 ```sh
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
 python3 -m unittest tools/fsmview/test_fsmview.py tools/dotgen/test_dotgen.py
-clang++ -std=c++23 -Iinclude tests/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
+clang++ -std=c++23 -Iinclude tests/*.cpp tests/statemachine/*.cpp tests/statemachine/internal/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
 ```
 
 The suite passes under GCC 15 and clang 21; `mtl::value_name` is the one
@@ -166,7 +166,7 @@ expecting the specific `static_assert` message - a class template's
 - DOT output (`StateMachineDot.hpp`, read by `fsmview.py` and
   `dotgen.py`): `// table: <short name>` as the first line inside the
   digraph, the graph's name as its visible title (`label`, `labelloc=t`),
-  edge ids `<from>__<event>__<to>__<index>`. `tests/dot.cpp` pins the
+  edge ids `<from>__<event>__<to>__<index>`. `tests/statemachine/StateMachineDot.cpp` pins the
   exact text.
 - Machine id = the table's short type name: the table a machine runs is
   a named struct (`struct my_table : fsm::transition_table<...> {}`,

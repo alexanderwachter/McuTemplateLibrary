@@ -16,9 +16,13 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_CURRENT_LIST_DIR}/typelist.cpp
     ${CMAKE_CURRENT_LIST_DIR}/utils.cpp
     ${CMAKE_CURRENT_LIST_DIR}/typename.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/statemachine.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/dot.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/trace.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/StateMachine.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/internal/InjectedObservers.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/internal/Guards.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/internal/Contexts.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/internal/Submachines.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/StateMachineDot.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/statemachine/StateMachineTrace.cpp
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp
 )
 

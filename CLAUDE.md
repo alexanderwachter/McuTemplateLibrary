@@ -20,8 +20,10 @@ under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
 latching expiries), `StateMachineDot.hpp` (Graphviz
 output, host tooling), `StateMachineTrace.hpp` (`fsm::tracing` observer,
 target-suitable), `TypeName.hpp` (compile-time type names),
-`tests/statemachine.cpp` (test suite with a `manual_timer` policy and an
-`output_controller` observer), `tests/dot.cpp`, `tests/trace.cpp`,
+`tests/statemachine/StateMachine.cpp` (test suite with a `manual_timer` policy and an
+`output_controller` observer), `tests/statemachine/internal/` (one file per
+`fsm::internal` class, named like its header: `InjectedObservers.cpp`,
+`Guards.cpp`, `Contexts.cpp`, `Submachines.cpp`), `tests/statemachine/StateMachineDot.cpp`, `tests/statemachine/StateMachineTrace.cpp`,
 `examples/statemachine/traffic_light.cpp` (runnable demo, also the host
 feed for `tools/fsmview`), `tools/fsmview/` (Python live/replay viewer).
 
@@ -29,7 +31,7 @@ feed for `tools/fsmview`), `tools/fsmview/` (Python live/replay viewer).
 ```
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
 python3 -m unittest tools/fsmview/test_fsmview.py
-clang++ -std=c++23 -Iinclude tests/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
+clang++ -std=c++23 -Iinclude tests/*.cpp tests/statemachine/*.cpp tests/statemachine/internal/*.cpp -o /tmp/mtl-clang-tests && /tmp/mtl-clang-tests
 ```
 (clang is on the host, not in the flatpak sandbox: `flatpak-spawn --host
 sh -c 'cd <repo> && ...'`; the host does not see the sandbox's /tmp.)
@@ -546,7 +548,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   that are). Timer-range maps are still filtered by hand with
   `remove_disabled_features_t`. Origin: the USB-C firmware's `pe::`
   machinery. Tests: namespaces `Features` and `Nested` in
-  tests/statemachine.cpp. `fsm::feature_enabler_t<TAG, OBSERVER_LIST>`
+  tests/statemachine/StateMachine.cpp. `fsm::feature_enabler_t<TAG, OBSERVER_LIST>`
   is the first observer enabling TAG either way (nil_type: none) -
   how a facade finds the feature's voice.
 - Table-wide proofs a user asks (Traits.hpp), all walking the

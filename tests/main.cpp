@@ -7,11 +7,12 @@
 #include <print>
 
 int statemachineTests();
+int transitionGuardsTests();
 int dotTests();
 int traceTests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = statemachineTests() + dotTests() + traceTests();
+    int const failures = statemachineTests() + transitionGuardsTests() + dotTests() + traceTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

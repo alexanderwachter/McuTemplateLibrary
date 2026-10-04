@@ -822,104 +822,6 @@ namespace Features {
                                  answering_tuner>);
 } // namespace Features
 
-namespace InjectedObservers {
-    struct go {};
-    struct tuning_feature {};
-    struct allowed {};
-    struct lamp {
-        constexpr bool operator==(lamp const&) const = default;
-    };
-
-    struct idle {};
-    struct lit {
-        static constexpr auto annotations = fsm::annotate(lamp{});
-    };
-    struct tuning {
-        using feature = tuning_feature;
-    };
-
-    struct in_table : fsm::transition_table<
-        fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<lit>, fsm::guard<allowed>>,
-        fsm::transition<fsm::from<lit>, fsm::on<go>, fsm::to<tuning>>,
-        fsm::transition<fsm::from<tuning>, fsm::on<go>, fsm::to<idle>>> {};
-
-    struct tuner {
-        using enables = tuning_feature;
-        bool check(allowed) const { return true; }
-    };
-    struct lamp_driver : fsm::observing<lamp_driver> {
-        void notifyEntry(lamp) {}
-    };
-    struct bystander {};
-
-    using with_tuner = fsm::internal::InjectedObservers<bystander, tuner, lamp_driver>;
-    using without     = fsm::internal::InjectedObservers<bystander>;
-
-    static_assert(std::is_same_v<with_tuner::observer_list,
-                                 mtl::typelist<bystander, tuner, lamp_driver>>);
-
-    static_assert(with_tuner::any_observer_enables<tuning_feature>);
-    static_assert(!without::any_observer_enables<tuning_feature>);
-    static_assert(std::is_same_v<with_tuner::table_with_enabled_features<in_table>, in_table>);
-    static_assert(!mtl::has_a_v<without::table_with_enabled_features<in_table>::states, tuning>);
-
-    static_assert(with_tuner::any_observer_notified_by<lit>);
-    static_assert(!with_tuner::any_observer_notified_by<idle>);
-    static_assert(!without::any_observer_notified_by<lit>);
-
-    static_assert(with_tuner::all_observers_validate<in_table>);
-} // namespace InjectedObservers
-
-namespace TransitionGuards {
-    struct go {};
-    struct stop {};
-    struct idle {};
-    struct busy {
-        int load = 0;
-    };
-
-    struct permitted {}; // a pure tag: an injected object must answer
-    struct light_load {  // answers itself, an injected answer overrides
-        static bool check(busy const& state) { return state.load < 10; }
-    };
-
-    using starting = fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>,
-                                     fsm::guard<permitted>>;
-    using stopping = fsm::transition<fsm::from<busy>, fsm::on<stop>, fsm::to<idle>,
-                                     fsm::guard<light_load, fsm::not_<permitted>>>;
-    using resting  = fsm::transition<fsm::from<busy>, fsm::on<go>, fsm::to<idle>>;
-
-    struct in_table : fsm::transition_table<starting, stopping, resting> {};
-    struct self_answered : fsm::transition_table<
-        fsm::transition<fsm::from<busy>, fsm::on<stop>, fsm::to<idle>, fsm::guard<light_load>>,
-        resting> {};
-
-    struct supervisor {
-        bool permits = false;
-        bool check(permitted) const { return permits; }
-    };
-    struct second_voice {
-        bool check(permitted) const { return false; }
-    };
-    struct load_limit {
-        bool check(light_load, busy const& state) const { return state.load < 100; }
-    };
-    struct bystander {};
-
-    using with_supervisor = fsm::internal::TransitionGuards<bystander, supervisor>;
-    using without         = fsm::internal::TransitionGuards<bystander>;
-    using with_two_voices = fsm::internal::TransitionGuards<supervisor, second_voice>;
-
-    static_assert(with_supervisor::every_guard_answered<in_table>);
-    static_assert(!without::every_guard_answered<in_table>);
-    static_assert(without::every_guard_answered<self_answered>); // by its static check
-    static_assert(!with_two_voices::every_guard_answered<in_table>);
-
-    static_assert(with_supervisor::no_guard_answered_by_two_observers<in_table>);
-    static_assert(without::no_guard_answered_by_two_observers<in_table>);
-    static_assert(!with_two_voices::no_guard_answered_by_two_observers<in_table>);
-} // namespace TransitionGuards
-
 namespace WildcardHooks {
     struct go {};
     struct kill {
@@ -1374,15 +1276,6 @@ static_assert(fsm::internal::table_depth_v<inner_table> == 0);
 static_assert(std::is_same_v<fsm::internal::plain_table_t<child_table>, inner_table>);
 static_assert(std::is_same_v<fsm::internal::plain_table_t<inner_table>, inner_table>);
 
-// an annotation type lives on one level of a nesting path
-struct refining {
-    using submachine = inner_table;
-    static constexpr auto annotations = fsm::annotate(lamp{true}); // lamp is the sub-states'
-};
-static_assert(fsm::internal::annotation_levels_exclusive<active>::value);
-static_assert(fsm::internal::annotation_levels_exclusive<idle>::value);
-static_assert(!fsm::internal::annotation_levels_exclusive<refining>::value);
-
 // --- inherited contexts: a composite state's child shares its
 // machine's instance, everything else the child declares is its own
 
@@ -1437,126 +1330,6 @@ struct inheriting_table : fsm::transition_table<
     fsm::transition<fsm::from<session>, fsm::on<stop>, fsm::to<resting>>> {};
 
 using inheriting_machine = fsm::StateMachine<inheriting_table>;
-
-// the declaration
-static_assert(fsm::internal::declares_parent_contexts<trying>);
-static_assert(!fsm::internal::declares_parent_contexts<waiting>);
-static_assert(std::is_same_v<fsm::internal::parent_contexts_t<trying>, mtl::typelist<signal_line>>);
-static_assert(std::is_same_v<fsm::internal::parent_contexts_t<waiting>, mtl::typelist<>>);
-
-// each level's contexts: the root owns the line, the session only
-// inherits it, the probe inherits it next to its own budget
-namespace MachineContexts {
-    using fsm::internal::machine_contexts_t;
-    using fsm::internal::nested;
-
-    using of_root    = machine_contexts_t<inheriting_table, inheriting_table>;
-    using session_in = nested<session_table, 1, mtl::typelist<signal_line>>;
-    using of_session = machine_contexts_t<session_in, session_in>;
-    using probe_in   = nested<probe_table, 2, mtl::typelist<signal_line>>;
-    using of_probe   = machine_contexts_t<probe_in, probe_in>;
-
-    static_assert(std::is_same_v<of_root::own_contexts, mtl::typelist<signal_line>>);
-    static_assert(std::is_same_v<of_root::inherited_contexts, mtl::typelist<>>);
-    static_assert(std::is_same_v<of_session::own_contexts, mtl::typelist<>>);
-    static_assert(std::is_same_v<of_session::inherited_contexts, mtl::typelist<signal_line>>);
-    static_assert(std::is_same_v<of_probe::own_contexts, mtl::typelist<phase_budget>>);
-    static_assert(std::is_same_v<of_probe::inherited_contexts, mtl::typelist<signal_line>>);
-    static_assert(std::is_same_v<of_probe::context_types, mtl::typelist<phase_budget, signal_line>>);
-
-    // the class is named by the two lists alone
-    static_assert(std::is_same_v<of_probe, fsm::internal::MachineContexts<
-                                               mtl::typelist<signal_line, phase_budget>,
-                                               mtl::typelist<signal_line>>>);
-    static_assert(std::is_same_v<of_root::inherited_by<session>, mtl::typelist<signal_line>>);
-
-    // a child's is built from its parent's, a root's from nothing
-    static_assert(std::is_default_constructible_v<of_root>);
-    static_assert(!std::is_default_constructible_v<of_session>);
-    static_assert(std::is_constructible_v<of_session, of_root&>);
-    static_assert(std::is_constructible_v<of_probe, of_session&>);
-    static_assert(!std::is_copy_constructible_v<of_root>);
-
-    // stored by alignment, whatever the order of declaration
-    struct flag {
-        char set = 0;
-    };
-    struct mark {
-        char set = 0;
-    };
-    struct count {
-        long long value = 0;
-    };
-    static_assert(sizeof(fsm::internal::MachineContexts<mtl::typelist<flag, count, mark>,
-                                                        mtl::typelist<>>) ==
-                  2 * sizeof(long long));
-    static_assert(sizeof(fsm::internal::MachineContexts<mtl::typelist<flag, count, mark>,
-                                                        mtl::typelist<count>>) ==
-                  2 * sizeof(void*));
-    static_assert(fsm::internal::stored_alignment_v<flag&> == alignof(void*));
-    static_assert(fsm::internal::stored_alignment_v<flag> == 1);
-
-    struct no_default {
-        explicit no_default(int) {}
-    };
-    static_assert(of_probe::own_contexts_default_constructible);
-    static_assert(!fsm::internal::MachineContexts<mtl::typelist<no_default>, mtl::typelist<>>::
-                      own_contexts_default_constructible);
-    // inherited: the parent constructed it
-    static_assert(fsm::internal::MachineContexts<mtl::typelist<no_default>,
-                                                 mtl::typelist<no_default>>::
-                      own_contexts_default_constructible);
-
-    struct needs_more {
-        using contexts = fsm::contexts<signal_line>;
-        needs_more(signal_line&, int) {}
-    };
-    struct needy_table : fsm::transition_table<
-        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<needs_more>>> {};
-    static_assert(of_root::every_state_constructible_from_its_contexts<inheriting_table>);
-    static_assert(!of_root::every_state_constructible_from_its_contexts<needy_table>);
-
-    struct plain_inheriting {
-        using parent_contexts = fsm::contexts<signal_line>; // no submachine to inherit it
-    };
-    struct misplaced_table : fsm::transition_table<
-        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<plain_inheriting>>> {};
-    static_assert(of_root::parent_contexts_only_on_composites<inheriting_table>);
-    static_assert(!of_root::parent_contexts_only_on_composites<misplaced_table>);
-
-    // the root holds the line; a machine of the session table alone does not
-    static_assert(of_root::holds_parent_contexts_of_every_composite<inheriting_table>);
-    static_assert(of_session::holds_parent_contexts_of_every_composite<session_table>);
-    static_assert(!machine_contexts_t<session_table, session_table>::
-                      holds_parent_contexts_of_every_composite<session_table>);
-
-    struct inheriting_unused {
-        using submachine      = inner_table; // low and high declare no context
-        using parent_contexts = fsm::contexts<signal_line>;
-    };
-    struct unused_table : fsm::transition_table<
-        fsm::transition<fsm::from<resting>, fsm::on<go>, fsm::to<inheriting_unused>>> {};
-    static_assert(of_root::every_submachine_declares_its_parent_contexts<inheriting_table>);
-    static_assert(!of_root::every_submachine_declares_its_parent_contexts<unused_table>);
-} // namespace MachineContexts
-
-// the checks on a parent_contexts declaration, each askable per state
-struct plain_with_parent_contexts {
-    using parent_contexts = fsm::contexts<signal_line>; // no submachine to inherit it
-};
-struct parent_contexts_unused {
-    using submachine      = inner_table; // low and high declare no context
-    using parent_contexts = fsm::contexts<signal_line>;
-};
-static_assert(fsm::internal::parent_contexts_on_composite<trying>::value);
-static_assert(fsm::internal::parent_contexts_on_composite<waiting>::value);
-static_assert(!fsm::internal::parent_contexts_on_composite<plain_with_parent_contexts>::value);
-static_assert(fsm::internal::parent_contexts_held_in<mtl::typelist<signal_line>>::pred<trying>::value);
-static_assert(
-    !fsm::internal::parent_contexts_held_in<mtl::typelist<phase_budget>>::pred<trying>::value);
-static_assert(fsm::internal::parent_contexts_declared_in_submachine<trying>::value);
-static_assert(fsm::internal::parent_contexts_declared_in_submachine<session>::value); // two levels
-static_assert(!fsm::internal::parent_contexts_declared_in_submachine<parent_contexts_unused>::value);
 
 // --- a feature inside a submachine: the child machine filters its
 // table by the same observers as the root
@@ -1718,15 +1491,6 @@ static_assert(std::is_same_v<fsm::emitted_events_t<job_table>,
                              mtl::typelist<progress, attempt_failed, attempt_succeeded>>);
 static_assert(mtl::empty_v<fsm::emitted_events_t<ending_table>>);
 
-// a composite state owes a transition for every event its submachine emits
-static_assert(
-    fsm::internal::emitted_events_taken_in<job_table, mtl::nil_type>::pred<attempt>::value);
-struct careless_table : fsm::transition_table<
-    fsm::transition<fsm::from<idle>,    fsm::on<start>,          fsm::to<attempt>>,
-    fsm::transition<fsm::from<attempt>, fsm::on<attempt_failed>, fsm::to<broken>>> {};
-static_assert(
-    !fsm::internal::emitted_events_taken_in<careless_table, mtl::nil_type>::pred<attempt>::value);
-
 // a local event for a level below is decorated once per level on the way up
 static_assert(std::is_same_v<fsm::for_level_t<fsm::timeout, 0>, fsm::timeout>);
 static_assert(std::is_same_v<fsm::for_level_t<fsm::timeout, 2>,
@@ -1783,69 +1547,6 @@ static_assert(mtl::empty_v<
     fsm::final_states_t<fsm::enabled_table_t<featured_ending_table, fsm::observers<>>>>);
 
 } // namespace Final
-
-namespace Submachines {
-    using fsm::internal::nested;
-
-    using inner_machine   = fsm::StateMachine<nested<Nested::inner_table, 1>>;
-    using attempt_machine = fsm::StateMachine<nested<Final::attempt_table, 1>>;
-
-    using of_flat   = fsm::internal::Submachines<mtl::typelist<>, mtl::typelist<>>;
-    using of_outer  = fsm::internal::Submachines<mtl::typelist<Nested::active>,
-                                                 mtl::typelist<inner_machine>>;
-    using of_job    = fsm::internal::Submachines<mtl::typelist<Final::attempt>,
-                                                 mtl::typelist<attempt_machine>>;
-    using of_shared = fsm::internal::Submachines<mtl::typelist<Nested::active, Nested::wrapper>,
-                                                 mtl::typelist<inner_machine, inner_machine>>;
-
-    // the child of each composite; a flat table stores nothing, two
-    // composites with the same child machine share one alternative
-    static_assert(std::is_same_v<of_outer::child_of<Nested::active>, inner_machine>);
-    static_assert(std::is_same_v<of_shared::child_of<Nested::wrapper>, inner_machine>);
-    static_assert(of_outer::has_composite<Nested::active>);
-    static_assert(!of_outer::has_composite<Nested::wrapper>);
-    static_assert(std::is_empty_v<of_flat>);
-    static_assert(sizeof(of_shared) == sizeof(of_outer));
-
-    static_assert(of_outer::no_composite_nests_its_own_table<Nested::outer_table>);
-    static_assert(!of_outer::no_composite_nests_its_own_table<Nested::inner_table>);
-
-    using of_refining = fsm::internal::Submachines<mtl::typelist<Nested::refining>,
-                                                   mtl::typelist<inner_machine>>;
-    static_assert(of_outer::annotations_exclusive_per_level);
-    static_assert(of_flat::annotations_exclusive_per_level);
-    static_assert(!of_refining::annotations_exclusive_per_level);
-
-    struct report {
-        explicit report(int) {}
-    };
-    struct reporting {
-        using emits = report;
-    };
-    struct reporting_table : fsm::transition_table<
-        fsm::transition<fsm::from<Final::trying>, fsm::on<Final::start>, fsm::to<reporting>>> {};
-    static_assert(of_flat::emitted_events_default_constructible<Final::attempt_table>);
-    static_assert(of_flat::emitted_events_default_constructible<Final::job_table>); // emits none
-    static_assert(!of_flat::emitted_events_default_constructible<reporting_table>);
-
-    // attempt without a transition for what its submachine emits
-    struct deaf_table : fsm::transition_table<
-        fsm::transition<fsm::from<Final::idle>, fsm::on<Final::start>, fsm::to<Final::attempt>>> {};
-    static_assert(of_job::every_composite_takes_emitted_events<Final::job_table, mtl::nil_type>);
-    static_assert(!of_job::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
-    static_assert(of_flat::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
-
-    struct loud_table : fsm::transition_table<
-        fsm::transition<fsm::from<Final::succeeded>, fsm::on<Final::start>,
-                        fsm::to<Final::trying>>> {};
-    struct loud {
-        using submachine = loud_table;
-    };
-    using of_loud = fsm::internal::Submachines<
-        mtl::typelist<loud>, mtl::typelist<fsm::StateMachine<nested<loud_table, 1>>>>;
-    static_assert(of_job::every_submachine_starts_silent<mtl::nil_type>);
-    static_assert(!of_loud::every_submachine_starts_silent<mtl::nil_type>);
-} // namespace Submachines
 
 // --- runtime checks ---------------------------------------------------------
 
@@ -2192,32 +1893,6 @@ namespace CombinedGuards {
     static_assert(!fsm::internal::is_negated_v<after_hours>);
     static_assert(std::is_same_v<fsm::internal::guard_of_t<fsm::not_<after_hours>>, after_hours>);
 } // namespace CombinedGuards
-
-void transitionGuardsAllow()
-{
-    using namespace TransitionGuards;
-    bystander nobody;
-    supervisor boss;
-    fsm::internal::InjectedObservers<bystander, supervisor> observers{nobody, boss};
-
-    check(with_supervisor::allow<resting>(observers, busy{}, go{})); // unguarded
-
-    check(!with_supervisor::allow<starting>(observers, idle{}, go{})); // the injected answer
-    boss.permits = true;
-    check(with_supervisor::allow<starting>(observers, idle{}, go{}));
-
-    check(!with_supervisor::allow<stopping>(observers, busy{}, stop{})); // not_<permitted>
-    boss.permits = false;
-    check(with_supervisor::allow<stopping>(observers, busy{}, stop{}));
-    check(!with_supervisor::allow<stopping>(observers, busy{50}, stop{})); // the static check
-
-    // an injected answer wins over the guard's own
-    load_limit limit;
-    fsm::internal::InjectedObservers<supervisor, load_limit> limited{boss, limit};
-    using with_limit = fsm::internal::TransitionGuards<supervisor, load_limit>;
-    check(with_limit::allow<stopping>(limited, busy{50}, stop{}));
-    check(!with_limit::allow<stopping>(limited, busy{500}, stop{}));
-}
 
 void combinedGuardsAskEveryPart()
 {
@@ -3400,7 +3075,7 @@ int statemachineTests()
     machineWithOnlyATimerObserver();
     entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
-    transitionGuardsAllow();
+
     combinedGuardsAskEveryPart();
     injectedObjectAnswersGuard();
     staticGuardIsTheDefaultAnswer();
