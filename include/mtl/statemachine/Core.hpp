@@ -10,6 +10,7 @@
 #pragma once
 
 #include <mtl/statemachine/Contexts.hpp>
+#include <mtl/statemachine/Guards.hpp>
 #include <mtl/statemachine/InjectedObservers.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Transition.hpp>
@@ -129,6 +130,7 @@ public:
 
 private:
     using contexts = internal::machine_contexts_t<TRANSITION_TABLE, TRANSITIONS>;
+    using guards   = internal::TransitionGuards<OBSERVERs...>;
 
     using final_states    = typename TRANSITIONS::final_states;
     using emitting_states = mtl::filter_t<typename TRANSITIONS::states, internal::is_emitting>;
@@ -352,7 +354,7 @@ private:
     {
         reaction result = reaction::none;
         static_cast<void>(
-            ((this->template guardsHold<typename GUARDEDs::guards>(state, event) &&
+            ((guards::template allow<GUARDEDs>(observers_, state, event) &&
               (result = this->template fire<GUARDEDs>(state, event), true)) ||
              ...));
         return result;
@@ -432,48 +434,6 @@ private:
         this->endProcessing();
     }
 
-    // --- guards -------------------------------------------------------------
-
-    template<concepts::transition TRANSITION, concepts::state STATE, concepts::event EVENT>
-    bool allowed(STATE const& state, EVENT const& event)
-    {
-        if constexpr (internal::has_guard_v<TRANSITION>) {
-            return this->template guardsHold<typename TRANSITION::guards>(state, event);
-        } else {
-            return true;
-        }
-    }
-
-    template<mtl::concepts::typelist GUARDS, concepts::state STATE, concepts::event EVENT>
-    bool guardsHold(STATE const& state, EVENT const& event)
-    {
-        return [&]<typename... PARTs>(mtl::typelist<PARTs...>) {
-            return (this->template partHolds<PARTs>(state, event) && ...);
-        }(GUARDS{});
-    }
-
-    template<concepts::guard_part PART, concepts::state STATE, concepts::event EVENT>
-    bool partHolds(STATE const& state, EVENT const& event)
-    {
-        if constexpr (internal::is_negated_v<PART>) {
-            return !this->template answerTo<internal::guard_of_t<PART>>(state, event);
-        } else {
-            return this->template answerTo<PART>(state, event);
-        }
-    }
-
-    // The observer answering GUARD decides, else the guard's own static
-    // check
-    template<concepts::guard GUARD, concepts::state STATE, concepts::event EVENT>
-    bool answerTo(STATE const& state, EVENT const& event)
-    {
-        if constexpr (injected_observers::template any_observer_answers_guard<GUARD, STATE>) {
-            return observers_.template answerToGuard<GUARD>(state, event);
-        } else {
-            return internal::checkStaticGuard<GUARD>(state, event);
-        }
-    }
-
     // --- from<any_state> transitions ----------------------------------------
     // One shared body per (event, target) enters the target: expanding
     // whole edges per source measured kilobytes in a machine with a
@@ -494,7 +454,7 @@ private:
         std::size_t outcome = static_cast<std::size_t>(reaction::none);
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
-                ((this->template allowed<WILDCARDs>(state, event) &&
+                ((guards::template allow<WILDCARDs>(observers_, state, event) &&
                   (this->template leave<STATE, typename WILDCARDs::to>(),
                    outcome = StateMachine::exited_for_wildcard + INDEXs, true)) ||
                  ...));
@@ -644,9 +604,9 @@ private:
     }
     static_assert(StateMachine::observersValidated());
 
-    static_assert(injected_observers::template no_guard_answered_by_two_observers<TRANSITIONS>,
+    static_assert(guards::template no_guard_answered_by_two_observers<TRANSITIONS>,
                   "StateMachine: a guard is answered by more than one injected object");
-    static_assert(injected_observers::template every_guard_answered<TRANSITIONS>,
+    static_assert(guards::template every_guard_answered<TRANSITIONS>,
                   "StateMachine: a guard of the table has no static check and no injected "
                   "object answers it - inject one with bool check(GUARD, FROM const&[, EVENT "
                   "const&]) or bool check(GUARD)");

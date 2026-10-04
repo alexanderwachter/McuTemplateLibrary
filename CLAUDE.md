@@ -9,7 +9,7 @@ C++20 header-only state machine built on the mtl library in this repo
 Main files: `StateMachine.hpp` (the contract comment; includes the parts in
 `statemachine/`: `Transition.hpp`, `Table.hpp`, `Timeout.hpp`, `Timer.hpp`,
 `Observing.hpp`, `ObserverHooks.hpp`, `ObserverGroup.hpp`,
-`InjectedObservers.hpp`, `Contexts.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
+`InjectedObservers.hpp`, `Guards.hpp`, `Contexts.hpp`, `Traits.hpp`, `Core.hpp` - the machine and
 its dispatch, `Queued.hpp` - `fsm::QueuedMachine`, the queue-owning
 wrapper that turns process() into an enqueue drained by a WORK policy
 under a LOCK policy, with `QueuedTimer<TIMER>` (caller-owned timer) and
@@ -89,9 +89,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `check(G, FROM const&[, EVENT const&])` / `check(G)`
   (`concepts::answers_guard_for<OBJECT, G, FROM>`); the most specific
   form wins, an injected answer wins over the static one. The machine
-  static_asserts every guard answered (`internal::guard_answered_in`)
-  and by at most one injected object; `StateMachine::checkGuard` resolves
-  it per (guard, from-state). The table never names the answerer's
+  static_asserts every guard answered and by at most one injected
+  object; `internal::TransitionGuards` (below) asks the two questions
+  and resolves the answer per (guard, from-state). The table never names the answerer's
   type - tables stay Zephyr-free and mockable. Alternatives for one `(state, event)` pair
   are tried in table order, the first passing guard fires; an unguarded
   alternative must be the last of its group. A blocked transition: process()
@@ -315,6 +315,40 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   over `contexts_.context<T>()` itself 0 B (rejected: leaves a
   context trait in Core.hpp), the class emplacing into the variant
   the machine hands it +36 B. Tests: namespace `MachineContexts`.
+- Guards are a class of their own (2026-10-04):
+  `internal::TransitionGuards<OBSERVERs...>` (Guards.hpp), the
+  machine's `guards` alias - named by the observers only, never by
+  the table, so it needs no type factory. It holds nothing: the
+  machine hands in its `InjectedObservers&` where it passed `this`.
+  Public: the questions under the machine's static_asserts
+  (`every_guard_answered<TRANSITIONS>`,
+  `no_guard_answered_by_two_observers<TRANSITIONS>`) and
+  `allow<TRANSITION>(observers, state, event)` - true for an unguarded
+  transition, else every part holds. Private: `everyPartHolds<GUARDS>`
+  (one body per guard list), `partHolds` (`not_<guard>`), `answerTo`
+  (the injected answer wins, else the static check),
+  `any_observer_answers`, `askObserver` / `checkStatic` (the most
+  specific form wins). Core.hpp names no guard trait and evaluates
+  nothing: `fireFirstAllowed` and `exitForFirstAllowed` ask
+  `guards::allow`. Guards.hpp also holds the traits only answering
+  needs (`answering`, `part_answered_in`, `part_answered_once_in`,
+  `guard_answered_in`, `guard_answered_once_in`, from Table.hpp).
+  Table.hpp keeps `has_guard_v` / `is_guarded` / `is_unguarded` (the
+  order of alternatives, `no_shadowed_alternatives`, the timed
+  validate, DOT); Transition.hpp keeps the role and what concepts are
+  defined from (`guard`, `guard_part`, `guard_of_t`, `guards_t`,
+  `guard_for` and the `answers_*` concepts - `answers_stateless_guard`
+  is also Feature.hpp's `enabled_by`) and `is_negated`, the role's
+  spelling DOT reads. No friendship, no member of another class named.
+  Measured on pd_drp: 0 B - flash 62152 B, RAM 13008 B, no symbol
+  changed size, main.cpp compile time equal (22.5 s). Tried, each also
+  0 B with no symbol changed: `allow` keyed by the transition all the
+  way down (no shared body per guard list), a one-reference view
+  object `guards{observers_}.allow<TRANSITION>(state, event)` with
+  member functions - GCC inlines all three alike; the static form
+  stays as the one that cannot grow a member. Not built: the class
+  holding a reference as a machine member (4 B RAM per level for
+  nothing). Tests: namespace `TransitionGuards`.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine
@@ -351,12 +385,9 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `...AfterWildcard` pair with the per-source compare chain), and the
   questions `table_with_enabled_features<TABLE>`,
   `any_observer_enables<TAG>`, `any_observer_notified_by<STATE>`,
-  `all_observers_validate<TABLE>`, `any_observer_answers_guard<GUARD,
-  STATE>`, `every_guard_answered<TRANSITIONS>`,
-  `no_guard_answered_by_two_observers<TRANSITIONS>`;
-  `answerToGuard<GUARD>` asks the answering observer only - the static
-  check and the choice between the two stay in the machine
-  (`StateMachine::answerTo`; guards become a class of their own later).
+  `all_observers_validate<TABLE>`; `observer<OBSERVER>()` hands out
+  one reference by type (what `TransitionGuards` asks the answering
+  observer through - the class has no guard member any more).
   The class knows the machine only through its public interface: no
   friendship, no member names; a wildcard's hooks read
   `StateMachine::enabled_table` (public: the table the machine runs,

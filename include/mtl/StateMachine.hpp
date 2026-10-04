@@ -217,7 +217,7 @@
  *
  * This header is the whole library; the parts live in statemachine/:
  *   Transition.hpp  states, transition roles, transition types
- *   Table.hpp       transition_table, its lookups, guard evaluation
+ *   Table.hpp       transition_table and its lookups
  *   Timeout.hpp     timeout/deadline annotations, timer-range maps
  *   Timer.hpp       the timer policy contract, fsm::timed, fsm::deadlined
  *   Observing.hpp   annotation sets, fsm::observing
@@ -225,6 +225,8 @@
  *   ObserverGroup.hpp      several observers injected as one
  *   InjectedObservers.hpp  the observers of a machine: their references,
  *                          hook delivery, what they answer together
+ *   Guards.hpp      the guards of a transition: who answers them,
+ *                   whether they hold for an event
  *   Feature.hpp     features as tags and the filter removing one
  *   Traits.hpp      reachability, observer and annotation coverage,
  *                   event coverage - the table-wide proofs
@@ -239,6 +241,7 @@
 #include <mtl/statemachine/Contexts.hpp>
 #include <mtl/statemachine/Core.hpp>
 #include <mtl/statemachine/Feature.hpp>
+#include <mtl/statemachine/Guards.hpp>
 #include <mtl/statemachine/InjectedObservers.hpp>
 #include <mtl/statemachine/ObserverGroup.hpp>
 #include <mtl/statemachine/ObserverHooks.hpp>

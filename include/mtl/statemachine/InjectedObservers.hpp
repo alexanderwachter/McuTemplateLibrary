@@ -101,32 +101,12 @@ public:
     template<concepts::transition_table TABLE>
     static constexpr bool all_observers_validate = (validated<OBSERVERs, TABLE>() && ...);
 
-    // --- injected guard answers ---------------------------------------------
+    // --- one of them --------------------------------------------------------
 
-    // Does an observer answer GUARD asked from STATE?
-    template<concepts::guard GUARD, concepts::state STATE>
-    static constexpr bool any_observer_answers_guard =
-        (concepts::answers_guard_for<OBSERVERs, GUARD, STATE> || ...);
-
-    // By one observer, or by the guard's own static check
-    template<concepts::transition_table TRANSITIONS>
-    static constexpr bool every_guard_answered =
-        mtl::all_of_v<typename TRANSITIONS::transitions,
-                      guard_answered_in<observer_list>::template pred>;
-
-    template<concepts::transition_table TRANSITIONS>
-    static constexpr bool no_guard_answered_by_two_observers =
-        mtl::all_of_v<typename TRANSITIONS::transitions,
-                      guard_answered_once_in<observer_list>::template pred>;
-
-    // What the observer answering GUARD says
-    template<concepts::guard GUARD, concepts::state STATE, concepts::event EVENT>
-        requires any_observer_answers_guard<GUARD, STATE>
-    bool answerToGuard(STATE const& state, EVENT const& event)
+    template<concepts::observer OBSERVER>
+    [[nodiscard]] OBSERVER& observer()
     {
-        using answerer = mtl::find_if_t<observer_list, answering<GUARD, STATE>::template pred>;
-        return askGuard<GUARD>(std::get<mtl::index_of_v<answerer, observer_list>>(observers_),
-                               state, event);
+        return std::get<mtl::index_of_v<OBSERVER, observer_list>>(observers_);
     }
 
     // --- the hooks of an edge -----------------------------------------------

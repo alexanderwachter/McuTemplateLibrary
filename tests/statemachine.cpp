@@ -847,9 +847,6 @@ namespace InjectedObservers {
         using enables = swap_feature;
         bool check(allowed) const { return true; }
     };
-    struct second_voice {
-        bool check(allowed) const { return false; }
-    };
     struct lamp_driver : fsm::observing<lamp_driver> {
         void notifyEntry(lamp) {}
     };
@@ -870,16 +867,58 @@ namespace InjectedObservers {
     static_assert(!with_policy::any_observer_notified_by<idle>);
     static_assert(!without::any_observer_notified_by<lit>);
 
-    static_assert(with_policy::any_observer_answers_guard<allowed, idle>);
-    static_assert(!without::any_observer_answers_guard<allowed, idle>);
-    static_assert(with_policy::every_guard_answered<in_table>);
-    static_assert(!without::every_guard_answered<in_table>);
-    static_assert(with_policy::no_guard_answered_by_two_observers<in_table>);
-    static_assert(!fsm::internal::InjectedObservers<swap_policy, second_voice>::
-                      no_guard_answered_by_two_observers<in_table>);
-
     static_assert(with_policy::all_observers_validate<in_table>);
 } // namespace InjectedObservers
+
+namespace TransitionGuards {
+    struct go {};
+    struct stop {};
+    struct idle {};
+    struct busy {
+        int load = 0;
+    };
+
+    struct permitted {}; // a pure tag: an injected object must answer
+    struct light_load {  // answers itself, an injected answer overrides
+        static bool check(busy const& state) { return state.load < 10; }
+    };
+
+    using starting = fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<busy>,
+                                     fsm::guard<permitted>>;
+    using stopping = fsm::transition<fsm::from<busy>, fsm::on<stop>, fsm::to<idle>,
+                                     fsm::guard<light_load, fsm::not_<permitted>>>;
+    using resting  = fsm::transition<fsm::from<busy>, fsm::on<go>, fsm::to<idle>>;
+
+    struct in_table : fsm::transition_table<starting, stopping, resting> {};
+    struct self_answered : fsm::transition_table<
+        fsm::transition<fsm::from<busy>, fsm::on<stop>, fsm::to<idle>, fsm::guard<light_load>>,
+        resting> {};
+
+    struct supervisor {
+        bool permits = false;
+        bool check(permitted) const { return permits; }
+    };
+    struct second_voice {
+        bool check(permitted) const { return false; }
+    };
+    struct load_limit {
+        bool check(light_load, busy const& state) const { return state.load < 100; }
+    };
+    struct bystander {};
+
+    using with_supervisor = fsm::internal::TransitionGuards<bystander, supervisor>;
+    using without         = fsm::internal::TransitionGuards<bystander>;
+    using with_two_voices = fsm::internal::TransitionGuards<supervisor, second_voice>;
+
+    static_assert(with_supervisor::every_guard_answered<in_table>);
+    static_assert(!without::every_guard_answered<in_table>);
+    static_assert(without::every_guard_answered<self_answered>); // by its static check
+    static_assert(!with_two_voices::every_guard_answered<in_table>);
+
+    static_assert(with_supervisor::no_guard_answered_by_two_observers<in_table>);
+    static_assert(without::no_guard_answered_by_two_observers<in_table>);
+    static_assert(!with_two_voices::no_guard_answered_by_two_observers<in_table>);
+} // namespace TransitionGuards
 
 namespace SharedWildcard {
     struct go {};
@@ -2092,6 +2131,32 @@ namespace CombinedGuards {
     static_assert(std::is_same_v<fsm::internal::guard_of_t<fsm::not_<after_hours>>, after_hours>);
 } // namespace CombinedGuards
 
+void transitionGuardsAllow()
+{
+    using namespace TransitionGuards;
+    bystander nobody;
+    supervisor boss;
+    fsm::internal::InjectedObservers<bystander, supervisor> observers{nobody, boss};
+
+    check(with_supervisor::allow<resting>(observers, busy{}, go{})); // unguarded
+
+    check(!with_supervisor::allow<starting>(observers, idle{}, go{})); // the injected answer
+    boss.permits = true;
+    check(with_supervisor::allow<starting>(observers, idle{}, go{}));
+
+    check(!with_supervisor::allow<stopping>(observers, busy{}, stop{})); // not_<permitted>
+    boss.permits = false;
+    check(with_supervisor::allow<stopping>(observers, busy{}, stop{}));
+    check(!with_supervisor::allow<stopping>(observers, busy{50}, stop{})); // the static check
+
+    // an injected answer wins over the guard's own
+    load_limit limit;
+    fsm::internal::InjectedObservers<supervisor, load_limit> limited{boss, limit};
+    using with_limit = fsm::internal::TransitionGuards<supervisor, load_limit>;
+    check(with_limit::allow<stopping>(limited, busy{50}, stop{}));
+    check(!with_limit::allow<stopping>(limited, busy{500}, stop{}));
+}
+
 void combinedGuardsAskEveryPart()
 {
     using namespace CombinedGuards;
@@ -3273,6 +3338,7 @@ int statemachineTests()
     machineWithOnlyATimerObserver();
     entryIsConstructionExitIsDestruction();
     guardBlocksAndAllows();
+    transitionGuardsAllow();
     combinedGuardsAskEveryPart();
     injectedObjectAnswersGuard();
     staticGuardIsTheDefaultAnswer();

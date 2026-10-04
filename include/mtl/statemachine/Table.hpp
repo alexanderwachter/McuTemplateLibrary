@@ -1,5 +1,5 @@
 /*
- * fsm: the transition table, its lookups and the guard evaluation
+ * fsm: the transition table and its lookups
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -118,81 +118,6 @@ struct is_guarded : std::bool_constant<has_guard_v<TRANSITION>> {};
 
 template<concepts::transition TRANSITION>
 struct is_unguarded : std::bool_constant<!has_guard_v<TRANSITION>> {};
-
-// The most specific guard form wins. A static guard answers itself -
-template<concepts::guard GUARD, concepts::state STATE, concepts::event EVENT>
-bool checkStaticGuard([[maybe_unused]] STATE const& state, [[maybe_unused]] EVENT const& event)
-{
-    if constexpr (concepts::event_guard_for<GUARD, STATE, EVENT>) {
-        return GUARD::check(state, event);
-    } else if constexpr (concepts::state_guard_for<GUARD, STATE>) {
-        return GUARD::check(state);
-    } else {
-        return GUARD::check();
-    }
-}
-
-// - an injected object answers with the tag selecting its overload
-template<concepts::guard GUARD, concepts::observer OBJECT, concepts::state STATE,
-         concepts::event EVENT>
-bool askGuard(OBJECT& object, [[maybe_unused]] STATE const& state,
-              [[maybe_unused]] EVENT const& event)
-{
-    if constexpr (concepts::answers_event_guard<OBJECT, GUARD, STATE, EVENT>) {
-        return object.check(GUARD{}, state, event);
-    } else if constexpr (concepts::answers_state_guard<OBJECT, GUARD, STATE>) {
-        return object.check(GUARD{}, state);
-    } else {
-        return object.check(GUARD{});
-    }
-}
-
-// The injected objects answering GUARD asked from STATE
-template<concepts::guard GUARD, concepts::state STATE>
-struct answering {
-    template<concepts::observer OBJECT>
-    struct pred : std::bool_constant<concepts::answers_guard_for<OBJECT, GUARD, STATE>> {};
-};
-
-// Whether the machine can resolve one part of a row's guard asked from
-// FROM: answered by exactly one of the injected OBJECTS, or by a static
-// check of the guard's own (a not_<G> part resolves G)
-template<mtl::concepts::typelist OBJECTS, concepts::state FROM>
-struct part_answered_in {
-    template<concepts::guard_part PART, concepts::guard GUARD = guard_of_t<PART>>
-    struct pred
-        : std::bool_constant<
-              mtl::count_if_v<OBJECTS, answering<GUARD, FROM>::template pred> == 1 ||
-              (mtl::count_if_v<OBJECTS, answering<GUARD, FROM>::template pred> == 0 &&
-               concepts::guard_for<GUARD, FROM>)> {};
-};
-
-template<mtl::concepts::typelist OBJECTS, concepts::state FROM>
-struct part_answered_once_in {
-    template<concepts::guard_part PART>
-    struct pred
-        : std::bool_constant<
-              mtl::count_if_v<OBJECTS, answering<guard_of_t<PART>, FROM>::template pred> <= 1> {};
-};
-
-// ... and every part of TRANSITION's guard
-template<mtl::concepts::typelist OBJECTS>
-struct guard_answered_in {
-    template<concepts::transition TRANSITION>
-    struct pred
-        : std::bool_constant<mtl::all_of_v<
-              typename TRANSITION::guards,
-              part_answered_in<OBJECTS, typename TRANSITION::from>::template pred>> {};
-};
-
-template<mtl::concepts::typelist OBJECTS>
-struct guard_answered_once_in {
-    template<concepts::transition TRANSITION>
-    struct pred
-        : std::bool_constant<mtl::all_of_v<
-              typename TRANSITION::guards,
-              part_answered_once_in<OBJECTS, typename TRANSITION::from>::template pred>> {};
-};
 
 // Alternatives for one (state, event) pair are tried in table order; an
 // unguarded transition always fires, so anything after it is dead
