@@ -235,7 +235,7 @@ private:
         }
     }
 
-    context_tuple contexts_{};
+    context_tuple contexts_;
 };
 
 // The contexts of the machine built from TABLE (a child machine's
