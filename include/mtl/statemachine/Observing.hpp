@@ -444,9 +444,9 @@ struct observing {
                 self.notifyExit(DERIVED::template annotation<OLD_STATE>());
             }
         }
-        this->template setExit<OLD_STATE>(
+        setExit<OLD_STATE>(
             internal::exit_delivered_t<DERIVED, OLD_STATE, NEW_STATE>{});
-        this->template valuesExit<OLD_STATE>(machine);
+        valuesExit<OLD_STATE>(machine);
     }
 
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
@@ -459,9 +459,9 @@ struct observing {
                 self.notifyEntry(DERIVED::template annotation<NEW_STATE>());
             }
         }
-        this->template setEnter<NEW_STATE>(
+        setEnter<NEW_STATE>(
             internal::entry_delivered_t<DERIVED, NEW_STATE, OLD_STATE>{});
-        this->template valuesEnter<NEW_STATE>(machine);
+        valuesEnter<NEW_STATE>(machine);
     }
 
     // The one-state form: no other state to compare against, which is the
@@ -470,14 +470,14 @@ struct observing {
         requires (exits_notified<STATE>)
     void onExit(MACHINE& machine)
     {
-        this->template onExitFrom<STATE, mtl::nil_type>(machine);
+        onExitFrom<STATE, mtl::nil_type>(machine);
     }
 
     template<concepts::state STATE, typename MACHINE>
         requires (entries_notified<STATE>)
     void onEnter(MACHINE& machine)
     {
-        this->template onEnterFrom<mtl::nil_type, STATE>(machine);
+        onEnterFrom<mtl::nil_type, STATE>(machine);
     }
 
 protected:
@@ -512,7 +512,7 @@ private:
         using delivered = internal::value_exit_delivered_t<DERIVED, STATE>;
         if constexpr (!mtl::empty_v<delivered>) {
             if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
-                this->exitEach(internal::instanceValues(*state), delivered{});
+                exitEach(internal::instanceValues(*state), delivered{});
             }
         }
     }
@@ -523,7 +523,7 @@ private:
         using delivered = internal::value_entry_delivered_t<DERIVED, STATE>;
         if constexpr (!mtl::empty_v<delivered>) {
             if (auto const* state = machine.template getIf<STATE>(); state != nullptr) {
-                this->enterEach(internal::instanceValues(*state), delivered{});
+                enterEach(internal::instanceValues(*state), delivered{});
             }
         }
     }

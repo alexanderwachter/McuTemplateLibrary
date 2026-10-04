@@ -297,10 +297,10 @@ public:
     // Construct from the serialized context, before event sources run
     explicit QueuedMachine(OBSERVERs&... observers) // channels bind before the
         requires(!std::is_reference_v<WORK>)
-        : machine_((this->bindChannels(observers), observers)...) // initial state can arm
+        : machine_((bindChannels(observers), observers)...) // initial state can arm
     {
         draining_ = false;
-        this->drain();
+        drain();
     }
 
     // QueuedMachine<TABLE, N, WORK&, ...> runs on a caller-owned WORK,
@@ -308,10 +308,10 @@ public:
     // the fsm::timed<POLICY&> convention
     explicit QueuedMachine(WORK work, OBSERVERs&... observers)
         requires std::is_reference_v<WORK>
-        : work_(work), machine_((this->bindChannels(observers), observers)...)
+        : work_(work), machine_((bindChannels(observers), observers)...)
     {
         draining_ = false;
-        this->drain();
+        drain();
     }
 
     // The one way in, from any context the WORK and LOCK policies
@@ -326,7 +326,7 @@ public:
         if constexpr (!mtl::has_a_v<queueable_events, EVENT>) {
             return false;
         } else {
-            return this->enqueue(event);
+            return enqueue(event);
         }
     }
 
@@ -405,12 +405,12 @@ private:
         draining_ = true;
         while (true) {
             if constexpr (QueuedMachine::has_deadline) {
-                if (this->template deliverAny<deadline>(deadline_)) {
+                if (deliverAny<deadline>(deadline_)) {
                     continue;
                 }
             }
             event_variant event{}; // copied out: a delivery may refill the slot
-            if (this->popInto(event)) {
+            if (popInto(event)) {
                 internal::dispatch(
                     [this](auto const& popped) -> bool {
                         using event_type = std::decay_t<decltype(popped)>;
@@ -424,7 +424,7 @@ private:
                 continue;
             }
             if constexpr (QueuedMachine::has_timeout) {
-                if (this->template deliverAny<timeout>(timeout_)) {
+                if (deliverAny<timeout>(timeout_)) {
                     continue;
                 }
             }
@@ -455,12 +455,12 @@ private:
     template<concepts::event EVENT>
     bool enqueue(EVENT const& event)
     {
-        event_variant* const slot = this->acquireSlot();
+        event_variant* const slot = acquireSlot();
         if (slot == nullptr) {
             return false;
         }
         slot->template emplace<EVENT>(event);
-        this->commitSlot();
+        commitSlot();
         return true;
     }
 
@@ -503,9 +503,9 @@ private:
     void bindChannels(OBSERVER& observer)
     {
         if constexpr (internal::is_deadlined_observer<OBSERVER>::value) {
-            this->bindLevels(observer, deadline_);
+            bindLevels(observer, deadline_);
         } else if constexpr (internal::is_timed_observer<OBSERVER>::value) {
-            this->bindLevels(observer, timeout_);
+            bindLevels(observer, timeout_);
         }
     }
 

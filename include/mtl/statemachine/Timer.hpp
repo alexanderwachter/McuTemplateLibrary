@@ -121,14 +121,14 @@ protected:
     {
         auto const duration = std::chrono::milliseconds{duration_ms};
         if constexpr (delivered_by_owner<timer_type>) {
-            this->timer(MACHINE::depth).start(duration, nullptr, nullptr);
+            timer(MACHINE::depth).start(duration, nullptr, nullptr);
         } else if constexpr (LEVELS == 1) {
-            this->timer().start(
+            timer().start(
                 duration,
                 [](void* context) { static_cast<MACHINE*>(context)->process(EVENT{}); },
                 &machine);
         } else {
-            this->timer(MACHINE::depth).start(
+            timer(MACHINE::depth).start(
                 duration,
                 [](void* self) {
                     auto& root = static_cast<timer_slots*>(self)->root_;

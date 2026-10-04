@@ -114,7 +114,7 @@ public:
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
     void deliverExitHooks(MACHINE& machine)
     {
-        this->template deliverExitHooksTo<OLD_STATE, NEW_STATE>(
+        deliverExitHooksTo<OLD_STATE, NEW_STATE>(
             machine,
             hooked_indices_t<has_exit_hook<OBSERVERs, OLD_STATE, NEW_STATE, MACHINE>...>{});
     }
@@ -122,7 +122,7 @@ public:
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
     void deliverEnterHooks(MACHINE& machine)
     {
-        this->template deliverEnterHooksTo<OLD_STATE, NEW_STATE>(
+        deliverEnterHooksTo<OLD_STATE, NEW_STATE>(
             machine,
             hooked_indices_t<has_enter_hook<OBSERVERs, OLD_STATE, NEW_STATE, MACHINE>...>{});
     }
@@ -131,7 +131,7 @@ public:
              typename MACHINE>
     void deliverTransitionHooks(MACHINE& machine)
     {
-        this->template deliverTransitionHooksTo<FROM_STATE, EVENT, TO_STATE>(
+        deliverTransitionHooksTo<FROM_STATE, EVENT, TO_STATE>(
             machine, hooked_indices_t<has_transition_hook<OBSERVERs, FROM_STATE, EVENT, TO_STATE,
                                                           MACHINE>...>{});
     }
@@ -144,7 +144,7 @@ public:
     template<concepts::event EVENT, concepts::state NEW_STATE, typename MACHINE>
     void deliverEnterHooksAfterWildcard(MACHINE& machine, std::size_t state_left)
     {
-        this->template deliverEnterHooksAfterWildcardTo<EVENT, NEW_STATE>(
+        deliverEnterHooksAfterWildcardTo<EVENT, NEW_STATE>(
             machine, state_left,
             hooked_indices_t<has_enter_hook_after_wildcard<
                 OBSERVERs, typename MACHINE::enabled_table, EVENT, NEW_STATE, MACHINE>...>{});
@@ -153,7 +153,7 @@ public:
     template<concepts::event EVENT, concepts::state NEW_STATE, typename MACHINE>
     void deliverTransitionHooksAfterWildcard(MACHINE& machine, std::size_t state_left)
     {
-        this->template deliverTransitionHooksAfterWildcardTo<EVENT, NEW_STATE>(
+        deliverTransitionHooksAfterWildcardTo<EVENT, NEW_STATE>(
             machine, state_left,
             hooked_indices_t<has_transition_hook_after_wildcard<
                 OBSERVERs, typename MACHINE::enabled_table, EVENT, NEW_STATE, MACHINE>...>{});
@@ -188,7 +188,7 @@ private:
     void deliverEnterHooksAfterWildcardTo(MACHINE& machine, std::size_t state_left,
                                                  std::index_sequence<INDEXs...>)
     {
-        (this->template enterHookAfterWildcard<EVENT, NEW_STATE>(
+        (enterHookAfterWildcard<EVENT, NEW_STATE>(
              std::get<INDEXs>(observers_), machine, state_left),
          ...);
     }
@@ -198,7 +198,7 @@ private:
     void deliverTransitionHooksAfterWildcardTo(MACHINE& machine, std::size_t state_left,
                                                       std::index_sequence<INDEXs...>)
     {
-        (this->template transitionHookAfterWildcard<EVENT, NEW_STATE>(
+        (transitionHookAfterWildcard<EVENT, NEW_STATE>(
              std::get<INDEXs>(observers_), machine, state_left),
          ...);
     }
@@ -212,7 +212,7 @@ private:
         if constexpr (has_enter<OBSERVER, NEW_STATE, MACHINE>) {
             observer.template onEnter<NEW_STATE>(machine);
         } else {
-            this->template enterHookFromStateLeft<NEW_STATE>(
+            enterHookFromStateLeft<NEW_STATE>(
                 observer, machine, state_left,
                 wildcard_sources_with_enter_from<OBSERVER, typename MACHINE::enabled_table, EVENT,
                                                  NEW_STATE, MACHINE>{});
@@ -227,7 +227,7 @@ private:
         if constexpr (has_transition<OBSERVER, EVENT, NEW_STATE, MACHINE>) {
             observer.template onTransition<EVENT, NEW_STATE>(machine);
         } else {
-            this->template transitionHookFromStateLeft<EVENT, NEW_STATE>(
+            transitionHookFromStateLeft<EVENT, NEW_STATE>(
                 observer, machine, state_left,
                 wildcard_sources_with_transition_from<OBSERVER, typename MACHINE::enabled_table,
                                                       EVENT, NEW_STATE, MACHINE>{});

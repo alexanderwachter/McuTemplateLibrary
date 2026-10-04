@@ -175,7 +175,7 @@ public:
     explicit ConfiguredStateMachine(TAG, OBSERVERs&... observers)
         requires std::same_as<QUEUE, own_workqueue>
         : queue_(mtl::short_name_of<TABLE>), work_(queue_.handle()),
-          machine_(this->construct(observers...))
+          machine_(construct(observers...))
     {
     }
 
@@ -189,7 +189,7 @@ public:
     template<typename TAG, std::size_t STACK_SIZE, int PRIORITY>
     ConfiguredStateMachine(TAG, WorkQueue<STACK_SIZE, PRIORITY>& queue, OBSERVERs&... observers)
         requires std::same_as<QUEUE, shared_workqueue>
-        : queue_(queue.handle()), work_(queue_.handle()), machine_(this->construct(observers...))
+        : queue_(queue.handle()), work_(queue_.handle()), machine_(construct(observers...))
     {
     }
 
@@ -245,7 +245,7 @@ private:
     machine_type construct(OBSERVERs&... observers)
     {
         return std::make_from_tuple<machine_type>(std::tuple_cat(
-            std::tuple<Work&>(work_), this->timerObservers(), std::tie(observers...)));
+            std::tuple<Work&>(work_), timerObservers(), std::tie(observers...)));
     }
 
     auto timerObservers()

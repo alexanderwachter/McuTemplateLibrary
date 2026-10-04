@@ -84,7 +84,7 @@ public:
           current_(std::make_from_tuple<state_variant>(
               contexts_.template initialArgumentsOf<initial_state>()))
     {
-        this->enterInitialState();
+        enterInitialState();
     }
 
     // A child machine, built by its parent with the contexts it inherits
@@ -95,7 +95,7 @@ public:
           current_(std::make_from_tuple<state_variant>(
               contexts_.template initialArgumentsOf<initial_state>()))
     {
-        this->enterInitialState();
+        enterInitialState();
     }
 
     // Observers may keep the machine's address beyond a hook
@@ -107,7 +107,7 @@ public:
     template<concepts::event EVENT>
     bool process(EVENT const& event)
     {
-        return this->processWithReaction(event) != reaction::none;
+        return processWithReaction(event) != reaction::none;
     }
 
     template<concepts::state STATE>
@@ -120,7 +120,7 @@ public:
     [[nodiscard]] bool isFinished() const
     {
         return [this]<typename... FINALs>(mtl::typelist<FINALs...>) {
-            return (this->template is<FINALs>() || ...);
+            return (is<FINALs>() || ...);
         }(final_states{});
     }
 
@@ -145,7 +145,7 @@ public:
     {
         static_assert(submachines::template has_composite<COMPOSITE>,
                       "StateMachine::submachine: not a composite state of this table");
-        return this->template is<COMPOSITE>() ? submachines_.template childOf<COMPOSITE>()
+        return is<COMPOSITE>() ? submachines_.template childOf<COMPOSITE>()
                                               : nullptr;
     }
 
@@ -156,7 +156,7 @@ public:
     {
         static_assert(annotation_in_table_v<table, T>,
                       "StateMachine::annotation: no state of the table carries this annotation");
-        std::optional<T> result = this->template annotationOfActiveState<T>();
+        std::optional<T> result = annotationOfActiveState<T>();
         submachines_.annotationOfActiveChild(*this, result);
         return result;
     }
@@ -169,12 +169,12 @@ private:
     template<concepts::event EVENT>
     reaction processWithReaction(EVENT const& event)
     {
-        this->beginProcessing();
+        beginProcessing();
         reaction result = submachines_.react(*this, event);
         if (result == reaction::none) {
-            result = this->reactInOwnTable(event);
+            result = reactInOwnTable(event);
         }
-        this->endProcessing();
+        endProcessing();
         return result;
     }
 
@@ -193,16 +193,16 @@ private:
                 using guarded    = mtl::filter_t<own, internal::is_guarded>;
                 using unguarded  = mtl::find_if_t<own, internal::is_unguarded>;
                 if constexpr (!mtl::empty_v<guarded>) {
-                    if (reaction const fired = this->fireFirstAllowed(guarded{}, state, event);
+                    if (reaction const fired = fireFirstAllowed(guarded{}, state, event);
                         fired != reaction::none) {
                         return static_cast<std::size_t>(fired);
                     }
                 }
                 if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
-                    return static_cast<std::size_t>(this->template fire<unguarded>(state, event));
+                    return static_cast<std::size_t>(fire<unguarded>(state, event));
                 } else if constexpr (!mtl::empty_v<wildcards> &&
                                      !mtl::has_a_v<final_states, state_type>) {
-                    return this->exitForFirstAllowed(wildcards{}, state, event);
+                    return exitForFirstAllowed(wildcards{}, state, event);
                 } else {
                     return static_cast<std::size_t>(reaction::none);
                 }
@@ -211,7 +211,7 @@ private:
         if constexpr (!mtl::empty_v<wildcards>) {
             if (outcome >= StateMachine::exited_for_wildcard) {
                 // the state left is still the current one: its index names it
-                this->enterTargetOf(outcome - StateMachine::exited_for_wildcard, current_.index(),
+                enterTargetOf(outcome - StateMachine::exited_for_wildcard, current_.index(),
                                     wildcards{}, event);
                 return reaction::state_entered;
             }
@@ -229,7 +229,7 @@ private:
         reaction result = reaction::none;
         static_cast<void>(
             ((guards::template allow<GUARDEDs>(observers_, state, event) &&
-              (result = this->template fire<GUARDEDs>(state, event), true)) ||
+              (result = fire<GUARDEDs>(state, event), true)) ||
              ...));
         return result;
     }
@@ -243,12 +243,12 @@ private:
                           "internal transition: the state must provide handle(EVENT const&)");
             state.handle(event);
         } else if constexpr (internal::payload_constructible_v<TO_STATE, EVENT>) {
-            this->template changeState<STATE, TO_STATE>(event);
+            changeState<STATE, TO_STATE>(event);
         } else {
-            this->template changeState<STATE, TO_STATE>();
+            changeState<STATE, TO_STATE>();
         }
-        this->template notifyTransition<STATE, EVENT, TO_STATE>();
-        this->template enterSubmachine<TO_STATE>();
+        notifyTransition<STATE, EVENT, TO_STATE>();
+        enterSubmachine<TO_STATE>();
         return internal::is_internal_v<TRANSITION> ? reaction::in_place : reaction::state_entered;
     }
 
@@ -256,18 +256,18 @@ private:
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::event EVENT>
     void changeState(EVENT const& event)
     {
-        this->template leave<OLD_STATE, NEW_STATE>();
-        this->template construct<NEW_STATE>(event);
-        this->template enter<OLD_STATE, NEW_STATE>();
+        leave<OLD_STATE, NEW_STATE>();
+        construct<NEW_STATE>(event);
+        enter<OLD_STATE, NEW_STATE>();
     }
 
     // Instantiated once per edge, shared by every event triggering it
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
     void changeState()
     {
-        this->template leave<OLD_STATE, NEW_STATE>();
-        this->template construct<NEW_STATE>();
-        this->template enter<OLD_STATE, NEW_STATE>();
+        leave<OLD_STATE, NEW_STATE>();
+        construct<NEW_STATE>();
+        enter<OLD_STATE, NEW_STATE>();
     }
 
     // A composite state's child machine is left before the state itself
@@ -302,10 +302,10 @@ private:
 
     void enterInitialState()
     {
-        this->beginProcessing();
-        this->template enter<mtl::nil_type, initial_state>();
-        this->template enterSubmachine<initial_state>();
-        this->endProcessing();
+        beginProcessing();
+        enter<mtl::nil_type, initial_state>();
+        enterSubmachine<initial_state>();
+        endProcessing();
     }
 
     // A composite state's child machine is entered after the state
@@ -320,14 +320,14 @@ private:
     // root's destructor runs no hooks
     void leaveActiveState()
     {
-        this->beginProcessing();
+        beginProcessing();
         internal::dispatch(
             [this](auto& state) {
-                this->template leave<std::decay_t<decltype(state)>, mtl::nil_type>();
+                leave<std::decay_t<decltype(state)>, mtl::nil_type>();
                 return true;
             },
             current_);
-        this->endProcessing();
+        endProcessing();
     }
 
     // --- from<any_state> transitions ----------------------------------------
@@ -351,7 +351,7 @@ private:
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((guards::template allow<WILDCARDs>(observers_, state, event) &&
-                  (this->template leave<STATE, typename WILDCARDs::to>(),
+                  (leave<STATE, typename WILDCARDs::to>(),
                    outcome = StateMachine::exited_for_wildcard + INDEXs, true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
@@ -365,7 +365,7 @@ private:
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((wildcard == INDEXs &&
-                  (this->template enterShared<typename WILDCARDs::to>(state_left, event), true)) ||
+                  (enterShared<typename WILDCARDs::to>(state_left, event), true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
     }
@@ -374,14 +374,14 @@ private:
     void enterShared(std::size_t state_left, EVENT const& event)
     {
         if constexpr (internal::payload_constructible_v<NEW_STATE, EVENT>) {
-            this->template construct<NEW_STATE>(event);
+            construct<NEW_STATE>(event);
         } else {
-            this->template construct<NEW_STATE>();
+            construct<NEW_STATE>();
         }
         observers_.template deliverEnterHooksAfterWildcard<EVENT, NEW_STATE>(*this, state_left);
         observers_.template deliverTransitionHooksAfterWildcard<EVENT, NEW_STATE>(*this,
                                                                                   state_left);
-        this->template enterSubmachine<NEW_STATE>();
+        enterSubmachine<NEW_STATE>();
     }
 
     // --- annotation query ---------------------------------------------------

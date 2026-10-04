@@ -41,7 +41,7 @@ public:
         requires(internal::has_exit_hook<OBSERVERs, FROM, TO, MACHINE> || ...)
     void onExitFrom(MACHINE& machine)
     {
-        this->template exitMembers<FROM, TO>(
+        exitMembers<FROM, TO>(
             machine, internal::hooked_indices_t<
                          internal::has_exit_hook<OBSERVERs, FROM, TO, MACHINE>...>{});
     }
@@ -50,14 +50,14 @@ public:
         requires(internal::has_exit<OBSERVERs, TO, MACHINE> && ...)
     void onExit(MACHINE& machine)
     {
-        this->forEachMember([&machine](auto& member) { member.template onExit<TO>(machine); });
+        forEachMember([&machine](auto& member) { member.template onExit<TO>(machine); });
     }
 
     template<concepts::state FROM, concepts::state TO, typename MACHINE>
         requires(internal::has_enter_hook<OBSERVERs, FROM, TO, MACHINE> || ...)
     void onEnterFrom(MACHINE& machine)
     {
-        this->template enterMembers<FROM, TO>(
+        enterMembers<FROM, TO>(
             machine, internal::hooked_indices_t<
                          internal::has_enter_hook<OBSERVERs, FROM, TO, MACHINE>...>{});
     }
@@ -66,14 +66,14 @@ public:
         requires(internal::has_enter<OBSERVERs, TO, MACHINE> && ...)
     void onEnter(MACHINE& machine)
     {
-        this->forEachMember([&machine](auto& member) { member.template onEnter<TO>(machine); });
+        forEachMember([&machine](auto& member) { member.template onEnter<TO>(machine); });
     }
 
     template<concepts::state FROM, concepts::event EVENT, concepts::state TO, typename MACHINE>
         requires(internal::has_transition_hook<OBSERVERs, FROM, EVENT, TO, MACHINE> || ...)
     void onTransitionFrom(MACHINE& machine)
     {
-        this->template transitionMembers<FROM, EVENT, TO>(
+        transitionMembers<FROM, EVENT, TO>(
             machine, internal::hooked_indices_t<internal::has_transition_hook<
                          OBSERVERs, FROM, EVENT, TO, MACHINE>...>{});
     }
@@ -82,7 +82,7 @@ public:
         requires(internal::has_transition<OBSERVERs, EVENT, TO, MACHINE> && ...)
     void onTransition(MACHINE& machine)
     {
-        this->forEachMember(
+        forEachMember(
             [&machine](auto& member) { member.template onTransition<EVENT, TO>(machine); });
     }
 
@@ -109,7 +109,7 @@ private:
     template<typename F>
     void forEachMember(F&& f)
     {
-        this->forEachMember(f, std::index_sequence_for<OBSERVERs...>{});
+        forEachMember(f, std::index_sequence_for<OBSERVERs...>{});
     }
 
     template<typename F, std::size_t... INDEXs>

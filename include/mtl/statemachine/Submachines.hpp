@@ -156,7 +156,7 @@ public:
     void leaveWith()
     {
         if constexpr (composite<STATE>) {
-            this->template activeChildOf<STATE>().leaveActiveState();
+            activeChildOf<STATE>().leaveActiveState();
             children_.template emplace<std::monostate>();
         }
     }
@@ -172,7 +172,7 @@ public:
         if constexpr (local_event_v<EVENT>) {
             return reaction::none;
         } else {
-            return this->reactInActiveChild(parent, passedDown(event));
+            return reactInActiveChild(parent, passedDown(event));
         }
     }
 
@@ -194,7 +194,7 @@ public:
         [&]<typename... NESTINGs>(mtl::typelist<NESTINGs...>) {
             static_cast<void>(
                 ((parent.template is<NESTINGs>() &&
-                  (annotation = this->template childOf<NESTINGs>()->template annotation<T>(),
+                  (annotation = childOf<NESTINGs>()->template annotation<T>(),
                    true)) ||
                  ...));
         }(nesting_carriers{});
@@ -209,7 +209,7 @@ private:
         [&]<typename... COMPOSITEs>(mtl::typelist<COMPOSITEs...>) {
             static_cast<void>(
                 ((parent.template is<COMPOSITEs>() &&
-                  (result = this->template reactInChildOf<COMPOSITEs>(parent, event), true)) ||
+                  (result = reactInChildOf<COMPOSITEs>(parent, event), true)) ||
                  ...));
         }(COMPOSITES{});
         return result;
@@ -220,9 +220,9 @@ private:
     template<composite COMPOSITE, typename PARENT, concepts::event EVENT>
     reaction reactInChildOf(PARENT& parent, EVENT const& event)
     {
-        reaction const of_child = this->template activeChildOf<COMPOSITE>().processWithReaction(event);
+        reaction const of_child = activeChildOf<COMPOSITE>().processWithReaction(event);
         if (of_child == reaction::state_entered &&
-            this->template reactToEmittedEvent<COMPOSITE>(parent) == reaction::state_entered) {
+            reactToEmittedEvent<COMPOSITE>(parent) == reaction::state_entered) {
             return reaction::state_entered;
         }
         return of_child == reaction::none ? reaction::none : reaction::in_place;
@@ -238,7 +238,7 @@ private:
             mtl::filter_t<typename child_of<COMPOSITE>::enabled_table::states, is_emitting>;
         reaction result = reaction::none;
         [&]<typename... EMITTINGs>(mtl::typelist<EMITTINGs...>) {
-            [[maybe_unused]] auto const& child = this->template activeChildOf<COMPOSITE>();
+            [[maybe_unused]] auto const& child = activeChildOf<COMPOSITE>();
             static_cast<void>(
                 ((child.template is<EMITTINGs>() &&
                   (result = parent.reactInOwnTable(emitted_t<EMITTINGs>{}), true)) ||
