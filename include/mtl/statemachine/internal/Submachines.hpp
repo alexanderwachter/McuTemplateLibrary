@@ -1,7 +1,7 @@
 /*
- * fsm: the submachines of a machine - the child machine of its active
- * composite state: entered and left with that state, and the first to
- * react to an event
+ * fsm: the submachines of a machine - the child machine a composite
+ * state holds in its alternative of the state variant: entered and
+ * left with that state, and the first to react to an event
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -11,7 +11,6 @@
 #pragma once
 
 #include <mtl/statemachine/internal/Checks.hpp>
-#include <mtl/statemachine/internal/Visit.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
 #include <mtl/statemachine/Traits.hpp>
@@ -20,9 +19,8 @@
 #include <mtl/Typelist.hpp>
 
 #include <cstddef>
-#include <optional>
+#include <memory>
 #include <type_traits>
-#include <variant>
 
 namespace fsm::internal {
 
@@ -124,13 +122,92 @@ struct initial_in_submachine {
                   typename STATE::initial>> {};
 };
 
+// What a composite state is in its machine's state variant: the state
+// itself, with its child machine behind it. The child is constructed
+// after the state's own entry and transition hooks and leaves its
+// active state before the state's exit hooks - innermost first - but
+// is destroyed only with the state: the one time a state is alone is
+// between its construction and its hooks, inside a process() call,
+// where nothing destroys it. A friend of the machine: leaving the
+// child is the child's private leaveActiveState()
+template<composite STATE, typename CHILD>
+class StateWithSubmachine : public STATE {
+public:
+    using STATE::STATE;
+
+    // Trivial where the child is: a destructor of its own on every
+    // alternative puts the variant's destructor dispatch into every
+    // state change
+    ~StateWithSubmachine()
+        requires std::is_trivially_destructible_v<CHILD>
+    = default;
+
+    ~StateWithSubmachine()
+    {
+        std::destroy_at(&child_.machine);
+    }
+
+    // The child machine's constructor enters its initial state - the
+    // sub-table's, or the one the composite state names. The parent
+    // machine hands in what a child is constructed from
+    template<typename PARENT_CONTEXTS, typename OBSERVERS>
+    void enterChild(PARENT_CONTEXTS& parent_contexts, OBSERVERS const& observers)
+    {
+        using initial = submachine_initial_t<STATE, typename CHILD::enabled_table>;
+        std::construct_at(&child_.machine, std::type_identity<initial>{}, parent_contexts,
+                          observers);
+    }
+
+    void leaveChild()
+    {
+        child_.machine.leaveActiveState();
+    }
+
+    [[nodiscard]] CHILD& child()
+    {
+        return child_.machine;
+    }
+
+    [[nodiscard]] CHILD const& child() const
+    {
+        return child_.machine;
+    }
+
+private:
+    // Room for the child, constructed and destroyed by hand: a plain
+    // member would be constructed with the state, before its hooks. A
+    // union of its own, so that the state's constructors - inherited
+    // above - stay usable: an anonymous union with a non-trivial
+    // member deletes them
+    union child_storage {
+        child_storage() {}
+        ~child_storage()
+            requires std::is_trivially_destructible_v<CHILD>
+        = default;
+        ~child_storage() {}
+        CHILD machine;
+    };
+
+    child_storage child_;
+};
+
+// The state behind an alternative of the state variant
+template<concepts::state ALTERNATIVE>
+struct plain_state : std::type_identity<ALTERNATIVE> {};
+
+template<composite STATE, typename CHILD>
+struct plain_state<StateWithSubmachine<STATE, CHILD>> : std::type_identity<STATE> {};
+
+template<concepts::state ALTERNATIVE>
+using plain_state_t = typename plain_state<ALTERNATIVE>::type;
+
 // The child machines of one machine: at most one lives, that of the
-// active composite state. COMPOSITES: the composite states of the
-// table the machine runs; CHILD_MACHINES: the machine each of them
-// owns while active, in the same order. A friend of the machine: the
-// class drives a child through its processWithReaction() and
-// leaveActiveState() and hands an emitted event to the parent machine's
-// processInThisTable()
+// active composite state, inside that state's alternative of the
+// state variant. COMPOSITES: the composite states of the table the
+// machine runs; CHILD_MACHINES: the machine each of them owns while
+// active, in the same order. A friend of the machine: the class drives
+// a child through its processWithReaction() and hands an emitted event
+// to the parent machine's processInThisTable()
 template<mtl::concepts::typelist COMPOSITES, mtl::concepts::typelist CHILD_MACHINES>
 class Submachines {
 public:
@@ -139,6 +216,16 @@ public:
 
     template<composite COMPOSITE>
     using child_of = mtl::at_t<mtl::index_of_v<COMPOSITE, COMPOSITES>, CHILD_MACHINES>;
+
+    // What a state of the table is in the state variant
+    template<concepts::state STATE>
+    struct alternative : std::type_identity<STATE> {};
+
+    template<composite STATE>
+    struct alternative<STATE> : std::type_identity<StateWithSubmachine<STATE, child_of<STATE>>> {};
+
+    template<concepts::state STATE>
+    using alternative_t = typename alternative<STATE>::type;
 
     // --- what the table must satisfy ----------------------------------------
 
@@ -171,104 +258,15 @@ public:
     static constexpr bool every_initial_in_its_submachine =
         mtl::all_of_v<COMPOSITES, initial_in_submachine<OBSERVER_LIST>::template pred>;
 
-    // --- a child lives as long as its composite state -----------------------
-
-    // After the composite state's own entry hooks: the child machine's
-    // constructor enters its initial state - the sub-table's, or the
-    // one the composite state names. The parent machine hands in what a
-    // child is constructed from. Nothing to do for a plain state
-    template<concepts::state STATE, typename PARENT_CONTEXTS, typename OBSERVERS>
-    void enterWith([[maybe_unused]] PARENT_CONTEXTS& parent_contexts,
-                   [[maybe_unused]] OBSERVERS const& observers)
-    {
-        if constexpr (composite<STATE>) {
-            using child   = child_of<STATE>;
-            using initial = submachine_initial_t<STATE, typename child::enabled_table>;
-            children_.template emplace<child>(std::type_identity<initial>{}, parent_contexts,
-                                              observers);
-        }
-    }
-
-    // Before the composite state's own exit hooks: the child leaves its
-    // active state, innermost first
-    template<concepts::state STATE>
-    void leaveWith()
-    {
-        if constexpr (composite<STATE>) {
-            leaveActiveChild();
-        }
-    }
-
     // --- an event arrives ---------------------------------------------------
 
     // The child of the active composite state reacts before the parent
-    // machine's own table. A local event (fsm::timeout) belongs to one
-    // level and does not descend
-    template<typename PARENT, concepts::event EVENT>
-    reaction react([[maybe_unused]] PARENT& parent, [[maybe_unused]] EVENT const& event)
-    {
-        if constexpr (local_event_v<EVENT>) {
-            return reaction::none;
-        } else {
-            return reactInActiveChild(parent, passedDown(event));
-        }
-    }
-
-    // --- queries ------------------------------------------------------------
-
-    // The child machine of COMPOSITE, nullptr while another child or
-    // none lives
-    template<composite COMPOSITE>
-    [[nodiscard]] child_of<COMPOSITE> const* childOf() const
-    {
-        return std::get_if<child_of<COMPOSITE>>(&children_);
-    }
-
-    // Only the composite states with T somewhere below ask their child
-    template<concepts::annotation T, typename PARENT>
-    void annotationOfActiveChild(PARENT const& parent, std::optional<T>& annotation) const
-    {
-        using nesting_carriers = mtl::filter_t<COMPOSITES, nesting_carrier<T>::template pred>;
-        [&]<typename... NESTINGs>(mtl::typelist<NESTINGs...>) {
-            static_cast<void>(
-                ((parent.template is<NESTINGs>() &&
-                  (annotation = childOf<NESTINGs>()->template annotation<T>(),
-                   true)) ||
-                 ...));
-        }(nesting_carriers{});
-    }
-
-private:
-    template<typename T>
-    static constexpr bool is_child = !std::is_same_v<T, std::monostate>;
-
-    // The children are dispatched by the alternative that lives, not by
-    // the composite state: two composites sharing a child machine share
-    // its arm - one per distinct child, in every event's dispatch and
-    // in the one leave body
-    template<typename PARENT, concepts::event EVENT>
-    reaction reactInActiveChild([[maybe_unused]] PARENT& parent,
-                                [[maybe_unused]] EVENT const& event)
-    {
-        if constexpr (mtl::empty_v<COMPOSITES>) {
-            return reaction::none;
-        } else {
-            return internal::visit(
-                [&](auto& child) {
-                    if constexpr (is_child<std::decay_t<decltype(child)>>) {
-                        return reactIn(parent, child, event);
-                    } else {
-                        return reaction::none;
-                    }
-                },
-                children_);
-        }
-    }
-
-    // Whatever the child does happens in place for the parent machine -
-    // unless it entered a state whose emitted event moves the parent on
+    // machine's own table. Whatever the child does happens in place for
+    // the parent - unless it entered a state whose emitted event moves
+    // the parent on. One body per distinct child machine: two
+    // composites sharing a child share it
     template<typename PARENT, typename CHILD, concepts::event EVENT>
-    reaction reactIn(PARENT& parent, CHILD& child, EVENT const& event)
+    static reaction reactIn(PARENT& parent, CHILD& child, EVENT const& event)
     {
         reaction const of_child = child.processWithReaction(event);
         if (of_child == reaction::state_entered &&
@@ -278,6 +276,7 @@ private:
         return of_child == reaction::none ? reaction::none : reaction::in_place;
     }
 
+private:
     // The emitting states a child can be in: those its owning composite
     // states can reach from where each starts it
     template<typename CHILD>
@@ -300,8 +299,8 @@ private:
     // machine's own table. The reaction may destroy the child: the fold
     // stops at the first match
     template<typename PARENT, typename CHILD>
-    reaction reactToEmittedEvent([[maybe_unused]] PARENT& parent,
-                                 [[maybe_unused]] CHILD const& child)
+    static reaction reactToEmittedEvent([[maybe_unused]] PARENT& parent,
+                                        [[maybe_unused]] CHILD const& child)
     {
         reaction result = reaction::none;
         [&]<typename... EMITTINGs>(mtl::typelist<EMITTINGs...>) {
@@ -312,36 +311,6 @@ private:
         }(emitting_states_of_t<CHILD>{});
         return result;
     }
-
-    // Whichever child lives leaves its active state, innermost first,
-    // and is destroyed: one body for every composite state
-    void leaveActiveChild()
-        requires(!mtl::empty_v<COMPOSITES>)
-    {
-        [[maybe_unused]] bool const left = internal::visit(
-            [](auto& child) {
-                if constexpr (is_child<std::decay_t<decltype(child)>>) {
-                    child.leaveActiveState();
-                    return true;
-                } else {
-                    return false;
-                }
-            },
-            children_);
-#if MTL_FSM_CHECKS
-        MTL_FSM_ASSERT(left, "fsm: composite state active without its submachine");
-#endif
-        children_.template emplace<std::monostate>();
-    }
-
-    // One alternative per distinct child machine, std::monostate while
-    // no composite state is active; nothing in a table without one
-    using child_variant =
-        mtl::rebind_t<mtl::prepend_t<std::monostate, mtl::unique_t<CHILD_MACHINES>>, std::variant>;
-    using child_storage =
-        std::conditional_t<mtl::empty_v<COMPOSITES>, mtl::nil_type, child_variant>;
-
-    [[no_unique_address]] child_storage children_{};
 };
 
 } // namespace fsm::internal

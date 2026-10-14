@@ -185,15 +185,17 @@ public:
         }(contexts_of_t<STATE>{});
     }
 
-    // Arguments constructing STATE in place inside a variant: the
-    // in_place tag and its contexts. The tuple round-trip through
-    // make_from_tuple is free: its prvalue is elided into the variant
-    // (measured GCC 15 -Os: direct stores, no tuple, no move)
-    template<concepts::state STATE>
+    // Arguments constructing STATE in place inside a variant, as the
+    // alternative ALTERNATIVE (the state itself, or a composite state
+    // with its child machine behind it): the in_place tag and the
+    // state's contexts. The tuple round-trip through make_from_tuple
+    // is free: its prvalue is elided into the variant (measured GCC 15
+    // -Os: direct stores, no tuple, no move)
+    template<concepts::state STATE, concepts::state ALTERNATIVE = STATE>
     auto initialArgumentsOf()
     {
         return [this]<typename... CONTEXTs>(mtl::typelist<CONTEXTs...>) {
-            return std::forward_as_tuple(std::in_place_type<STATE>,
+            return std::forward_as_tuple(std::in_place_type<ALTERNATIVE>,
                                          contextIn<CONTEXTs>(contexts_)...);
         }(contexts_of_t<STATE>{});
     }

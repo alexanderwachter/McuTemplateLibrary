@@ -242,8 +242,9 @@
  *   Guards.hpp      the guards of a transition: who answers them,
  *                   whether they hold for an event
  *   Contexts.hpp    a machine's own and inherited context instances
- *   Submachines.hpp the child machine of the active composite state:
- *                   entered and left with it, the first to react
+ *   Submachines.hpp the child machine a composite state holds in its
+ *                   alternative of the state variant: entered and
+ *                   left with it, the first to react
  *   Visit.hpp       the visit of the active state: a fold, not std::visit
  *   Checks.hpp      the debug checks: MTL_FSM_CHECKS, MTL_FSM_ASSERT
  */

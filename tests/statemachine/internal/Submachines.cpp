@@ -86,14 +86,28 @@ namespace Submachines {
     using of_shared = fsm::internal::Submachines<mtl::typelist<active, wrapper>,
                                                  mtl::typelist<inner_machine, inner_machine>>;
 
-    // the child of each composite; a flat table stores nothing, two
-    // composites with the same child machine share one alternative
+    // the child of each composite; two composites with the same
+    // sub-table share one child machine type
     static_assert(std::is_same_v<of_outer::child_of<active>, inner_machine>);
     static_assert(std::is_same_v<of_shared::child_of<wrapper>, inner_machine>);
     static_assert(of_outer::has_composite<active>);
     static_assert(!of_outer::has_composite<wrapper>);
     static_assert(std::is_empty_v<of_flat>);
-    static_assert(sizeof(of_shared) == sizeof(of_outer));
+
+    // what the state variant holds: a plain state as it is, a
+    // composite state with its child machine behind it - still the
+    // state (derived, its constructors inherited) and still a state
+    using active_alternative = fsm::internal::StateWithSubmachine<active, inner_machine>;
+    static_assert(std::is_same_v<of_outer::alternative_t<idle>, idle>);
+    static_assert(std::is_same_v<of_outer::alternative_t<active>, active_alternative>);
+    static_assert(std::is_base_of_v<active, active_alternative>);
+    static_assert(fsm::concepts::state<active_alternative>);
+    static_assert(std::is_same_v<fsm::internal::plain_state_t<active_alternative>, active>);
+    static_assert(std::is_same_v<fsm::internal::plain_state_t<idle>, idle>);
+    // the child's room is as trivial as the child: a destructor of its
+    // own on an alternative would cost every state change of the parent
+    static_assert(std::is_trivially_destructible_v<inner_machine>);
+    static_assert(std::is_trivially_destructible_v<active_alternative>);
 
     static_assert(of_outer::no_composite_nests_its_own_table<outer_table>);
     static_assert(!of_outer::no_composite_nests_its_own_table<inner_table>);

@@ -26,6 +26,17 @@ namespace fsm::internal {
 // bytes .text smaller on GCC 15.2 x86-64 -Os (traffic_light.cpp).
 // The visitor answers every alternative with the type it answers the
 // first with
+// The alternative the fold has just matched: std::get_if compares the
+// index once more, and left as a call - which GCC -Os does where an
+// index is matched in many visits - it keeps arms apart that would
+// otherwise be the same code
+template<std::size_t INDEX, typename... ALTERNATIVEs>
+[[gnu::always_inline, gnu::flatten]] inline auto&
+matchedAlternative(std::variant<ALTERNATIVEs...>& variant)
+{
+    return *std::get_if<INDEX>(&variant);
+}
+
 template<typename VISITOR, typename FIRST, typename... ALTERNATIVEs>
 constexpr auto visit(VISITOR&& visitor, std::variant<FIRST, ALTERNATIVEs...>& variant)
 {
@@ -33,7 +44,7 @@ constexpr auto visit(VISITOR&& visitor, std::variant<FIRST, ALTERNATIVEs...>& va
     return [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
         result_type result{};
         static_cast<void>(((variant.index() == INDEXs &&
-                            (result = visitor(*std::get_if<INDEXs>(&variant)), true)) ||
+                            (result = visitor(matchedAlternative<INDEXs>(variant)), true)) ||
                            ...));
         return result;
     }(std::index_sequence_for<FIRST, ALTERNATIVEs...>{});

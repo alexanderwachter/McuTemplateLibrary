@@ -193,19 +193,27 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
 - Hierarchy: a state declaring `using submachine = sub_table;`
   (`internal::composite`, `submachine_t`) owns a `StateMachine<
   internal::nested<sub_table, depth + 1>, OBSERVERs...>` while active.
-  The parent keeps the active child in one `std::variant<std::monostate,
-  children...>` next to its state variant (`submachines_`, an
-  `internal::Submachines`, below; empty in a flat table), constructs it
-  in `enterSubmachine<STATE>` after the entry and
-  transition hooks (constructor, `doTransition`, `enterStateAfterWildcard`), and
-  tears it down first thing in `leaveState<OLD, NEW>` via the child's private
-  `leaveActiveState()` - the active state left with `TO = nil_type`,
-  innermost first (`Submachines` is a friend of the machine).
-  A root's destructor still runs no hooks. Dispatch: public `process`
-  is `processWithReaction(event) != reaction::none`;
-  `processWithReaction` = `submachines_.react` (the active composite's
-  child processes the event first) then `processInThisTable`
-  (guarded, unguarded, wildcards). `internal::reaction {none, in_place,
+  The parent holds the child inside the composite state's alternative
+  of its state variant (2026-10-14: `internal::StateWithSubmachine<
+  STATE, CHILD>`, derived from STATE with its constructors inherited,
+  the child in a union of its own; `alternative_t<STATE>` and
+  `internal::plain_state_t<ALTERNATIVE>` map between the two, `is<>` /
+  `getIf<>` answer for the plain state), constructs it in
+  `enterSubmachine<STATE>` after the entry and transition hooks
+  (constructor, `doTransition`, `enterStateAfterWildcard`), and leaves
+  it first thing in `leaveState<OLD, NEW>(state)` via the child's
+  private `leaveActiveState()` - the active state left with `TO =
+  nil_type`, innermost first; the child object itself goes with the
+  alternative at the next emplace (the wrapper is a friend of the
+  machine for the leave, `Submachines` for the dispatch). A root's
+  destructor still runs no hooks. Dispatch: public `process` is
+  `processWithReaction(event) != reaction::none`;
+  `processWithReaction` is ONE visit of the active state: a composite's
+  arm asks its child first (`Submachines::reactIn`), every arm then
+  this table (`reactInThisTable`: guarded, unguarded, wildcards), a
+  wildcard's target is entered after the visit (`completeWildcard`);
+  `processInThisTable` is the same visit without the child, for the
+  event a child emits. `internal::reaction {none, in_place,
   state_entered}` is the child's answer to its parent. Every event
   enters at the root, timer expiries included: `fsm::is_local_event`
   (`timeout`, `deadline`, user-specializable) belongs to one level and
@@ -388,17 +396,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   the machine (the author's decision: the no-friend rule came from
   those): it calls a child's private `processWithReaction()` and
   `leaveActiveState()` and the parent's `processInThisTable()`; the
-  machines no longer befriend each other. statemachine/StateMachine.hpp asks it three
-  things: `react(parent, event)` (the active composite's child first;
-  a local event does not descend, `passedDown` strips a decoration;
-  private `reactInActiveChild`, `reactInChildOf`,
-  `reactToEmittedEvent`), `enterWith<STATE>(contexts, observers)` and
-  `leaveWith<STATE>()` (no-ops for a plain state; `activeChildOf` holds
-  the `MTL_FSM_CHECKS` assert). Queries: `childOf<COMPOSITE>()` behind
-  the public `submachine<>()` (now returning `auto const*`),
-  `annotationOfActiveChild<T>(parent, optional&)`. Storage: one variant
-  alternative per distinct child machine, `nil_type` without
-  composites (the class is empty). Questions under the machine's
+  machines no longer befriend each other. Since 2026-10-14 (below) it
+  holds nothing: statemachine/StateMachine.hpp asks it for the
+  alternative of a state (`alternative<STATE>` / `alternative_t`) and
+  for `reactIn(parent, child, event)` (static; private
+  `reactToEmittedEvent`); the machine itself strips a decoration with
+  `passedDown`, keeps a local event from descending, and answers
+  `submachine<>()` (`auto const*`) and `annotation<T>()` across levels
+  (`activeComposite<COMPOSITE>()`, `annotationOfActiveChild<T>`). Questions under the machine's
   static_asserts: `no_composite_nests_its_own_table<TABLE>`,
   `annotations_exclusive_per_level`,
   `emitted_events_default_constructible<TABLE>`,
@@ -447,6 +452,41 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   over CHILD_MACHINES) - the compiler folds those arms already; the
   remaining per-event cost in the queue drain is the descent for the
   events the children do take.
+  The composite owns its child (2026-10-14, branch
+  `composite-owns-child`): the second variant is gone, the child lives
+  in `internal::StateWithSubmachine<STATE, CHILD>`, the composite
+  state's alternative of the state variant (derives from STATE, `using
+  STATE::STATE`; the child in a named union `child_storage` with an
+  empty constructor and destructor - an anonymous union with a
+  non-trivial member deletes the inherited constructors - constructed
+  by `enterChild(contexts, observers)` with `std::construct_at`, left
+  by `leaveChild()`, destroyed with the wrapper; both destructors are
+  `requires std::is_trivially_destructible_v<CHILD>` defaulted, so a
+  trivially destructible child keeps the parent's variant trivially
+  destructible - a destructor of its own on an alternative put the
+  variant's destructor dispatch into every emplace: +632 B on
+  pd_drp). The root's per-event visit (`processWithReaction`) asks the
+  child in the composite's own arm, one visit instead of two. Measured
+  on the firmware's pd_drp (six composites over three child machines,
+  baseline 64 672 B / 13 336 B): `std::optional<CHILD>` as the room
+  66 236 B, the union 65 728 B - the per-composite arm costs where the
+  children variant had one arm per child type - until the visit's
+  alternative access stopped being a call: `internal::
+  matchedAlternative<INDEX>` (`[[gnu::always_inline, gnu::flatten]]`
+  around `std::get_if`, Visit.hpp) 63 616 B / 13 240 B, while the same
+  access on the old design gives 64 364 B / 13 336 B. GCC -Os had left
+  `std::get_if<I>` out of line for an index matched in many visits
+  (68 helper functions, 75 call sites in one drain), which kept the two
+  arms of composites sharing a child from being the same code. So the
+  design wins 748 B flash and 96 B RAM on equal footing, and the fold
+  change 308 B on its own; the queue drain lost 2.5 kB, the root's
+  composite arms cost 1.9 kB. Host compile of the firmware's
+  pd_drp.cpp 15.5 s / 1 745 MB GGC against 16.1 s / 1 687 MB,
+  compliance.cpp 4.3 s / 697 MB against 4.9 s / 696 MB. Tried and
+  reverted: `[[gnu::noinline]]` on `reactIn` (-32 B with the optional,
+  +24 B with the union), a fold testing `std::get_if<I> != nullptr`
+  in place of `index() == I` (81 472 B: the ignoring arms no longer
+  merge).
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine

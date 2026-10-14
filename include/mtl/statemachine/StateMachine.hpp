@@ -33,9 +33,13 @@ namespace fsm {
 
 template<concepts::transition_table TRANSITION_TABLE, concepts::observer... OBSERVERs>
 class StateMachine {
-    // drives and leaves the child machines, for their parent
+    // drives the child machines and takes their emitted events, for
+    // their parent
     template<mtl::concepts::typelist, mtl::concepts::typelist>
     friend class internal::Submachines;
+    // a composite state's alternative leaves its child machine
+    template<internal::composite, typename>
+    friend class internal::StateWithSubmachine;
 
 public:
     // --- the tables and states of the machine -------------------------------
@@ -61,7 +65,8 @@ public:
     explicit StateMachine(OBSERVERs&... observers)
         : observers_(observers...),
           current_(std::make_from_tuple<state_variant>(
-              contexts_.template initialArgumentsOf<initial_state>()))
+              contexts_
+                  .template initialArgumentsOf<initial_state, alternative_t<initial_state>>()))
     {
         enterInitialState();
     }
@@ -76,7 +81,7 @@ public:
                  internal::InjectedObservers<OBSERVERs...> const& observers)
         : contexts_(parent_contexts), observers_(observers),
           current_(std::make_from_tuple<state_variant>(
-              contexts_.template initialArgumentsOf<FIRST>()))
+              contexts_.template initialArgumentsOf<FIRST, alternative_t<FIRST>>()))
     {
         enterInitialState<FIRST>();
     }
@@ -100,7 +105,7 @@ public:
     template<concepts::state STATE>
     [[nodiscard]] bool is() const
     {
-        return std::holds_alternative<STATE>(current_);
+        return std::holds_alternative<alternative_t<STATE>>(current_);
     }
 
     // Does the machine rest in a state the table marks final<>?
@@ -116,7 +121,7 @@ public:
     template<concepts::state STATE>
     [[nodiscard]] STATE const* getIf() const
     {
-        return std::get_if<STATE>(&current_);
+        return std::get_if<alternative_t<STATE>>(&current_);
     }
 
     // The child machine of COMPOSITE while that state is active,
@@ -126,7 +131,8 @@ public:
     {
         static_assert(submachines::template has_composite<COMPOSITE>,
                       "StateMachine::submachine: not a composite state of this table");
-        return is<COMPOSITE>() ? submachines_.template childOf<COMPOSITE>() : nullptr;
+        auto const* composite = activeComposite<COMPOSITE>();
+        return composite != nullptr ? &composite->child() : nullptr;
     }
 
     // The annotation element T of the active state, or of the active
@@ -137,7 +143,7 @@ public:
         static_assert(annotation_in_table_v<table, T>,
                       "StateMachine::annotation: no state of the table carries this annotation");
         std::optional<T> result = annotationOfActiveState<T>();
-        submachines_.annotationOfActiveChild(*this, result);
+        annotationOfActiveChild(result);
         return result;
     }
 
@@ -150,10 +156,9 @@ public:
 private:
     // --- the parts of the machine -------------------------------------------
 
-    using TRANSITIONS   = enabled_table;
-    using state_variant = mtl::rebind_t<typename TRANSITIONS::states, std::variant>;
-    using final_states  = typename TRANSITIONS::final_states;
-    using reaction      = internal::reaction;
+    using TRANSITIONS  = enabled_table;
+    using final_states = typename TRANSITIONS::final_states;
+    using reaction     = internal::reaction;
 
     using injected_observers = internal::InjectedObservers<OBSERVERs...>;
     using injected           = typename injected_observers::observer_list;
@@ -173,52 +178,88 @@ private:
     using child_machines = mtl::transform_t<composites, child_machine_of>;
     using submachines    = internal::Submachines<composites, child_machines>;
 
+    // A state as the state variant holds it: itself, or - a composite
+    // state - with its child machine behind it
+    template<concepts::state STATE>
+    using alternative_t = typename submachines::template alternative_t<STATE>;
+
+    using state_variant = mtl::rebind_t<
+        mtl::transform_t<typename TRANSITIONS::states, submachines::template alternative>,
+        std::variant>;
+
     // --- an event arrives ---------------------------------------------------
 
     // The active composite state's child machine first, then this
-    // machine's own table
+    // machine's own table: one visit of the active state does both. A
+    // local event (fsm::timeout) belongs to one level and does not
+    // descend
     template<concepts::event EVENT>
     reaction processWithReaction(EVENT const& event)
     {
         beginProcessing();
-        reaction result = submachines_.react(*this, event);
-        if (result == reaction::none) {
-            result = processInThisTable(event);
-        }
+        std::size_t const outcome = internal::visit(
+            [this, &event](auto& state) -> std::size_t {
+                using state_type = internal::plain_state_t<std::decay_t<decltype(state)>>;
+                if constexpr (internal::composite<state_type> && !local_event_v<EVENT>) {
+                    if (reaction const of_child = submachines::reactIn(
+                            *this, state.child(), internal::passedDown(event));
+                        of_child != reaction::none) {
+                        return static_cast<std::size_t>(of_child);
+                    }
+                }
+                return reactInThisTable<state_type>(state, event);
+            },
+            current_);
+        reaction const result = completeWildcard(outcome, event);
         endProcessing();
         return result;
     }
 
-    // The active state's guarded alternatives in table order, then its
-    // unguarded one; without that, the wildcards - never from a final
-    // state. A wildcard only exits inside the visitor, where the state
-    // left is known, and enters its target afterwards
+    // This machine's own table alone: for the event a child's state emits
     template<concepts::event EVENT>
     reaction processInThisTable(EVENT const& event)
     {
-        using wildcards = wildcard_transitions_t<TRANSITIONS, EVENT>;
         std::size_t const outcome = internal::visit(
             [this, &event](auto& state) -> std::size_t {
-                using state_type = std::decay_t<decltype(state)>;
-                using own        = exact_transitions_t<TRANSITIONS, state_type, EVENT>;
-                using guarded    = mtl::filter_t<own, internal::is_guarded>;
-                using unguarded  = mtl::find_if_t<own, internal::is_unguarded>;
-                if constexpr (!mtl::empty_v<guarded>) {
-                    if (reaction const fired = doFirstAllowedTransition(guarded{}, state, event);
-                        fired != reaction::none) {
-                        return static_cast<std::size_t>(fired);
-                    }
-                }
-                if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
-                    return static_cast<std::size_t>(doTransition<unguarded>(state, event));
-                } else if constexpr (!mtl::empty_v<wildcards> &&
-                                     !mtl::has_a_v<final_states, state_type>) {
-                    return leaveStateForFirstAllowedWildcard(wildcards{}, state, event);
-                } else {
-                    return static_cast<std::size_t>(reaction::none);
-                }
+                using state_type = internal::plain_state_t<std::decay_t<decltype(state)>>;
+                return reactInThisTable<state_type>(state, event);
             },
             current_);
+        return completeWildcard(outcome, event);
+    }
+
+    // The active state's guarded alternatives in table order, then its
+    // unguarded one; without that, the wildcards - never from a final
+    // state. A wildcard only exits here, where the state left is
+    // known, and answers exited_for_wildcard + its index
+    template<concepts::state STATE, concepts::event EVENT>
+    std::size_t reactInThisTable(alternative_t<STATE>& state, EVENT const& event)
+    {
+        using wildcards = wildcard_transitions_t<TRANSITIONS, EVENT>;
+        using own       = exact_transitions_t<TRANSITIONS, STATE, EVENT>;
+        using guarded   = mtl::filter_t<own, internal::is_guarded>;
+        using unguarded = mtl::find_if_t<own, internal::is_unguarded>;
+        if constexpr (!mtl::empty_v<guarded>) {
+            if (reaction const fired = doFirstAllowedTransition<STATE>(guarded{}, state, event);
+                fired != reaction::none) {
+                return static_cast<std::size_t>(fired);
+            }
+        }
+        if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
+            return static_cast<std::size_t>(doTransition<unguarded, STATE>(state, event));
+        } else if constexpr (!mtl::empty_v<wildcards> && !mtl::has_a_v<final_states, STATE>) {
+            return leaveStateForFirstAllowedWildcard<STATE>(wildcards{}, state, event);
+        } else {
+            return static_cast<std::size_t>(reaction::none);
+        }
+    }
+
+    // What the visit of the active state answered, as a reaction: a
+    // wildcard's target is still to be entered
+    template<concepts::event EVENT>
+    reaction completeWildcard(std::size_t outcome, EVENT const& event)
+    {
+        using wildcards = wildcard_transitions_t<TRANSITIONS, EVENT>;
         if constexpr (!mtl::empty_v<wildcards>) {
             if (outcome >= StateMachine::exited_for_wildcard) {
                 // the state left is still the current one: its index names it
@@ -235,18 +276,19 @@ private:
     // The state reference dangles once a transition fired: the fold
     // stops there
     template<concepts::state STATE, concepts::transition... GUARDEDs, concepts::event EVENT>
-    reaction doFirstAllowedTransition(mtl::typelist<GUARDEDs...>, STATE& state, EVENT const& event)
+    reaction doFirstAllowedTransition(mtl::typelist<GUARDEDs...>, alternative_t<STATE>& state,
+                                      EVENT const& event)
     {
         reaction result = reaction::none;
         static_cast<void>(
-            ((guards::template allow<GUARDEDs>(observers_, state, event) &&
-              (result = doTransition<GUARDEDs>(state, event), true)) ||
+            ((guards::template allow<GUARDEDs, STATE>(observers_, state, event) &&
+              (result = doTransition<GUARDEDs, STATE>(state, event), true)) ||
              ...));
         return result;
     }
 
     template<concepts::transition TRANSITION, concepts::state STATE, concepts::event EVENT>
-    reaction doTransition(STATE& state, EVENT const& event)
+    reaction doTransition(alternative_t<STATE>& state, EVENT const& event)
     {
         using TO_STATE = typename TRANSITION::to;
         if constexpr (internal::is_internal_v<TRANSITION>) {
@@ -254,9 +296,9 @@ private:
                           "internal transition: the state must provide handle(EVENT const&)");
             state.handle(event);
         } else if constexpr (internal::payload_constructible_v<TO_STATE, EVENT>) {
-            changeState<STATE, TO_STATE>(event);
+            changeState<STATE, TO_STATE>(state, event);
         } else {
-            changeState<STATE, TO_STATE>();
+            changeState<STATE, TO_STATE>(state);
         }
         notifyObservers<STATE, EVENT, TO_STATE>();
         enterSubmachine<TO_STATE>();
@@ -265,18 +307,18 @@ private:
 
     // Instantiated per (edge, event), for targets built from the event
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, concepts::event EVENT>
-    void changeState(EVENT const& event)
+    void changeState(alternative_t<OLD_STATE>& state, EVENT const& event)
     {
-        leaveState<OLD_STATE, NEW_STATE>();
+        leaveState<OLD_STATE, NEW_STATE>(state);
         emplaceNewState<NEW_STATE>(event);
         enterState<OLD_STATE, NEW_STATE>();
     }
 
     // Instantiated once per edge, shared by every event triggering it
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
-    void changeState()
+    void changeState(alternative_t<OLD_STATE>& state)
     {
-        leaveState<OLD_STATE, NEW_STATE>();
+        leaveState<OLD_STATE, NEW_STATE>(state);
         emplaceNewState<NEW_STATE>();
         enterState<OLD_STATE, NEW_STATE>();
     }
@@ -296,14 +338,14 @@ private:
 
     // Runs the exit hooks of STATE for the first wildcard its guards allow
     template<concepts::state STATE, concepts::transition... WILDCARDs, concepts::event EVENT>
-    std::size_t leaveStateForFirstAllowedWildcard(mtl::typelist<WILDCARDs...>, STATE& state,
-                                                  EVENT const& event)
+    std::size_t leaveStateForFirstAllowedWildcard(mtl::typelist<WILDCARDs...>,
+                                                  alternative_t<STATE>& state, EVENT const& event)
     {
         std::size_t outcome = static_cast<std::size_t>(reaction::none);
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
-                ((guards::template allow<WILDCARDs>(observers_, state, event) &&
-                  (leaveState<STATE, typename WILDCARDs::to>(),
+                ((guards::template allow<WILDCARDs, STATE>(observers_, state, event) &&
+                  (leaveState<STATE, typename WILDCARDs::to>(state),
                    outcome = StateMachine::exited_for_wildcard + INDEXs, true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
@@ -341,9 +383,11 @@ private:
 
     // A composite state's child machine is left before the state itself
     template<concepts::state OLD_STATE, concepts::state NEW_STATE>
-    void leaveState()
+    void leaveState([[maybe_unused]] alternative_t<OLD_STATE>& state)
     {
-        submachines_.template leaveWith<OLD_STATE>();
+        if constexpr (internal::composite<OLD_STATE>) {
+            state.leaveChild();
+        }
         observers_.template deliverExitHooks<OLD_STATE, NEW_STATE>(*this);
     }
 
@@ -352,7 +396,7 @@ private:
     {
         std::apply(
             [&](auto&... state_contexts) {
-                current_.template emplace<NEW_STATE>(args..., state_contexts...);
+                current_.template emplace<alternative_t<NEW_STATE>>(args..., state_contexts...);
             },
             contexts_.template contextsOf<NEW_STATE>());
     }
@@ -374,7 +418,23 @@ private:
     template<concepts::state STATE>
     void enterSubmachine()
     {
-        submachines_.template enterWith<STATE>(contexts_, observers_);
+        if constexpr (internal::composite<STATE>) {
+            activeComposite<STATE>()->enterChild(contexts_, observers_);
+        }
+    }
+
+    // The composite state's alternative while that state is active,
+    // nullptr otherwise
+    template<internal::composite COMPOSITE>
+    [[nodiscard]] alternative_t<COMPOSITE>* activeComposite()
+    {
+        return std::get_if<alternative_t<COMPOSITE>>(&current_);
+    }
+
+    template<internal::composite COMPOSITE>
+    [[nodiscard]] alternative_t<COMPOSITE> const* activeComposite() const
+    {
+        return std::get_if<alternative_t<COMPOSITE>>(&current_);
     }
 
     // --- the first state entered, the last one left -------------------------
@@ -395,7 +455,8 @@ private:
         beginProcessing();
         internal::visit(
             [this](auto& state) {
-                leaveState<std::decay_t<decltype(state)>, mtl::nil_type>();
+                using state_type = internal::plain_state_t<std::decay_t<decltype(state)>>;
+                leaveState<state_type, mtl::nil_type>(state);
                 return true;
             },
             current_);
@@ -403,6 +464,21 @@ private:
     }
 
     // --- annotation query ---------------------------------------------------
+
+    // Only the composite states with T somewhere below ask their child
+    template<concepts::annotation T>
+    void annotationOfActiveChild(std::optional<T>& annotation) const
+    {
+        using nesting_carriers =
+            mtl::filter_t<composites, internal::nesting_carrier<T>::template pred>;
+        [&]<internal::composite... NESTINGs>(mtl::typelist<NESTINGs...>) {
+            static_cast<void>(
+                ((activeComposite<NESTINGs>() != nullptr &&
+                  (annotation = activeComposite<NESTINGs>()->child().template annotation<T>(),
+                   true)) ||
+                 ...));
+        }(nesting_carriers{});
+    }
 
     // A compare chain over the states carrying T, each yielding its constant
     template<concepts::annotation T>
@@ -512,7 +588,6 @@ private:
     bool processing_ = false;
 #endif
     state_variant current_;
-    [[no_unique_address]] submachines submachines_{};
 };
 
 } // namespace fsm
