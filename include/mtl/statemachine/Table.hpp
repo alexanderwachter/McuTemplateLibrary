@@ -344,6 +344,28 @@ using submachine_t = typename submachine<STATE>::type;
 template<concepts::state STATE>
 struct is_composite : std::bool_constant<composite<STATE>> {};
 
+// A composite state may name where its submachine starts, in place of
+// the sub-table's initial state:
+//   using initial = resume_here;
+// Two composite states sharing one sub-table then share one child
+// machine and enter it at different states - one table, two entries
+template<typename STATE>
+concept starting = composite<STATE> && requires { typename STATE::initial; } &&
+                   concepts::state<typename STATE::initial>;
+
+// The state a composite's child machine starts at, the sub-table given
+// as the observers enable it
+template<composite STATE, concepts::transition_table ENABLED_SUBMACHINE>
+struct submachine_initial
+    : std::type_identity<mtl::front_t<typename ENABLED_SUBMACHINE::states>> {};
+
+template<starting STATE, concepts::transition_table ENABLED_SUBMACHINE>
+struct submachine_initial<STATE, ENABLED_SUBMACHINE>
+    : std::type_identity<typename STATE::initial> {};
+
+template<composite STATE, concepts::transition_table ENABLED_SUBMACHINE>
+using submachine_initial_t = typename submachine_initial<STATE, ENABLED_SUBMACHINE>::type;
+
 // The table a parent machine builds its child machine from: the
 // sub-table itself plus the child's nesting depth (the root is 0),
 // which the timer observers use to pick their timer slot, and the

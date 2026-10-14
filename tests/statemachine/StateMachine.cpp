@@ -1127,17 +1127,32 @@ struct active {
     static constexpr auto timeout     = 100ms;
     static constexpr auto annotations = fsm::annotate(power{true});
 };
+// a second composite over the same sub-table, starting it where it says
+struct resumed {
+    using submachine = inner_table;
+    using initial    = high;
+    static constexpr auto annotations = fsm::annotate(power{true});
+};
 struct done {};
 
 struct reset {};
+struct resume {};
 
 struct outer_table : fsm::transition_table<
-    fsm::transition<fsm::from<idle>,   fsm::on<go>,           fsm::to<active>>,
-    fsm::transition<fsm::from<active>, fsm::on<stop>,         fsm::to<done>>,
-    fsm::transition<fsm::from<active>, fsm::on<fsm::timeout>, fsm::to<done>>,
-    fsm::transition<fsm::from<active>, fsm::on<tick>,         fsm::to<idle>>, // only when the child refused
-    fsm::transition<fsm::from<done>,   fsm::on<go>,           fsm::to<idle>>,
+    fsm::transition<fsm::from<idle>,    fsm::on<go>,           fsm::to<active>>,
+    fsm::transition<fsm::from<idle>,    fsm::on<resume>,       fsm::to<resumed>>,
+    fsm::transition<fsm::from<active>,  fsm::on<stop>,         fsm::to<done>>,
+    fsm::transition<fsm::from<active>,  fsm::on<fsm::timeout>, fsm::to<done>>,
+    fsm::transition<fsm::from<active>,  fsm::on<tick>,         fsm::to<idle>>, // only when the child refused
+    fsm::transition<fsm::from<resumed>, fsm::on<stop>,         fsm::to<done>>,
+    fsm::transition<fsm::from<done>,    fsm::on<go>,           fsm::to<idle>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<reset>, fsm::to<idle>>> {};
+
+// the initial state a composite names, and the sub-table's own
+static_assert(fsm::internal::starting<resumed>);
+static_assert(!fsm::internal::starting<active>);
+static_assert(std::is_same_v<fsm::internal::submachine_initial_t<active, inner_table>, low>);
+static_assert(std::is_same_v<fsm::internal::submachine_initial_t<resumed, inner_table>, high>);
 
 // Records every hook with the machine it came from - the table's short
 // name tells the level
@@ -1205,6 +1220,18 @@ struct orphaned_outer_table : fsm::transition_table<
 static_assert(fsm::all_states_reachable_v<fsm::transition_table<
                   fsm::transition<fsm::from<idle>, fsm::on<go>, fsm::to<done>>>>);
 static_assert(!fsm::all_states_reachable_v<orphaned_outer_table>);
+// the orphan is reachable once a composite names it as its initial:
+// the sub-table is entered there as well as at its own initial state
+struct from_the_side {
+    using submachine = orphaned_inner_table;
+    using initial    = unreached;
+};
+struct sideways_outer_table : fsm::transition_table<
+    fsm::transition<fsm::from<idle>, fsm::on<resume>, fsm::to<from_the_side>>> {};
+static_assert(fsm::all_states_reachable_v<sideways_outer_table>);
+static_assert(std::is_same_v<fsm::internal::entries_of_t<fsm::all_states_t<sideways_outer_table>,
+                                                         orphaned_inner_table>,
+                             mtl::typelist<low, unreached>>);
 
 inline constexpr fsm::timeout_range active_budget{.min = 50ms, .max = 150ms};
 inline constexpr fsm::timeout_range high_pulse{.min = 5ms, .max = 20ms};
@@ -1252,10 +1279,10 @@ static_assert(std::is_same_v<fsm::nested_tables_t<outer_table>,
                              mtl::typelist<outer_table, inner_table>>);
 static_assert(std::is_same_v<fsm::nested_tables_t<inner_table>, mtl::typelist<inner_table>>);
 static_assert(std::is_same_v<fsm::all_states_t<outer_table>,
-                             mtl::typelist<idle, active, done, low, high>>);
+                             mtl::typelist<idle, active, resumed, done, low, high>>);
 // every level's events, each once (tick is on both levels)
 static_assert(std::is_same_v<fsm::nested_events_t<outer_table>,
-                             mtl::typelist<go, stop, fsm::timeout, tick, reset, inner_only>>);
+                             mtl::typelist<go, resume, stop, fsm::timeout, tick, reset, inner_only>>);
 
 // a table is timed through a timed sub-state alone
 static_assert(fsm::has_timed_states_v<wrapped_table>);
@@ -2632,6 +2659,27 @@ void nestedChildIsConstructedOnEntry()
                                                "enter inner_table:low"}));
 }
 
+void nestedCompositeStartsItsSubmachineWhereItSays()
+{
+    using namespace Nested;
+    recorder rec;
+    level_watcher watcher;
+    nested_machine sm{rec, watcher};
+    rec.log.clear();
+
+    check(sm.process(resume{}));
+    check(sm.is<resumed>());
+    auto const* child = sm.submachine<resumed>();
+    check(child != nullptr && child->is<high>()); // not the sub-table's initial state
+    // both composites run the same child machine
+    static_assert(std::is_same_v<std::decay_t<decltype(*child)>,
+                                 std::decay_t<decltype(*sm.submachine<active>())>>);
+    check(rec.log == (std::vector<std::string>{"exit outer_table:idle", "enter outer_table:resumed",
+                                               "transition outer_table:resumed",
+                                               "enter inner_table:high"}));
+    check(watcher.lamps.back() == lamp{true}); // the entered sub-state's annotation
+}
+
 void nestedChildHandlesEventFirst()
 {
     using namespace Nested;
@@ -3103,6 +3151,7 @@ int statemachineTests()
     declaredObservationsAreValidated();
     deadlineSpansPhaseWithoutRearming();
     nestedChildIsConstructedOnEntry();
+    nestedCompositeStartsItsSubmachineWhereItSays();
     nestedChildHandlesEventFirst();
     nestedUnhandledEventBubblesUp();
     nestedRefusedChildFallsThroughToParent();

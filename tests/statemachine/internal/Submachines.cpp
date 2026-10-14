@@ -137,6 +137,37 @@ namespace Submachines {
     static_assert(!of_job::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
     static_assert(of_flat::every_composite_takes_emitted_events<deaf_table, mtl::nil_type>);
 
+    // ... for the ends its own start can reach: a composite starting the
+    // attempt on its last try owes nothing for the failure it cannot meet
+    struct last_try {};
+    struct retrying_table : fsm::transition_table<
+        fsm::transition<fsm::from<trying>,   fsm::on<go>,   fsm::to<succeeded>>,
+        fsm::transition<fsm::from<trying>,   fsm::on<tick>, fsm::to<failed>>,
+        fsm::transition<fsm::from<last_try>, fsm::on<go>,   fsm::to<succeeded>>,
+        fsm::final<succeeded>,
+        fsm::final<failed>> {};
+    struct retrying {
+        using submachine = retrying_table;
+    };
+    struct last_attempt {
+        using submachine = retrying_table;
+        using initial    = last_try;
+    };
+    struct last_job_table : fsm::transition_table<
+        fsm::transition<fsm::from<idle>,         fsm::on<go>,                fsm::to<retrying>>,
+        fsm::transition<fsm::from<idle>,         fsm::on<tick>,              fsm::to<last_attempt>>,
+        fsm::transition<fsm::from<retrying>,     fsm::on<attempt_succeeded>, fsm::to<done>>,
+        fsm::transition<fsm::from<retrying>,     fsm::on<attempt_failed>,    fsm::to<broken>>,
+        fsm::transition<fsm::from<last_attempt>, fsm::on<attempt_succeeded>, fsm::to<done>>> {};
+    using retrying_machine = fsm::StateMachine<nested<retrying_table, 1>>;
+    using of_last_job      = fsm::internal::Submachines<mtl::typelist<retrying, last_attempt>,
+                                                        mtl::typelist<retrying_machine, retrying_machine>>;
+    static_assert(std::is_same_v<fsm::internal::submachine_emitting_states_t<retrying, mtl::nil_type>,
+                                 mtl::typelist<succeeded, failed>>);
+    static_assert(std::is_same_v<fsm::internal::submachine_emitting_states_t<last_attempt, mtl::nil_type>,
+                                 mtl::typelist<succeeded>>);
+    static_assert(of_last_job::every_composite_takes_emitted_events<last_job_table, mtl::nil_type>);
+
     // a submachine's initial state emits nothing
     struct loud_table : fsm::transition_table<
         fsm::transition<fsm::from<succeeded>, fsm::on<go>, fsm::to<trying>>> {};
@@ -147,4 +178,33 @@ namespace Submachines {
         mtl::typelist<loud>, mtl::typelist<fsm::StateMachine<nested<loud_table, 1>>>>;
     static_assert(of_job::every_submachine_starts_silent<mtl::nil_type>);
     static_assert(!of_loud::every_submachine_starts_silent<mtl::nil_type>);
+
+    // a composite names where its submachine starts: a state of the
+    // sub-table, not a final one, and silent like any initial state
+    struct from_high {
+        using submachine = inner_table;
+        using initial    = high;
+    };
+    struct from_elsewhere {
+        using submachine = inner_table;
+        using initial    = idle;
+    };
+    struct from_the_end {
+        using submachine = attempt_table;
+        using initial    = succeeded;
+    };
+    using of_from_high      = fsm::internal::Submachines<mtl::typelist<from_high>,
+                                                         mtl::typelist<inner_machine>>;
+    using of_from_elsewhere = fsm::internal::Submachines<mtl::typelist<from_elsewhere>,
+                                                         mtl::typelist<inner_machine>>;
+    using of_from_the_end   = fsm::internal::Submachines<mtl::typelist<from_the_end>,
+                                                         mtl::typelist<attempt_machine>>;
+    static_assert(fsm::internal::starting<from_high>);
+    static_assert(!fsm::internal::starting<active>);
+    static_assert(of_outer::every_initial_in_its_submachine<mtl::nil_type>);
+    static_assert(of_from_high::every_initial_in_its_submachine<mtl::nil_type>);
+    static_assert(!of_from_elsewhere::every_initial_in_its_submachine<mtl::nil_type>);
+    static_assert(!of_from_the_end::every_initial_in_its_submachine<mtl::nil_type>);
+    static_assert(of_from_high::every_submachine_starts_silent<mtl::nil_type>);
+    static_assert(!of_from_the_end::every_submachine_starts_silent<mtl::nil_type>);
 } // namespace Submachines

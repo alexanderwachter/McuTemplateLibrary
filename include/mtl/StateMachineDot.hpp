@@ -133,6 +133,9 @@ void writeDotNode(std::ostream& out, bool final_state)
         if constexpr (nesting) {
             out << "<hr/>";
             writeDotRow(out, "submachine " + std::string{label<submachine_t<STATE>>()});
+            if constexpr (internal::starting<STATE>) {
+                writeDotRow(out, "initial " + std::string{label<typename STATE::initial>()});
+            }
         }
         if constexpr (emitting) {
             out << "<hr/>";

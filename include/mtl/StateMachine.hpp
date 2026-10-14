@@ -88,7 +88,11 @@
  * type, so the machines on the way do not react to it. The timer
  * observers and the queued machine do the decorating.
  * There is no history: a transition to a composite state
- * restarts its child at the child's initial state. The child is a
+ * restarts its child at the child's initial state - the sub-table's,
+ * or the one the composite state names with `using initial = S;` (a
+ * state of the sub-table, not a final one, emitting nothing). Two
+ * composite states sharing one sub-table share one child machine and
+ * enter it at different states: one table, two entries. The child is a
  * real StateMachine with the same observers, its `table` the
  * sub-table and its `depth` one more than the parent's; the parent's
  * submachine<STATE>() is getIf() for the nested level, and

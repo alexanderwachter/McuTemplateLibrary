@@ -53,6 +53,25 @@ using reachable_states_t =
     typename reachable_closure<mtl::typelist<mtl::front_t<typename TABLE::states>>,
                                typename TABLE::transitions>::type;
 
+// The states a sub-table is entered at: its own initial state, and
+// what every composite state owning it - anywhere in the hierarchy -
+// names as its initial
+template<concepts::transition_table TABLE>
+struct owning_and_starting {
+    template<concepts::state STATE>
+    struct pred
+        : std::bool_constant<starting<STATE> && std::is_same_v<submachine_t<STATE>, TABLE>> {};
+};
+
+template<concepts::state STATE>
+struct initial_of : std::type_identity<typename STATE::initial> {};
+
+template<mtl::concepts::typelist ALL_STATES, concepts::transition_table TABLE>
+using entries_of_t = mtl::unique_t<mtl::prepend_t<
+    mtl::front_t<typename TABLE::states>,
+    mtl::transform_t<mtl::filter_t<ALL_STATES, owning_and_starting<TABLE>::template pred>,
+                     initial_of>>>;
+
 } // namespace internal
 
 // Whether the table's transitions can take the machine from its
@@ -66,21 +85,24 @@ inline constexpr bool is_reachable_v = is_reachable<TABLE, STATE>::value;
 
 namespace internal {
 
-template<concepts::transition_table TABLE>
-struct reachable_in {
-    template<concepts::state STATE>
-    struct pred : is_reachable<TABLE, STATE> {};
+// Every state of TABLE lies in the closure of its entries; ALL_STATES
+// is the whole hierarchy, where the composites owning TABLE are found
+template<mtl::concepts::typelist ALL_STATES>
+struct every_state_reachable_in {
+    template<concepts::transition_table TABLE>
+    struct pred
+        : std::bool_constant<mtl::all_of_v<
+              typename TABLE::states,
+              member_of<typename reachable_closure<entries_of_t<ALL_STATES, TABLE>,
+                                                   typename TABLE::transitions>::type>::
+                  template pred>> {};
 };
-
-template<concepts::transition_table TABLE>
-struct every_state_reachable_in
-    : std::bool_constant<
-          mtl::all_of_v<typename TABLE::states, reachable_in<TABLE>::template pred>> {};
 
 } // namespace internal
 
 // Proves every state of the table reachable from the initial state -
-// and every sub-state from its submachine's initial state. A state
+// and every sub-state from its submachine's entries: the sub-table's
+// initial state and what its composite states name as theirs. A state
 // that only appears as a transition source is dead code the machine
 // can never enter - typically a leftover of a table edit.
 // Assert next to the table (and probe individual states with
@@ -88,8 +110,9 @@ struct every_state_reachable_in
 //   static_assert(fsm::all_states_reachable_v<my_table>);
 template<concepts::transition_table TABLE>
 struct all_states_reachable
-    : std::bool_constant<
-          mtl::all_of_v<nested_tables_t<TABLE>, internal::every_state_reachable_in>> {};
+    : std::bool_constant<mtl::all_of_v<
+          nested_tables_t<TABLE>,
+          internal::every_state_reachable_in<all_states_t<TABLE>>::template pred>> {};
 
 template<concepts::transition_table TABLE>
 inline constexpr bool all_states_reachable_v = all_states_reachable<TABLE>::value;

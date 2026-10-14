@@ -67,14 +67,18 @@ public:
     }
 
     // A child machine, built by its parent with the contexts it inherits
-    template<mtl::concepts::typelist PARENT_DECLARED, mtl::concepts::typelist PARENT_INHERITED>
-    StateMachine(internal::MachineContexts<PARENT_DECLARED, PARENT_INHERITED>& parent_contexts,
+    // and started at FIRST: the sub-table's initial state, or the one
+    // its composite state names
+    template<concepts::state FIRST, mtl::concepts::typelist PARENT_DECLARED,
+             mtl::concepts::typelist PARENT_INHERITED>
+    StateMachine(std::type_identity<FIRST>,
+                 internal::MachineContexts<PARENT_DECLARED, PARENT_INHERITED>& parent_contexts,
                  internal::InjectedObservers<OBSERVERs...> const& observers)
         : contexts_(parent_contexts), observers_(observers),
           current_(std::make_from_tuple<state_variant>(
-              contexts_.template initialArgumentsOf<initial_state>()))
+              contexts_.template initialArgumentsOf<FIRST>()))
     {
-        enterInitialState();
+        enterInitialState<FIRST>();
     }
 
     // Observers may keep the machine's address beyond a hook
@@ -375,11 +379,12 @@ private:
 
     // --- the first state entered, the last one left -------------------------
 
+    template<concepts::state FIRST = initial_state>
     void enterInitialState()
     {
         beginProcessing();
-        enterState<mtl::nil_type, initial_state>();
-        enterSubmachine<initial_state>();
+        enterState<mtl::nil_type, FIRST>();
+        enterSubmachine<FIRST>();
         endProcessing();
     }
 
@@ -490,6 +495,10 @@ private:
         submachines::template every_composite_takes_emitted_events<TRANSITIONS, injected>,
         "StateMachine: a composite state has no transition for an event a state of its "
         "submachine emits");
+    static_assert(
+        submachines::template every_initial_in_its_submachine<injected>,
+        "StateMachine: the initial state a composite state names is not a state of its "
+        "submachine, or a final one");
     static_assert(
         submachines::template every_submachine_starts_silent<injected>,
         "StateMachine: the initial state of a submachine emits an event - nobody is there to "

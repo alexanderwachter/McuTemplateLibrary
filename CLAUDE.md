@@ -228,7 +228,21 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `internal::annotation_levels_exclusive` static_asserts that a
   composite's annotation type does not recur below it (a refining child
   would leave observers and query disagreeing). No history: entering a
-  composite restarts the child at its initial state. Contexts are per
+  composite restarts the child at its initial state - the sub-table's,
+  or the one the composite names with `using initial = S;`
+  (`internal::starting`, `submachine_initial_t<COMPOSITE,
+  ENABLED_SUBMACHINE>`, 2026-10-14): two composites sharing one
+  sub-table share one child machine type (one variant alternative, one
+  set of dispatch bodies) and enter it at different states - one table,
+  two entries, which is what the USB engines' swap diagrams are (a
+  request we sent, a request we answered). The child constructor takes
+  `std::type_identity<FIRST>` first, `enterInitialState<FIRST>()`.
+  Checks: `every_initial_in_its_submachine` (a state of the enabled
+  sub-table, not final), `every_submachine_starts_silent` covers the
+  named initial too; `all_states_reachable` takes a sub-table's entries
+  (`internal::entries_of_t`: its own initial plus every owning
+  composite's, found over `all_states_t` of the root) as the closure's
+  roots. DOT: an "initial X" row on the composite's node. Contexts are per
   machine - a child's own context is fresh on every entry - unless the
   child inherits them: `using parent_contexts = fsm::contexts<T...>;`
   on the composite (`internal::declares_parent_contexts`,
@@ -415,6 +429,24 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   built: a callable for the emitted event (the parent reference is
   the same thing), the class answering an index into the emitted
   events. Tests: namespace `Submachines`.
+  Dispatch by child type, not by composite state (2026-10-14): `react`
+  visits the children variant (`internal::visit`, one arm per
+  distinct child machine, `reactIn(parent, child, event)`) and
+  `leaveWith<STATE>` calls one `leaveActiveChild()` body (the
+  MTL_FSM_CHECKS assert moved there); `reactToEmittedEvent(parent,
+  child)` folds over `emitting_states_of_t<CHILD>`, the union over the
+  owning composites of `emitting_states_reached_t<COMPOSITE,
+  ENABLED_SUBMACHINE>` (the emitting states reachable from where that
+  composite starts the child - also what `emitted_events_taken_in`
+  asks, so a composite owes rows for its own part of a shared
+  sub-table only). Measured on the firmware's pd_drp with six
+  composites over three child machines: the per-composite fold cost
+  67 880 B, by child type 64 672 B. Tried, 0 B, reverted: skipping the
+  descent at compile time for events no child hierarchy reacts to
+  (`StateMachine::events` = nested_events_t, a `reacts_to` predicate
+  over CHILD_MACHINES) - the compiler folds those arms already; the
+  remaining per-event cost in the queue drain is the descent for the
+  events the children do take.
 - Timeouts are an observer concern: `fsm::timed<TIMER, LEVELS = 1>` owns
   injected timer policies (`fsm::concepts::timer`, `start(ms,
   fsm::timer_callback, void*)` / `stop()`), one-shot, one per machine

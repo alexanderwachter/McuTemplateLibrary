@@ -11,8 +11,10 @@
 #pragma once
 
 #include <mtl/statemachine/internal/Checks.hpp>
+#include <mtl/statemachine/internal/Visit.hpp>
 #include <mtl/statemachine/Observing.hpp>
 #include <mtl/statemachine/Table.hpp>
+#include <mtl/statemachine/Traits.hpp>
 #include <mtl/statemachine/Transition.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 #include <mtl/Typelist.hpp>
@@ -58,15 +60,25 @@ struct annotation_levels_exclusive<STATE>
 template<emitting STATE>
 struct emits_default_constructible : std::is_default_constructible<emitted_t<STATE>> {};
 
-// The states of the submachine a composite STATE owns that emit an
-// event, as the observers enable that submachine
+// The emitting states of a composite's submachine (ENABLED_SUBMACHINE:
+// its table as the observers enable it) that the submachine can reach
+// from where this composite starts it: two composites over one
+// sub-table may each reach only part of its ends, and a composite
+// owes a transition for the events of its own part alone
+template<composite STATE, concepts::transition_table ENABLED_SUBMACHINE>
+using emitting_states_reached_t = mtl::filter_t<
+    typename reachable_closure<mtl::typelist<submachine_initial_t<STATE, ENABLED_SUBMACHINE>>,
+                               typename ENABLED_SUBMACHINE::transitions>::type,
+    is_emitting>;
+
 template<composite STATE, concepts::observer_list OBSERVER_LIST>
-using submachine_emitting_states_t = mtl::filter_t<
-    typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::states, is_emitting>;
+using submachine_emitting_states_t =
+    emitting_states_reached_t<STATE, enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>>;
 
 // What a composite state of TABLE owes its submachine: a transition
-// for every event a state of it emits - own or through a wildcard,
-// guarded or not. An event nobody could take is a dead declaration
+// for every event a state reached from its initial emits - own or
+// through a wildcard, guarded or not. An event nobody could take is a
+// dead declaration, a transition for one nobody could emit dead code
 template<concepts::transition_table TABLE, concepts::observer_list OBSERVER_LIST>
 struct emitted_events_taken_in {
     template<composite STATE>
@@ -83,14 +95,33 @@ struct emitted_events_taken_in {
                                            taken_by<STATE>::template pred>> {};
 };
 
-// A submachine is entered at its initial state before anyone could
-// take an event: that state does not emit
+// A submachine is entered at its initial state - the sub-table's, or
+// the one its composite state names - before anyone could take an
+// event: that state does not emit
 template<concepts::observer_list OBSERVER_LIST>
 struct submachine_starts_silent {
     template<composite STATE>
     struct pred
-        : std::bool_constant<!emitting<mtl::front_t<
-              typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::states>>> {};
+        : std::bool_constant<!emitting<submachine_initial_t<
+              STATE, enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>>>> {};
+};
+
+// The initial state a composite names is a state of its submachine, as
+// the observers enable it, and not a final one (nothing leaves a final
+// state - a submachine started in one could only be left)
+template<concepts::observer_list OBSERVER_LIST>
+struct initial_in_submachine {
+    template<composite STATE>
+    struct pred : std::true_type {};
+
+    template<starting STATE>
+    struct pred<STATE>
+        : std::bool_constant<
+              mtl::has_a_v<typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::states,
+                           typename STATE::initial> &&
+              !mtl::has_a_v<
+                  typename enabled_table_t<submachine_t<STATE>, OBSERVER_LIST>::final_states,
+                  typename STATE::initial>> {};
 };
 
 // The child machines of one machine: at most one lives, that of the
@@ -136,17 +167,25 @@ public:
     static constexpr bool every_submachine_starts_silent =
         mtl::all_of_v<COMPOSITES, submachine_starts_silent<OBSERVER_LIST>::template pred>;
 
+    template<concepts::observer_list OBSERVER_LIST>
+    static constexpr bool every_initial_in_its_submachine =
+        mtl::all_of_v<COMPOSITES, initial_in_submachine<OBSERVER_LIST>::template pred>;
+
     // --- a child lives as long as its composite state -----------------------
 
     // After the composite state's own entry hooks: the child machine's
-    // constructor enters its initial state. The parent machine hands in
-    // what a child is constructed from. Nothing to do for a plain state
+    // constructor enters its initial state - the sub-table's, or the
+    // one the composite state names. The parent machine hands in what a
+    // child is constructed from. Nothing to do for a plain state
     template<concepts::state STATE, typename PARENT_CONTEXTS, typename OBSERVERS>
     void enterWith([[maybe_unused]] PARENT_CONTEXTS& parent_contexts,
                    [[maybe_unused]] OBSERVERS const& observers)
     {
         if constexpr (composite<STATE>) {
-            children_.template emplace<child_of<STATE>>(parent_contexts, observers);
+            using child   = child_of<STATE>;
+            using initial = submachine_initial_t<STATE, typename child::enabled_table>;
+            children_.template emplace<child>(std::type_identity<initial>{}, parent_contexts,
+                                              observers);
         }
     }
 
@@ -156,8 +195,7 @@ public:
     void leaveWith()
     {
         if constexpr (composite<STATE>) {
-            activeChildOf<STATE>().leaveActiveState();
-            children_.template emplace<std::monostate>();
+            leaveActiveChild();
         }
     }
 
@@ -201,60 +239,99 @@ public:
     }
 
 private:
+    template<typename T>
+    static constexpr bool is_child = !std::is_same_v<T, std::monostate>;
+
+    // The children are dispatched by the alternative that lives, not by
+    // the composite state: two composites sharing a child machine share
+    // its arm - one per distinct child, in every event's dispatch and
+    // in the one leave body
     template<typename PARENT, concepts::event EVENT>
     reaction reactInActiveChild([[maybe_unused]] PARENT& parent,
                                 [[maybe_unused]] EVENT const& event)
     {
-        reaction result = reaction::none;
-        [&]<typename... COMPOSITEs>(mtl::typelist<COMPOSITEs...>) {
-            static_cast<void>(
-                ((parent.template is<COMPOSITEs>() &&
-                  (result = reactInChildOf<COMPOSITEs>(parent, event), true)) ||
-                 ...));
-        }(COMPOSITES{});
-        return result;
+        if constexpr (mtl::empty_v<COMPOSITES>) {
+            return reaction::none;
+        } else {
+            return internal::visit(
+                [&](auto& child) {
+                    if constexpr (is_child<std::decay_t<decltype(child)>>) {
+                        return reactIn(parent, child, event);
+                    } else {
+                        return reaction::none;
+                    }
+                },
+                children_);
+        }
     }
 
     // Whatever the child does happens in place for the parent machine -
     // unless it entered a state whose emitted event moves the parent on
-    template<composite COMPOSITE, typename PARENT, concepts::event EVENT>
-    reaction reactInChildOf(PARENT& parent, EVENT const& event)
+    template<typename PARENT, typename CHILD, concepts::event EVENT>
+    reaction reactIn(PARENT& parent, CHILD& child, EVENT const& event)
     {
-        reaction const of_child = activeChildOf<COMPOSITE>().processWithReaction(event);
+        reaction const of_child = child.processWithReaction(event);
         if (of_child == reaction::state_entered &&
-            reactToEmittedEvent<COMPOSITE>(parent) == reaction::state_entered) {
+            reactToEmittedEvent(parent, child) == reaction::state_entered) {
             return reaction::state_entered;
         }
         return of_child == reaction::none ? reaction::none : reaction::in_place;
     }
 
+    // The emitting states a child can be in: those its owning composite
+    // states can reach from where each starts it
+    template<typename CHILD>
+    struct owned_by {
+        template<composite COMPOSITE>
+        struct pred : std::is_same<child_of<COMPOSITE>, CHILD> {};
+    };
+
+    template<composite COMPOSITE>
+    struct emitting_states_reached
+        : std::type_identity<
+              emitting_states_reached_t<COMPOSITE, typename child_of<COMPOSITE>::enabled_table>> {
+    };
+
+    template<typename CHILD>
+    using emitting_states_of_t = mtl::unique_t<mtl::linearize_t<mtl::transform_t<
+        mtl::filter_t<COMPOSITES, owned_by<CHILD>::template pred>, emitting_states_reached>>>;
+
     // The event the child's active state emits goes to the parent
     // machine's own table. The reaction may destroy the child: the fold
     // stops at the first match
-    template<composite COMPOSITE, typename PARENT>
-    reaction reactToEmittedEvent([[maybe_unused]] PARENT& parent)
+    template<typename PARENT, typename CHILD>
+    reaction reactToEmittedEvent([[maybe_unused]] PARENT& parent,
+                                 [[maybe_unused]] CHILD const& child)
     {
-        using emitting_states =
-            mtl::filter_t<typename child_of<COMPOSITE>::enabled_table::states, is_emitting>;
         reaction result = reaction::none;
         [&]<typename... EMITTINGs>(mtl::typelist<EMITTINGs...>) {
-            [[maybe_unused]] auto const& child = activeChildOf<COMPOSITE>();
             static_cast<void>(
                 ((child.template is<EMITTINGs>() &&
                   (result = parent.processInThisTable(emitted_t<EMITTINGs>{}), true)) ||
                  ...));
-        }(emitting_states{});
+        }(emitting_states_of_t<CHILD>{});
         return result;
     }
 
-    template<composite COMPOSITE>
-    child_of<COMPOSITE>& activeChildOf()
+    // Whichever child lives leaves its active state, innermost first,
+    // and is destroyed: one body for every composite state
+    void leaveActiveChild()
+        requires(!mtl::empty_v<COMPOSITES>)
     {
-        auto* const child = std::get_if<child_of<COMPOSITE>>(&children_);
+        [[maybe_unused]] bool const left = internal::visit(
+            [](auto& child) {
+                if constexpr (is_child<std::decay_t<decltype(child)>>) {
+                    child.leaveActiveState();
+                    return true;
+                } else {
+                    return false;
+                }
+            },
+            children_);
 #if MTL_FSM_CHECKS
-        MTL_FSM_ASSERT(child != nullptr, "fsm: composite state active without its submachine");
+        MTL_FSM_ASSERT(left, "fsm: composite state active without its submachine");
 #endif
-        return *child;
+        children_.template emplace<std::monostate>();
     }
 
     // One alternative per distinct child machine, std::monostate while
