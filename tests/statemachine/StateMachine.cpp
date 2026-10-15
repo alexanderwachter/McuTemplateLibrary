@@ -2059,6 +2059,16 @@ namespace TransitionHook {
             steps.push_back({"any_state", mtl::short_name<EVENT>(), mtl::short_name<TO_STATE>()});
         }
     };
+
+    // the plain form only: never told the source
+    struct state_recorder {
+        template<typename EVENT, typename TO_STATE, typename MACHINE>
+        void onTransition(MACHINE&)
+        {
+            steps.push_back({"any_state", mtl::short_name<EVENT>(), mtl::short_name<TO_STATE>()});
+        }
+        std::vector<step> steps;
+    };
 } // namespace TransitionHook
 
 // --- guards deciding on the event payload ------------------------------------
@@ -2519,6 +2529,27 @@ void observerGroupForwardsEdgeToMemberWithBothForms()
 
     check(sm.process(kill{2}));
     check(rec.steps == std::vector<step>{{"idle", "kill", "dead"}});
+}
+
+// A group has a hook exactly where a member has it, in that form: the
+// member with the edge form learns the source, the member with the
+// plain form alone is reached through the group's plain form
+void observerGroupGivesEachMemberItsOwnForm()
+{
+    using namespace TransitionHook;
+    recorder edge;
+    state_recorder plain;
+    fsm::ObserverGroup<recorder, state_recorder> group{edge, plain};
+    fsm::StateMachine<tbl, fsm::ObserverGroup<recorder, state_recorder>> sm{group};
+
+    check(sm.process(go{})); // an exact edge
+    check(edge.steps == std::vector<step>{{"idle", "go", "busy"}});
+    check(plain.steps == std::vector<step>{{"any_state", "go", "busy"}});
+
+    check(sm.process(kill{4})); // a wildcard: the same, once each
+    check(edge.steps.back() == step{"busy", "kill", "dead"});
+    check(plain.steps.back() == step{"any_state", "kill", "dead"});
+    check(edge.steps.size() == 2 && plain.steps.size() == 2);
 }
 
 void timerInjectedByReference()
@@ -3154,6 +3185,7 @@ int statemachineTests()
     wildcardTakesTransitionHookOfTheEdge();
     observerGroupForwardsTransitionHook();
     observerGroupForwardsEdgeToMemberWithBothForms();
+    observerGroupGivesEachMemberItsOwnForm();
     wildcardStopsTimerAndCarriesPayload();
     wildcardNotifiesExitValueOfStateLeft();
     wildcardEntrySuppressesUnchangedValue();

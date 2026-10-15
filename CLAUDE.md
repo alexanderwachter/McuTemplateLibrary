@@ -162,9 +162,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   annotation nobody watches) is silently unobserved. The machine is
   non-copyable and non-movable: hooks hand out `*this`, and observers
   may retain the address beyond the hook (e.g. `fsm::timed` arms it into
-  its timer callback). `ObserverGroup` forwards the edge forms to each
-  member's preferred form and offers a one-state form only when every
-  member has it.
+  its timer callback). `ObserverGroup` has a hook exactly where a
+  member has it, in that form: the From form forwards the source to
+  every member with a hook for the edge in its preferred form, the
+  plain form goes to the members having it (2026-10-15; the old rule -
+  a plain form only when every member had it - made the machine walk a
+  wildcard's chain over every source for a group like the engines'
+  power observers: 636 B on pd_drp once the power level sat on every
+  state).
 - Wildcards: a `from<any_state>` transition changes the state through
   one shared body per (event, target) (`enterStateAfterWildcard`; expanding whole
   edges per source cost 2780 B on the firmware's `pd_drp`, 14 states).
