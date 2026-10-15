@@ -876,8 +876,7 @@ namespace WildcardHooks {
         static bool check(b const&) { return false; }
     };
 
-    // a wildcard back into an annotated state: its entry has no edge to
-    // compare against
+    // a wildcard back into an annotated state: suppressed like an exact edge
     struct reset {};
     struct home_tbl : fsm::transition_table<
         fsm::transition<fsm::from<a>, fsm::on<go>, fsm::to<b>>,
@@ -2051,8 +2050,8 @@ namespace TransitionHook {
         std::vector<step> steps;
     };
 
-    // both forms: a wildcard is delivered through the one-state form,
-    // once, recorded here with any_state as its source
+    // both forms: the edge form is taken wherever the observer has it,
+    // so a firing recorded with any_state as its source is a defect
     struct both_forms_recorder : recorder {
         template<typename EVENT, typename TO_STATE, typename MACHINE>
         void onTransition(MACHINE&)
@@ -2374,18 +2373,30 @@ void wildcardNotifiesExitValueOfStateLeft()
     check(watcher.exits == 1);
 }
 
-void wildcardEntryRenotifiesUnchangedValue()
+void wildcardEntrySuppressesUnchangedValue()
 {
     using namespace WildcardHooks;
     mode_watcher watcher;
     fsm::StateMachine<home_tbl, mode_watcher> sm{watcher};
 
     check(watcher.notified == 1); // initial entry into a
-    check(sm.process(go{}));      // a -> b: equal values, the edge suppresses
+    check(sm.process(go{}));      // a -> b: equal values, suppressed
     check(watcher.notified == 1);
-    check(sm.process(reset{}));   // wildcard into a: no edge, a's value notified again
+    check(sm.process(reset{}));   // wildcard into a: the state left is b, suppressed too
     check(sm.is<a>());
-    check(watcher.notified == 2);
+    check(watcher.notified == 1);
+}
+
+void wildcardExitSuppressesUnchangedValue()
+{
+    using namespace WildcardHooks;
+    exit_watcher watcher;
+    fsm::StateMachine<home_tbl, exit_watcher> sm{watcher};
+
+    check(sm.process(go{}));    // a -> b: equal values, suppressed
+    check(sm.process(reset{})); // wildcard into a: b's value is a's, suppressed too
+    check(sm.is<a>());
+    check(watcher.exits == 0);
 }
 
 void refusedOwnGroupFallsThroughToWildcard()
@@ -2470,7 +2481,7 @@ void transitionHookSeesEdgeAndEvent()
     check(rec.steps.size() == 3);
 }
 
-void wildcardTakesOneStateTransitionHookOnce()
+void wildcardTakesTransitionHookOfTheEdge()
 {
     using namespace TransitionHook;
     both_forms_recorder rec;
@@ -2479,8 +2490,8 @@ void wildcardTakesOneStateTransitionHookOnce()
     check(sm.process(go{}));
     check(rec.steps.back() == step{"idle", "go", "busy"}); // an exact edge: the edge form
 
-    check(sm.process(kill{5})); // wildcard: the one-state form
-    check(rec.steps.back() == step{"any_state", "kill", "dead"});
+    check(sm.process(kill{5})); // wildcard: the edge form too, the state left is known
+    check(rec.steps.back() == step{"busy", "kill", "dead"});
     check(rec.steps.size() == 2); // exactly one notification per firing
     check(sm.getIf<dead>()->code == 5);
 }
@@ -2498,8 +2509,8 @@ void observerGroupForwardsTransitionHook()
     check(rec.steps.back() == step{"busy", "kill", "dead"});
 }
 
-// A group offers the one-state form when every member has it
-void observerGroupOffersOneStateFormOfItsMembers()
+// A group forwards the edge to a member having both forms
+void observerGroupForwardsEdgeToMemberWithBothForms()
 {
     using namespace TransitionHook;
     both_forms_recorder rec;
@@ -2507,7 +2518,7 @@ void observerGroupOffersOneStateFormOfItsMembers()
     fsm::StateMachine<tbl, fsm::ObserverGroup<both_forms_recorder>> sm{group};
 
     check(sm.process(kill{2}));
-    check(rec.steps == std::vector<step>{{"any_state", "kill", "dead"}});
+    check(rec.steps == std::vector<step>{{"idle", "kill", "dead"}});
 }
 
 void timerInjectedByReference()
@@ -3140,12 +3151,13 @@ int statemachineTests()
     internalTransitionHandlesInPlace();
     timerInjectedByReference();
     transitionHookSeesEdgeAndEvent();
-    wildcardTakesOneStateTransitionHookOnce();
+    wildcardTakesTransitionHookOfTheEdge();
     observerGroupForwardsTransitionHook();
-    observerGroupOffersOneStateFormOfItsMembers();
+    observerGroupForwardsEdgeToMemberWithBothForms();
     wildcardStopsTimerAndCarriesPayload();
     wildcardNotifiesExitValueOfStateLeft();
-    wildcardEntryRenotifiesUnchangedValue();
+    wildcardEntrySuppressesUnchangedValue();
+    wildcardExitSuppressesUnchangedValue();
     refusedOwnGroupFallsThroughToWildcard();
     unguardedOwnEntryOverridesWildcard();
     declaredObservationsAreValidated();

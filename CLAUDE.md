@@ -168,22 +168,36 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
 - Wildcards: a `from<any_state>` transition changes the state through
   one shared body per (event, target) (`enterStateAfterWildcard`; expanding whole
   edges per source cost 2780 B on the firmware's `pd_drp`, 14 states).
-  Its guards and exit hooks run in the visitor arm, where the state left
-  is known (`leaveForWildcard`, which returns the chosen alternative as
-  `pending + index`); after the dispatch `fireWildcard` changes the state
-  once and runs the entry and transition hooks - one-state forms once,
-  an edge form per possible source through `withSource`, a switch on
-  the variant index `process` reads before the change and hands down
-  as a local (no member). Nothing else knows the
-  source: no `any_state` in hooks, no flags, no tables, no memory in
-  observers. `fsm::timed` uses one-state hooks (leaving a timed state
-  stops, entering one arms: one body per timed state); `fsm::observing`
-  defines both forms, so exact edges and a wildcard's exit side suppress
-  unchanged values at compile time while a wildcard's entry side, which
-  has no edge, notifies every value of the state entered (test
-  `wildcardEntryRenotifiesUnchangedValue`); `fsm::deadlined` and
+  Its guards run in the visitor arm, where the state left is known
+  (`firstAllowedWildcard`, which answers the chosen alternative as
+  `exited_for_wildcard + index`); after the dispatch `completeWildcard`
+  leaves the state through one visit (`leaveActiveStateFor<TO>`, the
+  one a parent's leave of its child runs too) and enters the target
+  once, with the variant index `process` read before the change handed
+  down as a local (no member). 2026-10-15: leaving inside the arm,
+  where every source paid its own exit code, cost 368 B on pd_drp. The
+  hooks follow the rule of an exact edge: an observer's `onExitFrom` /
+  `onEnterFrom` / `onTransitionFrom` where it has one for the pair, the
+  hook of the one state otherwise. A hook of the edge goes through a
+  compare chain over the sources the observer has it for
+  (`enterHookFromStateLeft`, `transitionHookFromStateLeft`), and the
+  leave visit names the real target only where some state has an
+  `onExitFrom` to it (`wildcard_exit_target_t`,
+  `injected_observers::any_exit_hook_from`), `mtl::nil_type` otherwise -
+  one body shared by every wildcard. Nothing else knows the source: no
+  `any_state` in hooks, no flags, no tables, no memory in observers.
+  `fsm::timed` uses `onExit`/`onEnter` (leaving a timed state stops,
+  entering one arms: one body per timed state); `fsm::observing` offers
+  the edge forms only where the transition suppresses a value
+  (`transition_suppresses_exit<FROM, TO>`,
+  `transition_suppresses_entry<FROM, TO>`), so a wildcard suppresses
+  exactly what an exact edge does and the chains list the suppressing
+  sources only (the chain over every source measured 984 B on pd_drp,
+  over the suppressing ones 296 B; tests
+  `wildcardEntrySuppressesUnchangedValue`,
+  `wildcardExitSuppressesUnchangedValue`); `fsm::deadlined` and
   `fsm::tracing` use the edge forms (the phase continuation and the
-  line's source are edge properties) and pay flash on wildcards.
+  line's source are edge properties) and pay the chain on wildcards.
   Measured with the firmware migrated to the two forms (its routers'
   hooks live): pd_drp 58728 B at 9efe0c9 against 58124 B at a464e23 -
   the redesign commit 46335a1 costs 852 B, the later commits win 248 B
@@ -211,7 +225,8 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `processWithReaction` is ONE visit of the active state: a composite's
   arm asks its child first (`Submachines::reactIn`), every arm then
   this table (`reactInThisTable`: guarded, unguarded, wildcards), a
-  wildcard's target is entered after the visit (`completeWildcard`);
+  wildcard's source is left and its target entered after the visit
+  (`completeWildcard`);
   `processInThisTable` is the same visit without the child, for the
   event a child emits. `internal::reaction {none, in_place,
   state_entered}` is the child's answer to its parent. Every event
@@ -300,7 +315,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   many comments = code not self-explaining): the table checks sit in
   one block at the end of the class, names say what a function does
   (`process*`, `doTransition`, `doFirstAllowedTransition`,
-  `leaveStateForFirstAllowedWildcard`,
+  `firstAllowedWildcard`, `leaveActiveStateFor`,
   `enterTargetStateOfWildcard`, `enterStateAfterWildcard`, `forStateLeft`, `guardsHold`,
   `partHolds`, `answerTo`). One measured limit: the visitor of the
   active state must answer with ONE value (a reaction, or
@@ -365,7 +380,7 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   `any_observer_answers`, `askObserver` / `checkStatic` (the most
   specific form wins). statemachine/StateMachine.hpp names no guard trait and evaluates
   nothing: `doFirstAllowedTransition` and
-  `leaveStateForFirstAllowedWildcard` ask
+  `firstAllowedWildcard` ask
   `guards::allow`. Guards.hpp also holds the traits only answering
   needs (`answering`, `part_answered_in`, `part_answered_once_in`,
   `guard_answered_in`, `guard_answered_once_in`, from Table.hpp).
@@ -550,11 +565,14 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   only for states whose observation reaches a `notifyEntry`/`notifyExit`
   overload (`observing::exits_notified<STATE>` /
   `entries_notified<STATE>`, 2026-10-03): a state the observer ignores
-  costs the machine no function on any of its edges. Both forms go
-  together per state - hiding only the edge form would make the
-  machine fall back to the one-state form and re-notify an unchanged
-  value (tried, caught by `wildcardEntryRenotifiesUnchangedValue`'s
-  neighbours).
+  costs the machine no function on any of its edges. The edge forms
+  exist only where the transition suppresses something
+  (`transition_suppresses_exit<FROM, TO>` /
+  `transition_suppresses_entry<FROM, TO>`, 2026-10-15; the private
+  `exitFrom` / `enterFrom` do the work for both forms): everywhere else
+  the machine takes `onExit` / `onEnter`, which deliver the same values
+  - and on a wildcard the compare chain over the sources lists only the
+  suppressing ones.
   Annotation sets: a state's `static constexpr auto annotations =
   fsm::annotate(a, b)` (`fsm::annotation_set<Ts...>`, types distinct,
   `has<T>`/`get<T>()` keyed by the plain type) is observed without any

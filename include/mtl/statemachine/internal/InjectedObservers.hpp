@@ -97,6 +97,17 @@ public:
     static constexpr bool any_observer_notified_by =
         (concepts::notified_of<OBSERVERs, STATE> || ...);
 
+    // Does an observer's exit hook of any of STATES ask for the edge to TO?
+    template<concepts::state TO, typename MACHINE>
+    struct exit_hook_from_asked_for {
+        template<concepts::state FROM>
+        struct pred : std::bool_constant<(has_exit_from<OBSERVERs, FROM, TO, MACHINE> || ...)> {};
+    };
+
+    template<mtl::concepts::typelist STATES, concepts::state TO, typename MACHINE>
+    static constexpr bool any_exit_hook_from =
+        mtl::any_of_v<STATES, exit_hook_from_asked_for<TO, MACHINE>::template pred>;
+
     // Runs every observer's own compile-time proof of TABLE (validate)
     template<concepts::transition_table TABLE>
     static constexpr bool all_observers_validate = (validated<OBSERVERs, TABLE>() && ...);
@@ -137,9 +148,10 @@ public:
     }
 
     // --- the entry side of a from<any_state> transition ---------------------
-    // The state left is only known by its index in the machine's states:
-    // a one-state hook runs once, an edge hook through a compare chain
-    // over the sources the observer has it for
+    // The state left is only known by its index in the machine's states.
+    // As on an exact edge, an observer's hook of the edge is taken where
+    // it has one for the state left - through a compare chain over those
+    // sources - and the hook of the state entered otherwise
 
     template<concepts::event EVENT, concepts::state NEW_STATE, typename MACHINE>
     void deliverEnterHooksAfterWildcard(MACHINE& machine, std::size_t state_left)
@@ -203,19 +215,21 @@ private:
          ...);
     }
 
-    // The one-state form once, else the edge form of the state left
+    // The hook of the edge for the sources the observer has it for, the
+    // hook of the state entered for the rest
     template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER,
              typename MACHINE>
     void enterHookAfterWildcard(OBSERVER& observer, MACHINE& machine,
                                        [[maybe_unused]] std::size_t state_left)
     {
-        if constexpr (has_enter<OBSERVER, NEW_STATE, MACHINE>) {
-            observer.template onEnter<NEW_STATE>(machine);
-        } else {
-            enterHookFromStateLeft<NEW_STATE>(
+        if (enterHookFromStateLeft<NEW_STATE>(
                 observer, machine, state_left,
                 wildcard_sources_with_enter_from<OBSERVER, typename MACHINE::enabled_table, EVENT,
-                                                 NEW_STATE, MACHINE>{});
+                                                 NEW_STATE, MACHINE>{})) {
+            return;
+        }
+        if constexpr (has_enter<OBSERVER, NEW_STATE, MACHINE>) {
+            observer.template onEnter<NEW_STATE>(machine);
         }
     }
 
@@ -224,36 +238,38 @@ private:
     void transitionHookAfterWildcard(OBSERVER& observer, MACHINE& machine,
                                             [[maybe_unused]] std::size_t state_left)
     {
-        if constexpr (has_transition<OBSERVER, EVENT, NEW_STATE, MACHINE>) {
-            observer.template onTransition<EVENT, NEW_STATE>(machine);
-        } else {
-            transitionHookFromStateLeft<EVENT, NEW_STATE>(
+        if (transitionHookFromStateLeft<EVENT, NEW_STATE>(
                 observer, machine, state_left,
                 wildcard_sources_with_transition_from<OBSERVER, typename MACHINE::enabled_table,
-                                                      EVENT, NEW_STATE, MACHINE>{});
+                                                      EVENT, NEW_STATE, MACHINE>{})) {
+            return;
+        }
+        if constexpr (has_transition<OBSERVER, EVENT, NEW_STATE, MACHINE>) {
+            observer.template onTransition<EVENT, NEW_STATE>(machine);
         }
     }
 
+    // Whether the state left was one of SOURCEs, its hook delivered
     template<concepts::state NEW_STATE, concepts::observer OBSERVER, typename MACHINE,
              concepts::state... SOURCEs>
-    void enterHookFromStateLeft(OBSERVER& observer, MACHINE& machine,
+    bool enterHookFromStateLeft(OBSERVER& observer, MACHINE& machine,
                                        std::size_t state_left, mtl::typelist<SOURCEs...>)
     {
-        static_cast<void>(
-            ((state_left == mtl::index_of_v<SOURCEs, typename MACHINE::enabled_table::states> &&
-              (observer.template onEnterFrom<SOURCEs, NEW_STATE>(machine), true)) ||
-             ...));
+        return (
+            (state_left == mtl::index_of_v<SOURCEs, typename MACHINE::enabled_table::states> &&
+             (observer.template onEnterFrom<SOURCEs, NEW_STATE>(machine), true)) ||
+            ...);
     }
 
     template<concepts::event EVENT, concepts::state NEW_STATE, concepts::observer OBSERVER,
              typename MACHINE, concepts::state... SOURCEs>
-    void transitionHookFromStateLeft(OBSERVER& observer, MACHINE& machine,
+    bool transitionHookFromStateLeft(OBSERVER& observer, MACHINE& machine,
                                             std::size_t state_left, mtl::typelist<SOURCEs...>)
     {
-        static_cast<void>(
-            ((state_left == mtl::index_of_v<SOURCEs, typename MACHINE::enabled_table::states> &&
-              (observer.template onTransitionFrom<SOURCEs, EVENT, NEW_STATE>(machine), true)) ||
-             ...));
+        return (
+            (state_left == mtl::index_of_v<SOURCEs, typename MACHINE::enabled_table::states> &&
+             (observer.template onTransitionFrom<SOURCEs, EVENT, NEW_STATE>(machine), true)) ||
+            ...);
     }
 
     std::tuple<OBSERVERs&...> observers_;

@@ -368,12 +368,12 @@ struct carried_in {
 // annotation can prepare (e.g. reset) what the instance value then
 // consumes.
 //
-// Both hook forms: where the edge is known (every exact edge, and the
-// exit side of a wildcard) the edge form suppresses a value that does
-// not change between the two states, at compile time; the entry side
-// of a wildcard has no edge, so the machine takes the one-state form,
-// which notifies every value of the state entered - the one place a
-// value observer sees a re-notification.
+// Both hook forms: onExitFrom / onEnterFrom suppress a value that does
+// not change between the two states, at compile time, and exist only
+// for the transitions where they suppress something; everywhere else
+// the machine takes onExit / onEnter, which notify every value, and
+// the same values arrive. A wildcard is no different: the machine
+// tells its sources with a hook of the edge apart.
 //
 // An observer watching an annotation no state carries is wired to
 // nothing, silently (a renamed annotation, a typo in a type). An
@@ -410,9 +410,7 @@ struct observing {
 
     // Whether anything of STATE reaches an exit / entry hook of DERIVED.
     // The hooks exist for such states only, so a state this observer
-    // ignores costs the machine no function on any of its edges. Both
-    // forms go together: the machine takes the one-state form where the
-    // edge form is missing, which would re-notify an unchanged value
+    // ignores costs the machine no function on any of its edges
     template<concepts::state STATE>
     static constexpr bool exits_notified =
         requires(DERIVED observer) {
@@ -427,12 +425,65 @@ struct observing {
         } || !mtl::empty_v<internal::entry_delivered_t<DERIVED, STATE, mtl::nil_type>> ||
         !mtl::empty_v<internal::value_entry_delivered_t<DERIVED, STATE>>;
 
-    // The edge form. The static path is per edge (the change check needs
-    // both states); the instance values delegate to one body per valued
-    // state
+    // Whether the transition from FROM to TO suppresses a notification:
+    // the other state carries a value this one would notify. Only then
+    // does the hook of the edge deliver less than onExit / onEnter, and
+    // only then is it offered
+    template<concepts::state FROM, concepts::state TO>
+    static constexpr bool transition_suppresses_exit =
+        (internal::annotation_changes_v<DERIVED, FROM, mtl::nil_type> &&
+         !internal::annotation_changes_v<DERIVED, FROM, TO>) ||
+        !std::is_same_v<internal::exit_delivered_t<DERIVED, FROM, TO>,
+                        internal::exit_delivered_t<DERIVED, FROM, mtl::nil_type>>;
+
+    template<concepts::state FROM, concepts::state TO>
+    static constexpr bool transition_suppresses_entry =
+        (internal::annotation_changes_v<DERIVED, TO, mtl::nil_type> &&
+         !internal::annotation_changes_v<DERIVED, TO, FROM>) ||
+        !std::is_same_v<internal::entry_delivered_t<DERIVED, TO, FROM>,
+                        internal::entry_delivered_t<DERIVED, TO, mtl::nil_type>>;
+
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
-        requires (exits_notified<OLD_STATE>)
+        requires (exits_notified<OLD_STATE> && transition_suppresses_exit<OLD_STATE, NEW_STATE>)
     void onExitFrom(MACHINE& machine)
+    {
+        exitFrom<OLD_STATE, NEW_STATE>(machine);
+    }
+
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
+        requires (entries_notified<NEW_STATE> && transition_suppresses_entry<OLD_STATE, NEW_STATE>)
+    void onEnterFrom(MACHINE& machine)
+    {
+        enterFrom<OLD_STATE, NEW_STATE>(machine);
+    }
+
+    // No other state to compare against: against mtl::nil_type every
+    // value counts as a change
+    template<concepts::state STATE, typename MACHINE>
+        requires (exits_notified<STATE>)
+    void onExit(MACHINE& machine)
+    {
+        exitFrom<STATE, mtl::nil_type>(machine);
+    }
+
+    template<concepts::state STATE, typename MACHINE>
+        requires (entries_notified<STATE>)
+    void onEnter(MACHINE& machine)
+    {
+        enterFrom<mtl::nil_type, STATE>(machine);
+    }
+
+protected:
+    // A mixin: only ever a base of DERIVED. The derived observer is
+    // therefore no aggregate for the outside - give it a constructor
+    // rather than initializing its members with braces
+    observing() = default;
+
+private:
+    // The static path is per edge (the change check needs both states);
+    // the instance values delegate to one body per valued state
+    template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
+    void exitFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
         if constexpr (internal::annotation_changes_v<DERIVED, OLD_STATE, NEW_STATE>) {
@@ -446,8 +497,7 @@ struct observing {
     }
 
     template<concepts::state OLD_STATE, concepts::state NEW_STATE, typename MACHINE>
-        requires (entries_notified<NEW_STATE>)
-    void onEnterFrom(MACHINE& machine)
+    void enterFrom(MACHINE& machine)
     {
         auto& self = static_cast<DERIVED&>(*this);
         if constexpr (internal::annotation_changes_v<DERIVED, NEW_STATE, OLD_STATE>) {
@@ -460,29 +510,6 @@ struct observing {
         valuesEnter<NEW_STATE>(machine);
     }
 
-    // The one-state form: no other state to compare against, which is the
-    // edge form against mtl::nil_type - every value counts as a change
-    template<concepts::state STATE, typename MACHINE>
-        requires (exits_notified<STATE>)
-    void onExit(MACHINE& machine)
-    {
-        onExitFrom<STATE, mtl::nil_type>(machine);
-    }
-
-    template<concepts::state STATE, typename MACHINE>
-        requires (entries_notified<STATE>)
-    void onEnter(MACHINE& machine)
-    {
-        onEnterFrom<mtl::nil_type, STATE>(machine);
-    }
-
-protected:
-    // A mixin: only ever a base of DERIVED. The derived observer is
-    // therefore no aggregate for the outside - give it a constructor
-    // rather than initializing its members with braces
-    observing() = default;
-
-private:
     // The set elements the edge delivers, already selected
     template<concepts::state STATE, concepts::annotation... Ts>
     void setExit(mtl::typelist<Ts...>)

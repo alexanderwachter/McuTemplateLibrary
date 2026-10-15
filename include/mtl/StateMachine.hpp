@@ -200,12 +200,11 @@
  *                                       leaves a composite state, the
  *                                       child's active state is left once
  *                                       with TO = mtl::nil_type
- *   Where both forms exist the edge form is used when the edge is known.
- *   A from<any_state> transition fires through one shared body per
- *   (event, target): the exit hooks run where the state left is known,
- *   the change and the entry hooks once; an edge-form entry or transition
- *   hook is then delivered per possible source through a switch on the
- *   state left - the flash cost of asking for the edge
+ *   Where both forms exist the edge form is used for the edges the
+ *   observer has it for. A from<any_state> transition fires through one
+ *   shared body per (event, target); a hook of the edge is delivered per
+ *   possible source through a switch on the state left - the flash cost
+ *   of asking for the edge
  *   template<typename TABLE> static constexpr void validate();
  *                                  - invoked at machine instantiation: the
  *                                    place for an observer's compile-time

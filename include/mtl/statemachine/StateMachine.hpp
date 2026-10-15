@@ -230,8 +230,8 @@ private:
 
     // The active state's guarded alternatives in table order, then its
     // unguarded one; without that, the wildcards - never from a final
-    // state. A wildcard only exits here, where the state left is
-    // known, and answers exited_for_wildcard + its index
+    // state. A wildcard is only picked here, where its guards see the
+    // state left, and answered as exited_for_wildcard + its index
     template<concepts::state STATE, concepts::event EVENT>
     std::size_t reactInThisTable(alternative_t<STATE>& state, EVENT const& event)
     {
@@ -248,14 +248,14 @@ private:
         if constexpr (!std::is_same_v<unguarded, mtl::nil_type>) {
             return static_cast<std::size_t>(doTransition<unguarded, STATE>(state, event));
         } else if constexpr (!mtl::empty_v<wildcards> && !mtl::has_a_v<final_states, STATE>) {
-            return leaveStateForFirstAllowedWildcard<STATE>(wildcards{}, state, event);
+            return firstAllowedWildcard<STATE>(wildcards{}, state, event);
         } else {
             return static_cast<std::size_t>(reaction::none);
         }
     }
 
     // What the visit of the active state answered, as a reaction: a
-    // wildcard's target is still to be entered
+    // wildcard's source is still to be left and its target entered
     template<concepts::event EVENT>
     reaction completeWildcard(std::size_t outcome, EVENT const& event)
     {
@@ -324,9 +324,11 @@ private:
     }
 
     // --- a from<any_state> transition ---------------------------------------
-    // One shared body per (event, target) enters the target: expanding
-    // whole edges per source measured kilobytes in a machine with a
-    // handful of wildcard events. Only an observer asking for the edge
+    // The visit of the active state only picks the wildcard; one shared
+    // body per (event, target) then leaves the state and enters the
+    // target. Expanding whole edges per source measured kilobytes in a
+    // machine with a handful of wildcard events, leaving inside the
+    // visit 368 B on pd_drp. Only an observer with a hook of the edge
     // pays, with a switch on the state left
 
     // What the visitor of the active state answers: a reaction, or
@@ -336,17 +338,16 @@ private:
     static constexpr std::size_t exited_for_wildcard =
         static_cast<std::size_t>(reaction::state_entered) + 1;
 
-    // Runs the exit hooks of STATE for the first wildcard its guards allow
+    // The first wildcard whose guards allow it for STATE
     template<concepts::state STATE, concepts::transition... WILDCARDs, concepts::event EVENT>
-    std::size_t leaveStateForFirstAllowedWildcard(mtl::typelist<WILDCARDs...>,
-                                                  alternative_t<STATE>& state, EVENT const& event)
+    std::size_t firstAllowedWildcard(mtl::typelist<WILDCARDs...>, alternative_t<STATE> const& state,
+                                     EVENT const& event)
     {
         std::size_t outcome = static_cast<std::size_t>(reaction::none);
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((guards::template allow<WILDCARDs, STATE>(observers_, state, event) &&
-                  (leaveState<STATE, typename WILDCARDs::to>(state),
-                   outcome = StateMachine::exited_for_wildcard + INDEXs, true)) ||
+                  (outcome = StateMachine::exited_for_wildcard + INDEXs, true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
         return outcome;
@@ -359,10 +360,33 @@ private:
         [&]<std::size_t... INDEXs>(std::index_sequence<INDEXs...>) {
             static_cast<void>(
                 ((wildcard == INDEXs &&
-                  (enterStateAfterWildcard<typename WILDCARDs::to>(state_left, event),
+                  (leaveActiveStateFor<wildcard_exit_target_t<typename WILDCARDs::to>>(),
+                   enterStateAfterWildcard<typename WILDCARDs::to>(state_left, event),
                    true)) ||
                  ...));
         }(std::index_sequence_for<WILDCARDs...>{});
+    }
+
+    // The target the exit hooks of a wildcard see: the real one where an
+    // observer's onExitFrom asks for it, none otherwise - then every
+    // wildcard of the machine shares one leave body with the child's
+    template<concepts::state TO>
+    using wildcard_exit_target_t = std::conditional_t<
+        injected_observers::template any_exit_hook_from<typename TRANSITIONS::states, TO,
+                                                        StateMachine>,
+        TO, mtl::nil_type>;
+
+    // The exit hooks of the active state, one visit per target named
+    template<concepts::state NEW_STATE>
+    void leaveActiveStateFor()
+    {
+        internal::visit(
+            [this](auto& state) {
+                using state_type = internal::plain_state_t<std::decay_t<decltype(state)>>;
+                leaveState<state_type, NEW_STATE>(state);
+                return true;
+            },
+            current_);
     }
 
     template<concepts::state NEW_STATE, concepts::event EVENT>
@@ -453,13 +477,7 @@ private:
     void leaveActiveState()
     {
         beginProcessing();
-        internal::visit(
-            [this](auto& state) {
-                using state_type = internal::plain_state_t<std::decay_t<decltype(state)>>;
-                leaveState<state_type, mtl::nil_type>(state);
-                return true;
-            },
-            current_);
+        leaveActiveStateFor<mtl::nil_type>();
         endProcessing();
     }
 
