@@ -613,10 +613,12 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
 - Features as tags (Feature.hpp): a state declares `using feature =
   TAG;`, an observer `using enables = TAG;` (or an `mtl::typelist` of
   tags) - or the tag itself declares `using enabled_by = GUARD;` and
-  an injected object answering `check(GUARD)` enables it
-  (`observer_answers_for_v`; the firmware's swap features are enabled
-  by the policy answering `pr_swap_allowed` etc., nothing else
-  declared). `fsm::feature_switch<fsm::enabled<TAG, bool>...>` is an
+  an injected object answering `check(GUARD)` in any of the forms -
+  stateless, with the state, with state and event (2026-10-16:
+  `internal::any_payload` stands in for both while the table is
+  unknown) - enables it (`observer_answers_for_v`; the firmware's
+  swap features are enabled by the application's policy answering
+  `pr_swap_allowed` etc., nothing else declared). `fsm::feature_switch<fsm::enabled<TAG, bool>...>` is an
   observer enabling tags by conditions (`enabled_features_t` is its
   list) - for config symbols and the firmware's compliance variants.
   `fsm::observer_enables_v`, `state_in_feature_v`,

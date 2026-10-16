@@ -100,13 +100,15 @@ concept guard_enabled = requires { typename TAG::enabled_by; };
 
 } // namespace internal
 
-// Whether OBSERVER answers the guard TAG declares itself enabled by
+// Whether OBSERVER answers the guard TAG declares itself enabled by,
+// in any of the forms - check(G), check(G, state), check(G, state,
+// event); the state and event are unknown here, any_payload stands in
 template<concepts::feature_tag TAG, concepts::observer OBSERVER>
 struct observer_answers_for : std::false_type {};
 
 template<concepts::feature_tag TAG, concepts::observer OBSERVER>
     requires internal::guard_enabled<TAG> &&
-             concepts::answers_stateless_guard<OBSERVER, typename TAG::enabled_by>
+             concepts::answers_guard_for<OBSERVER, typename TAG::enabled_by, internal::any_payload>
 struct observer_answers_for<TAG, OBSERVER> : std::true_type {};
 
 template<concepts::feature_tag TAG, concepts::observer OBSERVER>

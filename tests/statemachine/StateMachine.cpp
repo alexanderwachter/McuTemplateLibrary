@@ -802,6 +802,16 @@ namespace Features {
     static_assert(!fsm::observer_answers_for_v<tuning_feature, answering_tuner>); // no enabled_by
     static_assert(fsm::feature_enabled_v<asked_tuning_feature, bystander, answering_tuner>);
     static_assert(!fsm::feature_enabled_v<asked_tuning_feature, bystander>);
+    // an answer of the state or the event form enables just the same
+    struct tuner_asking_state {
+        bool check(tuning_allowed, plain const&) { return true; }
+    };
+    struct tuner_asking_event {
+        bool check(tuning_allowed, auto const&, go const&) { return true; }
+    };
+    static_assert(fsm::observer_answers_for_v<asked_tuning_feature, tuner_asking_state>);
+    static_assert(fsm::observer_answers_for_v<asked_tuning_feature, tuner_asking_event>);
+    static_assert(fsm::feature_enabled_v<asked_tuning_feature, tuner_asking_event>);
     struct asked_table : fsm::transition_table<
         fsm::transition<fsm::from<plain>, fsm::on<go>, fsm::to<asked_tuning>, fsm::guard<tuning_allowed>>,
         fsm::transition<fsm::from<asked_tuning>, fsm::on<go>, fsm::to<plain>>, plain_self> {};
