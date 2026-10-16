@@ -862,6 +862,15 @@ Host check: `TrafficLightExample --dot > tl.dot; TrafficLightExample |
 fsmview.py tl.dot --stdin`.
 
 ## Open ideas (discussed, not implemented)
+- Instance values through one per-state body (2026-10-16): `observing`
+  delivers a state's instance values inside the same body as its
+  static set, so an observer whose static element is suppressed on an
+  edge (the edge form) pays the value delivery once per such edge.
+  The firmware's merged power observer (level + contract terms in one
+  class) cost 236 B on pd_drp for that; `[[gnu::noinline]]` on
+  `valuesEnter` was worse (+404 B). Candidate: the machine delivers
+  instance values through the plain `onEnter` body even where the
+  static set takes the edge form - a hook-protocol change.
 - Optional `action<A>` transition role (0-or-1 like `guard<G>`, which is
   implemented).
 - Tracing ignored events (process() returning false) as a second hook and
