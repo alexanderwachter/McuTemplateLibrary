@@ -116,11 +116,13 @@ int dotTests()
                           "    // submachine: diving sub_table\n    rankdir=LR;\n"));
     // the graph's name is its title, visible in every rendering
     check(dot.contains("    label=\"example\";\n    labelloc=t;\n"));
-    // the composite's label carries its sub-table as a section of its own
+    // the composite's label carries its sub-table as a section of its own;
+    // the node is filled with a bold border and classed for the SVG
     check(dot.contains("\"diving\" [label=<<table border=\"0\" cellborder=\"0\" cellspacing=\"0\">"
                        "<tr><td><b><font point-size=\"16\">diving</font></b></td></tr><hr/>"
                        "<tr><td align=\"left\">timeout 90 ms</td></tr>"
-                       "<hr/><tr><td align=\"left\">submachine sub_table</td></tr></table>>];"));
+                       "<hr/><tr><td align=\"left\">submachine sub_table</td></tr></table>>"
+                       " style=\"rounded,filled,bold\" fillcolor=\"#eef2ff\" class=composite];"));
     check(dot.contains("\"off\" -> \"diving\" [label=\"dive\" id=\"off__dive__diving__6\"];"));
     // the sub-table renders as its own graph, flat
     std::ostringstream sub;

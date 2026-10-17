@@ -12,14 +12,15 @@
  * marker, a final state a double border, and an any_state wildcard
  * source is shown as a dashed node. A state emitting an event to the
  * machine above names it in its label. A
- * composite state names its submachine's table in its label; the
- * sub-table is a graph of its own (write it separately - tools/dotgen
- * finds every named table).
+ * composite state is filled with a bold border and names its
+ * submachine's table in its label; the sub-table is a graph of its own
+ * (write it separately - tools/dotgen finds every named table).
  *
  * For tools/fsmview the graph carries a "// table: <short name>" comment
  * naming the table (the machine id of fsm::tracing lines), one
  * "// submachine: <state> <table>" comment per composite state (the
- * child graph a parent's exit deactivates), and every edge an id
+ * child graph a parent's exit deactivates, and the panel a click on the
+ * composite node reveals), and every edge an id
  * "<from>__<event>__<to>__<index>" that Graphviz passes into its SVG
  * output; the index in the table keeps guarded alternatives of one
  * (state, event) pair distinct, <to> is internal_target for internal
@@ -106,8 +107,9 @@ void writeDotAnnotations(std::ostream& out)
 
 // The label is an HTML-like table so that a rule separates the
 // sections: the name, the timeout, the submachine, the event the state
-// emits, the annotation set, the notes. A final state is drawn with a
-// double border
+// emits, the annotation set, the notes. A composite state is filled
+// with a bold border and classed "composite" (Graphviz passes the class
+// into its SVG), a final state is drawn with a double border
 template<typename STATE>
 void writeDotNode(std::ostream& out, bool final_state)
 {
@@ -155,11 +157,14 @@ void writeDotNode(std::ostream& out, bool final_state)
             writeDotRow(out, std::string_view{STATE::dot_action});
         }
         out << "</table>>";
-        if (final_state) {
-            out << ' ';
-        }
+    }
+    if constexpr (nesting) {
+        out << " style=\"rounded,filled,bold\" fillcolor=\"#eef2ff\" class=composite";
     }
     if (final_state) {
+        if constexpr (labelled) {
+            out << ' ';
+        }
         out << "peripheries=2";
     }
     if (labelled || final_state) {
