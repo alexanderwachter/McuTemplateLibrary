@@ -162,15 +162,16 @@ def derives_from_table(bases, aliases):
 
 
 def find_tables(header, aliases=None):
-    """Named concrete transition tables declared in a header, and
-    whether a template table (only a --table instantiation can render
-    it) lives here. The aliases are the names of unnamed tables a table
-    may derive from; those of the header itself when none are given."""
+    """Named concrete transition tables declared in a header, and the
+    template tables living here as (name, line) - only an instantiation
+    named with --table or read from an --elf image renders one of
+    those. The aliases are the names of unnamed tables a table may
+    derive from; those of the header itself when none are given."""
     if aliases is None:
         aliases = table_aliases(header)
     text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
     tables = []
-    templates = False
+    templates = []
     # namespace tracking: a stack of (name, brace depth at its opening)
     stack = []
     depth = 0
@@ -189,10 +190,7 @@ def find_tables(header, aliases=None):
                 if derives_from_table(struct.group(3), aliases):
                     before = text[:position + struct.start()]
                     if TEMPLATE_RE.search(before[-400:]):
-                        line = before.count("\n") + 1
-                        print(f"dotgen: {header}:{line}: template table '{struct.group(2)}' "
-                              f"skipped - name an instantiation with --table", file=sys.stderr)
-                        templates = True
+                        templates.append((struct.group(2), before.count("\n") + 1))
                     else:
                         scopes = [name for name, _ in stack if name]
                         qualified = "::".join(scopes + [struct.group(2)])
@@ -207,11 +205,12 @@ def find_tables(header, aliases=None):
     return tables, templates
 
 
-def scan(paths, say=lambda message: None):
+def scan(paths, say=lambda message: None, instantiated_by_image=False):
     """Tables found under the paths, the headers named directly, and
     the headers declaring template tables (the generator includes the
-    latter two even without a found table: a --table instantiation
-    needs the declaration)."""
+    latter two even without a found table: an instantiation needs the
+    declaration). A template table is pointed out as needing --table,
+    unless an image names the instantiations."""
     headers = []
     given = []
     for path in paths:
@@ -236,6 +235,11 @@ def scan(paths, say=lambda message: None):
         for table in found:
             say(f"dotgen: {table.header}:{table.line}: {table.qualified}")
             tables.append(table)
+        for name, line in templates:
+            if not instantiated_by_image:
+                print(f"dotgen: {header}:{line}: template table '{name}' skipped - name an "
+                      f"instantiation with --table, or the image running it with --elf",
+                      file=sys.stderr)
         if templates:
             template_headers.append(header.resolve())
     return tables, given, template_headers
@@ -439,7 +443,7 @@ def built_tables(images, nm, scanned, say, fail):
 
 
 def run(args, say=print, fail=sys.exit):
-    tables, given_headers, template_headers = scan(args.paths, say)
+    tables, given_headers, template_headers = scan(args.paths, say, bool(args.elf))
     if args.elf:
         tables = built_tables(args.elf, args.nm, tables, say, fail)
     for spec in args.table:

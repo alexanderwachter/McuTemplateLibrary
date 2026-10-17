@@ -88,7 +88,7 @@ class NestedCrawler(unittest.TestCase):
             tables, has_templates = dotgen.find_tables(header)
         self.assertEqual([table.qualified for table in tables],
                          ["app::inner_table", "app::outer_table"])
-        self.assertFalse(has_templates)
+        self.assertEqual(has_templates, [])
 
 
 class Crawler(unittest.TestCase):
@@ -96,13 +96,16 @@ class Crawler(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.header = Path(self.directory.name) / "tables.hpp"
         self.header.write_text(HEADER, encoding="utf-8")
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            self.tables, self.has_templates = dotgen.find_tables(self.header)
-        self.messages = stderr.getvalue()
+        self.tables, self.templates = dotgen.find_tables(self.header)
 
     def tearDown(self):
         self.directory.cleanup()
+
+    def scan_messages(self, instantiated_by_image=False):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            dotgen.scan([str(self.header)], instantiated_by_image=instantiated_by_image)
+        return stderr.getvalue()
 
     def test_named_tables_with_their_namespaces(self):
         self.assertEqual([table.qualified for table in self.tables],
@@ -110,10 +113,17 @@ class Crawler(unittest.TestCase):
         self.assertEqual([table.name for table in self.tables],
                          ["plain_table", "aliased_table", "anonymous_table"])
 
-    def test_template_is_skipped_with_a_hint(self):
-        self.assertIn("template table 'templated_table' skipped", self.messages)
-        self.assertIn("--table", self.messages)
-        self.assertTrue(self.has_templates)
+    def test_template_is_reported_with_its_line(self):
+        [(name, line)] = self.templates
+        self.assertEqual(name, "templated_table")
+        self.assertIn("struct templated_table", HEADER.splitlines()[line - 1])
+
+    def test_scan_hints_at_the_template_unless_an_image_names_it(self):
+        messages = self.scan_messages()
+        self.assertIn("template table 'templated_table' skipped", messages)
+        self.assertIn("--table", messages)
+        self.assertIn("--elf", messages)
+        self.assertNotIn("skipped", self.scan_messages(instantiated_by_image=True))
 
     def test_line_numbers(self):
         lines = HEADER.splitlines()
