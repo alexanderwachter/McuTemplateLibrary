@@ -66,6 +66,14 @@ class ZephyrBuild:
         args.out = args.out or str(self.out)
 
 
+def configured_build_dir(config):
+    """The build directory west build would use when its configured
+    format needs no arguments, if it holds a build."""
+    fmt = config.get("build.dir-fmt", "build")
+    directory = Path("build" if "{" in fmt else fmt)
+    return str(directory) if (directory / "CMakeCache.txt").is_file() else None
+
+
 def build_parser(parser):
     parser.add_argument("-d", "--build-dir", metavar="DIR",
                         help="the Zephyr build directory answering what is not given: its "
@@ -100,17 +108,10 @@ if WestCommand is not None:
 
         def do_run(self, args, unknown_args):
             if args.build_dir is None and not args.elf and not args.paths:
-                args.build_dir = self.configured_build_dir()
+                args.build_dir = configured_build_dir(self.config)
             if args.build_dir:
                 build = ZephyrBuild(args.build_dir, self.die)
                 self.inf(f"dotgen: build directory {build.directory}: image {build.elf}, "
                          f"declarations under {', '.join(build.sources)}")
                 build.supply(args)
             dotgen.run(args, say=self.inf, fail=self.die)
-
-        def configured_build_dir(self):
-            """The build directory west build would use when its
-            configured format needs no arguments, if it holds a build."""
-            fmt = self.config.get("build.dir-fmt", "build")
-            directory = Path("build" if "{" in fmt else fmt)
-            return str(directory) if (directory / "CMakeCache.txt").is_file() else None

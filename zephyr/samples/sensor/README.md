@@ -41,8 +41,8 @@ without the LED driver or the emergency stop.
 ## Watch it live
 
 ```sh
-west build -t dot        # sensor_table.dot (every feature in view), measuring_table.dot, led_table.dot in build/
-west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/
+west build -t dot        # sensor_table.dot (every feature in view), measuring_table.dot, led_table.dot in build/dot/
+west fsm_liveview        # /dev/ttyACM0 at 115200, graphs from build/dot/
 ```
 
 The page stacks the three graphs, each with its tracked state in the

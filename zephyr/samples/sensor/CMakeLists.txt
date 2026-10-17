@@ -21,7 +21,7 @@ target_sources(app PRIVATE src/main.cpp)
 add_custom_target(dot
     COMMAND ${PYTHON_EXECUTABLE} ${MTL_ROOT}/tools/dotgen/dotgen.py
             ${CMAKE_CURRENT_LIST_DIR}/src/led.hpp ${CMAKE_CURRENT_LIST_DIR}/src/sensor.hpp
-            -o ${CMAKE_BINARY_DIR}
-    COMMENT "Writing the state machine graphs into ${CMAKE_BINARY_DIR}"
+            -o ${CMAKE_BINARY_DIR}/dot
+    COMMENT "Writing the state machine graphs into ${CMAKE_BINARY_DIR}/dot"
     VERBATIM
 )

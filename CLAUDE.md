@@ -694,7 +694,10 @@ member functions and hooks (`onEnter`, `onEnterFrom`, `notifyEntry`,
   keeps guarded alternatives distinct; `internal_target` as `<to>` for
   internal edges). Graphviz passes the ids into its SVG; `tools/fsmview`
   highlights `g.edge[id^="<from>__<event>__<to>__"]` and nodes by
-  `<title>`.
+  `<title>`. A composite state's node is `style="rounded,filled,bold"
+  fillcolor="#eef2ff" class=composite` (2026-10-17): the look marks it
+  in every rendering, the class lands on the node's `<g>` in the SVG
+  and is what fsmview's click-to-reveal and run coloring select.
 - Transition bodies live in `changeState<OLD, NEW>(event)` (payload) /
   `changeState<OLD, NEW>()` / `leaveState`/`enterState<OLD, NEW>`, instantiated
   per EDGE, not per event: all events triggering the same edge share one
@@ -865,17 +868,20 @@ in `traffic_light.hpp` behind a declared `uptimeMs()`). The sample's
 
 ## tools/fsmview
 Python 3 stdlib + one HTML page (`tools/fsmview/README.md`); also the
-west extension command `fsm_liveview` (same arguments; its
-`WestCommand` class sits behind a guarded `from west.commands import`
-in the tool itself, dotgen's in `zephyr/scripts/fsm_dotgen.py`; both
+west extension command `fsm_liveview` in `zephyr/scripts/fsm_liveview.py`
+(2026-10-17, out of the generic tool like dotgen's: same arguments plus
+`-d BUILD_DIR`; without a GRAPH it takes `<build>/dot`, where
+`west fsm_dotgen` and the samples' `dot` targets write, the build
+directory from `-d` or `fsm_dotgen.configured_build_dir`; `supply` is
+the tested piece, `test_fsm_liveview.py`); both
 listed in `zephyr/scripts/west-commands.yml`, which the consuming
 manifest names in the project's `west-commands:` key - west ignores
 `module.yml` and `ZEPHYR_EXTRA_MODULES` for commands; the root `west.yml`
 registers them when this repo is the manifest repo). Sources:
 `--serial` (default source `/dev/ttyACM0@115200`, pyserial - the one
 dependency, checked before the server starts), `--tcp`,
-`--listen`, `--stdin`, `--replay`; default graphs are `build/*.dot`
-(the sample's `dot` target); live lines are saved verbatim. The server
+`--listen`, `--stdin`, `--replay`; the script's default graphs are
+`dot/*.dot` (dotgen.py's default output); live lines are saved verbatim. The server
 keeps every received line (`Trace.lines`, ANSI stripped) and serves
 lines - `/events?from=N`, SSE `/stream` with the line index as event id -
 where a trace line carries its resolved step; the page shows the other
@@ -888,7 +894,30 @@ thread only ends the thread). Graphs are rendered with `dot` when found
 (`--dot PATH`), else with viz.js from jsDelivr in the browser. `--map
 MACHINE=GRAPH` disambiguates templated tables whose short names collide.
 Host check: `TrafficLightExample --dot > tl.dot; TrafficLightExample |
-fsmview.py tl.dot --stdin`.
+fsmview.py tl.dot --stdin`. Hierarchy on the page (2026-10-17): `/state`
+hands each graph its `children` (composite state -> child graph stem,
+`Trace.children`, resolved like trace lines), the page stacks the
+panels in tree order (`hierarchy()`: root, then each child right below
+its parent, the child's panel tinted with the composite fill - `.nested`,
+`--nested` = the DOT fillcolor, the SVG's white background polygon made
+transparent; a shared sub-table sits below its first parent and its
+heading names every parent), a press without a
+drag on a `g.node.composite` reveals the child's panel (the pointer
+capture sends the release to the body, so the node is taken at the
+press), and `renderPath` colors the composite whose child runs and the
+child's panel (`.running` on the node and the panel, `--run` stroke,
+`--running` fill) and draws a dashed arrow from the node to the
+child's state in the `#links` overlay, redrawn on pan/zoom/resize via a
+capture-phase scroll listener and a ResizeObserver on the stack and
+every SVG; `reveal` also pulses the panel (`.pulse`, a box-shadow
+animation). Breakpoints: a right button press on a state toggles
+`.breakpoint` (red dashed border and name; `breakpoints` set keyed
+`"<stem>\n<state>"`, saved under `fsmview.breakpoints`), `hitsBreakpoint`
+on a new live step leaves live mode at that step, in `playStep` stops
+play after it; a manual step never pauses. Drag pans sideways in the
+body and vertically through the stack (the body is as tall as its graph). Log filters "show logs" /
+"hide sm-traces", both on by default; with nothing to show the log
+column folds away.
 
 ## Open ideas (discussed, not implemented)
 - Instance values through one per-state body (2026-10-16): `observing`

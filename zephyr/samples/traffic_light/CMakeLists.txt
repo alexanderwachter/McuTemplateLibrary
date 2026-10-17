@@ -19,7 +19,7 @@ target_sources(app PRIVATE src/main.cpp)
 # header is Zephyr-free, so the host compiler builds it
 add_custom_target(dot
     COMMAND ${PYTHON_EXECUTABLE} ${MTL_ROOT}/tools/dotgen/dotgen.py
-            ${CMAKE_CURRENT_LIST_DIR}/src -o ${CMAKE_BINARY_DIR}
-    COMMENT "Writing the state machine graph into ${CMAKE_BINARY_DIR}"
+            ${CMAKE_CURRENT_LIST_DIR}/src -o ${CMAKE_BINARY_DIR}/dot
+    COMMENT "Writing the state machine graph into ${CMAKE_BINARY_DIR}/dot"
     VERBATIM
 )

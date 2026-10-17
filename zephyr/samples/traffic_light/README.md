@@ -55,16 +55,18 @@ The graph comes from the sample's own table (`src/traffic_light.hpp`,
 kept free of Zephyr so the host compiler can build the generator):
 
 ```sh
-west build -t dot                       # writes build/traffic_light_table.dot
-west fsm_liveview                       # reads /dev/ttyACM0 at 115200, graphs from build/
+west build -t dot                       # writes build/dot/traffic_light_table.dot
+west fsm_liveview                       # reads /dev/ttyACM0 at 115200, graphs from build/dot/
 ```
 
 Then open the printed link, http://localhost:8420/. The defaults are
-the board's console and the `.dot` files of `build/`; another port is
-`--serial /dev/ttyUSB0@921600`, other graphs are given as arguments.
-`west fsm_liveview` is the viewer `tools/fsmview/fsmview.py` as a west
-command (see the manifest note under Build; without it, call the script
-directly). `west fsm_dotgen modules/mtl/zephyr/samples/traffic_light/src
--o graphs` writes the graph without a build directory (then `west
-fsm_liveview graphs`). Silence the trace with
+the board's console and the `.dot` files of the build's `dot/`, where
+`west fsm_dotgen` writes too (`-d` names another build directory);
+another port is `--serial /dev/ttyUSB0@921600`, other graphs are given
+as arguments. `west fsm_liveview` is the viewer
+`tools/fsmview/fsmview.py` as a west command (see the manifest note
+under Build; without it, call the script directly). `west fsm_dotgen
+modules/mtl/zephyr/samples/traffic_light/src -o graphs` writes the
+graph without a build directory (then `west fsm_liveview graphs`).
+Silence the trace with
 `CONFIG_MTL_FSM_LOG_LEVEL_OFF=y`: the observer then compiles to nothing.
