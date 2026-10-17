@@ -20,10 +20,14 @@ the compiler provides itself are left to it.
 The table headers must compile on the host: keep them free of target
 headers (put kernel calls behind a declared function, as
 zephyr/samples/traffic_light/src/traffic_light.hpp does). Templated
-tables cannot be found by scanning; name an instantiation with --table.
+tables cannot be found by scanning; name an instantiation with --table,
+or let a built image name them: --elf reads the tables of every
+fsm::StateMachine in the image's symbols, instantiations spelled out,
+and renders exactly those - the scan then only says where the
+declarations live.
 
 Runs as "west fsm_dotgen" (extension command of the mtl Zephyr module) or directly:
-  python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-o DIR] [--table NS::TABLE[=NAME]]...
+  python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-o DIR] [--table NS::TABLE[=NAME]]... [--elf IMAGE]
 """
 
 import argparse
@@ -51,6 +55,10 @@ TEMPLATE_RE = re.compile(r"template\s*<[^;{]*>\s*$", re.DOTALL)
 TABLE_ALIAS_RE = re.compile(r"\busing\s+(\w+)\s*=\s*fsm::transition_table\s*<")
 TEMPLATE_ARGUMENTS_RE = re.compile(r"<[^<>]*>")
 BASE_KEYWORDS = {"public", "protected", "private", "virtual"}
+# where a demangled symbol names a machine; its first argument is the table
+MACHINE_RE = re.compile(r"\bfsm::StateMachine<")
+NESTED_TABLE = "fsm::internal::nested<"
+QUALIFIER_RE = re.compile(r"\b\w+::")
 
 
 class Table:
@@ -59,6 +67,65 @@ class Table:
         self.name = name            # struct name = machine id and file stem
         self.header = header
         self.line = line
+
+
+def table_name(qualified):
+    """The file stem of a table type: the struct's name, and for an
+    instantiation its arguments without their namespaces appended, so
+    that two instantiations of one template get two files -
+    ns::vcs_table<(ns::role)0> is vcs_table_role_0."""
+    template, _, arguments = qualified.partition("<")
+    name = template.split("::")[-1]
+    if arguments:
+        words = re.sub(r"\W+", "_", QUALIFIER_RE.sub("", arguments)).strip("_")
+        name = f"{name}_{words}"
+    return name
+
+
+def first_argument(text, start):
+    """The first template argument of the list opening at start, with
+    its own brackets balanced."""
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char in "<(":
+            depth += 1
+        elif char in ">)":
+            if depth == 0:
+                return text[start:index].strip()
+            depth -= 1
+        elif char == "," and depth == 0:
+            return text[start:index].strip()
+    return None
+
+
+def machine_tables(symbols):
+    """The tables of the machines a demangled symbol list names, each
+    once: fsm::StateMachine<TABLE, ...> for a root machine, and
+    fsm::StateMachine<fsm::internal::nested<TABLE, ...>, ...> for the
+    child machine of a composite state."""
+    tables = []
+    for line in symbols:
+        for match in MACHINE_RE.finditer(line):
+            table = first_argument(line, match.end())
+            if table and table.startswith(NESTED_TABLE):
+                table = first_argument(table, len(NESTED_TABLE))
+            if table and table not in tables:
+                tables.append(table)
+    return tables
+
+
+def image_tables(elf, nm, fail=sys.exit):
+    """The tables of the machines built into an image, read from its
+    symbols with the toolchain's nm."""
+    try:
+        result = subprocess.run([nm, "-C", str(elf)], capture_output=True, text=True)
+    except OSError as error:
+        fail(f"dotgen: cannot run {nm}: {error}")
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        fail(f"dotgen: {nm} -C {elf} failed")
+    return machine_tables(result.stdout.splitlines())
 
 
 def strip_code(text):
@@ -329,7 +396,14 @@ def build_parser(parser=None):
                         help="preprocessor definition for the table headers")
     parser.add_argument("-t", "--table", action="append", default=[], metavar="NS::TABLE[=NAME]",
                         help="also render this type (e.g. a template instantiation); "
-                             "NAME is the file stem and graph title (default: the last name part)")
+                             "NAME is the file stem and graph title (default: the struct's "
+                             "name, with the arguments of an instantiation appended)")
+    parser.add_argument("--elf", action="append", default=[], metavar="IMAGE",
+                        help="render the tables of the machines built into this image, "
+                             "read from its symbols, and nothing else; the scanned "
+                             "headers only locate their declarations")
+    parser.add_argument("--nm", default=os.environ.get("NM") or "nm",
+                        help="the nm reading the --elf image (default: $NM, or nm)")
     parser.add_argument("-o", "--out", default="dot", metavar="DIR",
                         help="output directory, one <table>.dot per table (default: dot)")
     parser.add_argument("--cxx", default=os.environ.get("CXX") or shutil.which("c++") or "c++",
@@ -340,8 +414,34 @@ def build_parser(parser=None):
     return parser
 
 
+def built_tables(images, nm, scanned, say, fail):
+    """The tables of the machines the images hold, each with the header
+    the scan found it in - an instantiation has none, its template's
+    header joins through the template headers."""
+    tables = []
+    for image in images:
+        found = image_tables(image, nm, fail)
+        say(f"dotgen: --elf: {len(found)} machine table(s) in {image}")
+        for qualified in found:
+            if any(table.qualified == qualified for table in tables):
+                continue
+            if "(anonymous namespace)" in qualified:
+                print(f"dotgen: {image}: {qualified} skipped - a table in an anonymous "
+                      f"namespace cannot be named from outside its translation unit",
+                      file=sys.stderr)
+                continue
+            table = next((table for table in scanned if table.qualified == qualified), None)
+            if table is None:
+                table = Table(qualified, table_name(qualified), None, 0)
+            say(f"dotgen: --elf: {table.qualified} as {table.name}")
+            tables.append(table)
+    return tables
+
+
 def run(args, say=print, fail=sys.exit):
     tables, given_headers, template_headers = scan(args.paths, say)
+    if args.elf:
+        tables = built_tables(args.elf, args.nm, tables, say, fail)
     for spec in args.table:
         qualified, _, name = spec.partition("=")
         scanned = next((table for table in tables if table.qualified == qualified), None)
@@ -351,7 +451,7 @@ def run(args, say=print, fail=sys.exit):
             say(f"dotgen: --table: {qualified} as {name}")
             scanned.name = name
             continue
-        table = Table(qualified, name or qualified.split("<")[0].split("::")[-1], None, 0)
+        table = Table(qualified, name or table_name(qualified), None, 0)
         say(f"dotgen: --table: {table.qualified} as {table.name}")
         tables.append(table)
     if not tables:
@@ -368,13 +468,15 @@ def run(args, say=print, fail=sys.exit):
     out_dir.mkdir(parents=True, exist_ok=True)
     include_dirs = [MTL_ROOT / "include"] + [Path(d).resolve() for d in args.include_dirs]
     headers = {table.header for table in tables if table.header} | set(given_headers)
-    if args.table:
-        # a --table instantiation needs the template's declaration: the
-        # scan remembered where the template tables live
+    instantiations = [table for table in tables if table.header is None]
+    if instantiations:
+        # an instantiation needs the template's declaration: the scan
+        # remembered where the template tables live
         headers |= set(template_headers)
     include_dirs += sorted({header.parent for header in headers})
-    if args.table and not headers:
-        fail("dotgen: --table needs the header declaring the type: pass the header as PATH")
+    if instantiations and not headers:
+        fail("dotgen: a type given with --table or read from an --elf image needs the "
+             "header declaring it: pass the header as PATH")
     # the table headers include headers of their own, which -I has so far
     # had to name by hand: find them and add where they live
     include_dirs += resolve_includes(sorted(headers), include_dirs,

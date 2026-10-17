@@ -370,7 +370,10 @@ using submachine_initial_t = typename submachine_initial<STATE, ENABLED_SUBMACHI
 // sub-table itself plus the child's nesting depth (the root is 0),
 // which the timer observers use to pick their timer slot, and the
 // contexts the child inherits. Every user-facing alias
-// (StateMachine::table, trace names, validate) sees the plain table
+// (StateMachine::table, trace names, validate) sees the plain table.
+// tools/dotgen reads a child machine's table out of an image's symbols
+// through this spelling (fsm::internal::nested<TABLE, ...>): a rename
+// takes the tool and its test along
 template<concepts::transition_table TABLE, std::size_t DEPTH,
          mtl::concepts::typelist INHERITED = mtl::typelist<>>
 struct nested : TABLE {

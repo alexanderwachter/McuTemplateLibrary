@@ -829,7 +829,21 @@ namespaces tracked, comments/strings blanked), generates a C++ program calling
 `include/`, runs it: one `<table>.dot` per table. Templated tables are
 skipped with a hint; `--table NS::T<args>=name` renders instantiations,
 and naming a scanned table that way renames it (two tables sharing a
-struct name in different namespaces).
+struct name in different namespaces). `--elf IMAGE` (2026-10-17)
+renders the tables of the machines built into an image and nothing
+else: `nm -C` (`--nm`, default `$NM`/`nm`) lists them as the first
+argument of every `fsm::StateMachine<...>` symbol, a child machine's
+`fsm::internal::nested<TABLE, ...>` unwrapped (`machine_tables`,
+`first_argument`, `built_tables`); the demangler spells
+instantiations as valid C++ (`table_for<usbc::default_drp_timing,
+(usbc::drp_preference)0>`), the scan supplies the declaring headers,
+an instantiation's file stem is the template name plus its arguments
+without namespaces (`table_name`: `vcs_table_power_role_0`), an
+anonymous-namespace table is reported and skipped. The symbols name
+the user's table, not the enabled one: feature filtering is the
+observers', application types the host cannot compile - the graph
+shows every feature. The USB stack's Zephyr module wraps it as `west
+build -t dot` on its own ELF.
 Table headers must be host-compilable (the Zephyr sample keeps its table
 in `traffic_light.hpp` behind a declared `uptimeMs()`). The sample's
 `west build -t dot` target calls the script. Tests:

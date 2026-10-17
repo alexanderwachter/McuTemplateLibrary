@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -149,6 +150,61 @@ class Crawler(unittest.TestCase):
         self.assertEqual(alone, [])
         tables, _, _ = dotgen.scan([self.directory.name])
         self.assertIn("named_elsewhere", [table.name for table in tables])
+
+
+SYMBOLS = """\
+08001234 t void fsm::StateMachine<app::plain_table, fsm::timed<app::Timer&, 1u>, (anonymous namespace)::Policy>::processWithReaction<app::go>(app::go const&)
+08001300 t fsm::StateMachine<fsm::internal::nested<app::inner_table, 1, mtl::nil_type>, fsm::timed<app::Timer&, 1u>>::leaveActiveState()
+08001400 t void fsm::StateMachine<app::drp::table_for<app::default_timing, (app::preference)0>, app::Driver<app::Tcpc>>::enterState<app::idle, app::busy>()
+08001500 t fsm::StateMachine<app::plain_table, fsm::timed<app::Timer&, 1u>, (anonymous namespace)::Policy>::StateMachine()
+08001600 t fsm::StateMachine<fsm::internal::nested<app::vcs_table<(app::role)1>, 1, mtl::nil_type>, app::Driver<app::Tcpc>>::StateMachine()
+08001700 t void fsm::timed<app::Timer&, 1u>::onEnter<app::busy, fsm::StateMachine<app::other_table, fsm::timed<app::Timer&, 1u>>>(fsm::StateMachine<app::other_table, fsm::timed<app::Timer&, 1u>>&)
+08001800 t fsm::StateMachine<(anonymous namespace)::local_table>::StateMachine()
+08001900 T z_impl_k_sleep
+"""
+
+
+class ImageTables(unittest.TestCase):
+    """The tables of an image are read from its demangled symbols: the
+    first argument of every fsm::StateMachine, the nested wrapper of a
+    child machine unwrapped, each table once."""
+
+    def setUp(self):
+        self.tables = dotgen.machine_tables(SYMBOLS.splitlines())
+
+    def test_root_and_child_tables_each_once(self):
+        self.assertEqual(self.tables, [
+            "app::plain_table",
+            "app::inner_table",
+            "app::drp::table_for<app::default_timing, (app::preference)0>",
+            "app::vcs_table<(app::role)1>",
+            "app::other_table",
+            "(anonymous namespace)::local_table",
+        ])
+
+    def test_instantiations_get_distinct_names(self):
+        self.assertEqual(dotgen.table_name("app::plain_table"), "plain_table")
+        self.assertEqual(dotgen.table_name("app::vcs_table<(app::role)1>"), "vcs_table_role_1")
+        self.assertEqual(
+            dotgen.table_name("app::drp::table_for<app::default_timing, (app::preference)0>"),
+            "table_for_default_timing_preference_0")
+
+    def test_nested_argument_lists_stay_balanced(self):
+        line = "fsm::StateMachine<app::table<std::pair<int, int>, app::fn<void (*)(int, int)>>, obs>"
+        self.assertEqual(dotgen.machine_tables([line]),
+                         ["app::table<std::pair<int, int>, app::fn<void (*)(int, int)>>"])
+
+    def test_built_tables_take_the_scanned_header_and_skip_anonymous(self):
+        scanned = [dotgen.Table("app::plain_table", "plain_table", Path("/src/tables.hpp"), 30)]
+        messages = []
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), \
+                unittest.mock.patch.object(dotgen, "image_tables", return_value=self.tables):
+            tables = dotgen.built_tables(["image.elf"], "nm", scanned, messages.append, self.fail)
+        self.assertEqual([table.qualified for table in tables], self.tables[:-1])
+        self.assertEqual(tables[0].header, Path("/src/tables.hpp"))
+        self.assertIsNone(tables[2].header)
+        self.assertIn("local_table skipped", stderr.getvalue())
 
 
 class IncludeSearch(unittest.TestCase):

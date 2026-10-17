@@ -11,7 +11,7 @@ host C++ compiler against the library headers, runs it, and reports the
 files written.
 
 ```sh
-python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-D MACRO]... [-o DIR] [--table NS::TABLE[=NAME]]...
+python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-D MACRO]... [-o DIR] [--table NS::TABLE[=NAME]]... [--elf IMAGE]
 west fsm_dotgen ...                # the same as an extension command of the mtl Zephyr module
 ```
 
@@ -42,7 +42,23 @@ west fsm_dotgen modules/mtl/zephyr/samples/traffic_light/src -o graphs
   the scanner has to skip: `--table 'tc::drp::table_for<timing, pref>=tc_drp'`.
   Naming a table the scan found renames it: how two tables sharing a
   struct name in different namespaces are told apart
-  (`--table tc::sink_table=tc_sink_table`).
+  (`--table tc::sink_table=tc_sink_table`). Without a NAME an
+  instantiation is named after its template with the arguments
+  appended, namespaces dropped: `vcs_table<(usbc::power_role)0>` is
+  `vcs_table_power_role_0`.
+- `--elf IMAGE`: render the tables of the machines built into this
+  image and nothing else. The tables are read from the image's symbols
+  (`nm -C`; `--nm` names the toolchain's nm, default `$NM` or `nm`), so
+  a templated table arrives as the instantiation the image runs -
+  `table_for<usbc::default_drp_timing, (usbc::drp_preference)0>` -
+  and a sub-table of a composite state as its own machine. The scanned
+  headers only say where the declarations live. The arguments must be
+  declared in those headers: a timing constant defined in the
+  application's `main.cpp` cannot be compiled on the host. A table in
+  an anonymous namespace is reported and skipped. The symbols name the
+  table a facade hands to the machine, so the graph shows every
+  feature; the states of a feature the image's observers leave disabled
+  are drawn too.
 - `--cxx`, `--std`: host compiler (default `$CXX` or `c++`) and standard
   (default `c++20`); `--keep` leaves the generated `dotgen.cpp` in the
   output directory.
@@ -73,7 +89,9 @@ the commands under the project.
 
 The traffic light sample also wraps the generator as a build target:
 `west build -t dot` writes `traffic_light_table.dot` into the build
-directory.
+directory. A target reading the image it just built passes
+`--elf ${PROJECT_BINARY_DIR}/${KERNEL_ELF_NAME} --nm ${CMAKE_NM}` and
+depends on `zephyr_final`.
 
 ## Checks
 
