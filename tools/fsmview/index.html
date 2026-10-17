@@ -15,6 +15,9 @@
 <style>
 :root {
     --hl: hsl(140 65% 32%); /* outline of the current state and edge label */
+    --run: hsl(215 80% 45%); /* a composite state running its submachine, and the path into it */
+    --nested: #eef2ff;       /* fsm::writeDot's fill of a composite state: a submachine's panel takes it */
+    --running: hsl(215 80% 88%); /* the fill of a composite state running its submachine, and of that panel */
 }
 * { box-sizing: border-box; }
 body {
@@ -33,6 +36,7 @@ header .muted { color: #cbd5e1; font-size: 12px; }
     cursor: pointer; font: inherit; text-decoration: line-through;
 }
 #machines button.shown { background: #4b5563; color: #fff; text-decoration: none; }
+#machines #every { background: transparent; border: 1px solid #6b7280; color: #cbd5e1; text-decoration: none; }
 #status { margin-left: auto; display: flex; gap: 12px; align-items: center; }
 #live {
     border: 1px solid #9ca3af; border-radius: 10px; padding: 1px 10px; color: #9ca3af;
@@ -45,14 +49,29 @@ header .muted { color: #cbd5e1; font-size: 12px; }
     font-size: 12px; max-height: 6em; overflow: auto; white-space: pre-line;
 }
 main { display: grid; grid-template-columns: 1fr 10px var(--log-width, 360px); min-height: 0; }
+/* with nothing to show in the log, the graphs take its room */
+main.no-log { grid-template-columns: 1fr; }
+main.no-log #splitter, main.no-log #log { display: none; }
 /* drag to resize the log, double-click for the default width; the wheel
    over it scrolls the stack of graphs (over a graph the wheel zooms) */
 #splitter { cursor: col-resize; background: #e5e7eb; }
 #splitter:hover, #splitter.dragging { background: #9ca3af; }
-#graph { overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 14px; }
+#graph { overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 14px; position: relative; }
+/* the path the events take now, drawn over the stack from a running
+   composite state to its submachine's state */
+#links { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+#links path { fill: none; stroke: var(--run); stroke-width: 2; stroke-dasharray: 7 4; }
+#links polygon { fill: var(--run); }
 .panel { border: 1px solid #ddd; border-radius: 6px; background: #fff; padding: 6px 10px; }
+/* a submachine's panel is tinted like the composite state that runs it;
+   Graphviz paints a white background polygon first in the graph's group */
+.panel.nested { background: var(--nested); }
+.panel.nested.running { background: var(--running); }
+.panel.nested svg > g.graph > polygon { fill: transparent; }
 .panel h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; display: flex; gap: 12px; align-items: baseline; }
 .panel h2 .state { font: 12px ui-monospace, monospace; color: #555; }
+/* a submachine's panel names the composite states it runs under */
+.panel h2 .origin { font-size: 12px; font-weight: 400; color: #6b7280; }
 .panel h2 .zoom { margin-left: auto; display: flex; gap: 4px; align-items: center; font-weight: 400; }
 .panel h2 .zoom button { font: 12px system-ui, sans-serif; padding: 1px 7px; cursor: pointer; }
 .panel h2 .zoom .level { font: 12px ui-monospace, monospace; color: #555; min-width: 4em; text-align: right; }
@@ -71,9 +90,11 @@ main { display: grid; grid-template-columns: 1fr 10px var(--log-width, 360px); m
 #log div:hover { background: #f1f5f9; }
 #log div.current { background: #fee2e2; border-left-color: #e0432f; }
 #log div.warn { color: #b45309; }
-/* lines that are no trace lines: shown only when "all log lines" is on */
+/* the state machine's trace lines are what the graphs show, so the log
+   leaves them out by default; the other lines are the surrounding context */
 #log div.other { color: #6b7280; }
-#log.steps-only div.other { display: none; }
+#log.no-traces div.step { display: none; }
+#log.no-logs div.other { display: none; }
 #log .ts { color: #94a3b8; margin-right: 6px; }
 footer {
     display: flex; gap: 10px; align-items: center; padding: 6px 12px;
@@ -98,14 +119,29 @@ g.edge.hl > path { stroke: var(--c); stroke-width: var(--w); }
 g.edge.hl > polygon { fill: var(--c); stroke: var(--c); }
 g.edge.hl > text { fill: var(--c); font-weight: 600; }
 g.edge.now > text { fill: var(--hl); }
+/* a composite state (classed by fsm::writeDot) opens its submachine's
+   panel; the one running its submachine now takes the run color */
+g.node.composite { cursor: pointer; }
+g.node.running > path { fill: var(--running); stroke: var(--run); stroke-width: 3; }
+g.node.running > text { fill: #202020; font-weight: 600; }
+/* a breakpoint (right-click on a state): live mode and play pause when
+   the state becomes active; drawn as a red dashed border and name */
+g.node.breakpoint > path, g.node.breakpoint > ellipse { stroke: #e0432f; stroke-width: 2.5; stroke-dasharray: 5 3; }
+g.node.breakpoint > text:first-of-type { fill: #e0432f; }
+/* the submachine's panel a click on its composite state reveals */
+.panel.pulse { animation: pulse 1.6s ease-out; }
+@keyframes pulse { from { box-shadow: 0 0 0 5px var(--run); } to { box-shadow: 0 0 0 0 transparent; } }
 </style>
 </head>
 <body>
 <header>
     <span class="title">fsmview</span>
-    <nav id="machines" title="show or hide a machine; the shown ones stack below each other"></nav>
+    <nav id="machines" title="show or hide a machine; the shown ones stack below each other">
+        <button id="every" title="show or hide every machine">none</button>
+    </nav>
     <label class="muted"><input type="checkbox" id="follow" checked> follow machine</label>
-    <label class="muted" title="show every received log line, not only the trace lines"><input type="checkbox" id="alllines"> all log lines</label>
+    <label class="muted" title="the received log lines, in the panel on the right"><input type="checkbox" id="showlogs" checked> show logs</label>
+    <label class="muted" title="leave the state machine trace lines out of the log: the graphs show them in color"><input type="checkbox" id="hidetraces" checked> hide sm-traces</label>
     <div id="status">
         <span id="current" title="tracked state of the shown machine"></span>
         <span id="source" class="muted"></span>
@@ -113,8 +149,14 @@ g.edge.now > text { fill: var(--hl); }
     </div>
 </header>
 <div id="warnings"></div>
-<main>
-    <div id="graph"></div>
+<main id="main">
+    <div id="graph">
+        <svg id="links" xmlns="http://www.w3.org/2000/svg">
+            <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <polygon points="0,0 10,5 0,10"/>
+            </marker></defs>
+        </svg>
+    </div>
     <div id="splitter" title="drag to resize the log, double-click to reset; wheel here scrolls the graphs"></div>
     <div id="log"></div>
 </main>
@@ -139,7 +181,8 @@ g.edge.now > text { fill: var(--hl); }
 const VIZ_URL = "https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js";
 
 const ui = {};
-for (const id of ["machines", "follow", "alllines", "current", "source", "live", "warnings", "graph", "splitter", "log",
+for (const id of ["machines", "every", "follow", "showlogs", "hidetraces", "current", "source", "live", "warnings",
+                  "main", "graph", "links", "splitter", "log",
                   "first", "prev", "play", "next", "last", "slider", "counter", "speed"]) {
     ui[id] = document.getElementById(id);
 }
@@ -179,7 +222,7 @@ async function svgFromDot(dot) {
     return viz.renderSVGElement(dot);
 }
 
-async function buildGraph(data) {
+async function buildGraph(data, place) {
     let svg;
     try {
         svg = data.svg ? svgFromText(data.svg) : await svgFromDot(data.dot);
@@ -196,16 +239,22 @@ async function buildGraph(data) {
     for (const title of svg.querySelectorAll("g.node > title")) {
         nodes.set(title.textContent, title.parentNode);
     }
-    const title = data.table && data.table !== data.name ? `${data.name} (${data.table})` : data.name;
-
-    // its panel in the stack, and its toggle in the header
+    // its panel in the stack, tinted like a composite state when it is a
+    // submachine's and naming the composite states it runs under, and its
+    // toggle in the header
     const panel = document.createElement("section");
     panel.className = "panel";
+    panel.classList.toggle("nested", place.depth > 0);
     const heading = document.createElement("h2");
     const name = document.createElement("span");
-    name.textContent = title;
+    name.textContent = titleOf(data);
+    name.title = "in the graph: drag pans, the wheel zooms, a click on a composite state reveals its "
+               + "submachine, a right-click on a state sets a breakpoint (live mode and play pause there)";
     const state = document.createElement("span");
     state.className = "state";
+    const origin = document.createElement("span");
+    origin.className = "origin";
+    origin.textContent = place.parents.map(parent => `↳ ${titleOf(parent.data)} › ${parent.state}`).join(", ");
     const zoomBox = document.createElement("span");
     zoomBox.className = "zoom";
     const level = document.createElement("span");
@@ -221,41 +270,63 @@ async function buildGraph(data) {
         zoomBox.appendChild(control);
     }
     zoomBox.appendChild(level);
-    heading.append(name, state, zoomBox);
+    heading.append(name, state, origin, zoomBox);
     const body = document.createElement("div");
     body.className = "body";
     body.appendChild(svg);
-    // wheel zooms around the pointer, click and drag pans
+    // wheel zooms around the pointer, click and drag pans: sideways within
+    // the body, up and down through the stack (the body is as tall as its
+    // graph and never scrolls vertically)
     body.addEventListener("wheel", event => {
         event.preventDefault();
         zoomBy(data.stem, event.deltaY < 0 ? 1.1 : 1 / 1.1, event);
     }, {passive: false});
+    // A click (a press without a drag) on a composite state reveals its
+    // submachine's panel; the capture sends the release to the body, so
+    // the node is taken at the press
     let drag = null;
     body.addEventListener("pointerdown", event => {
+        if (event.button === 2) {
+            const node = event.target.closest("g.node");
+            const name = node && node.querySelector("title").textContent;
+            if (data.states.includes(name)) toggleBreakpoint(data.stem, name);
+            return;
+        }
         if (event.button !== 0) return;
-        drag = {x: event.clientX, y: event.clientY, left: body.scrollLeft, top: body.scrollTop};
+        drag = {x: event.clientX, y: event.clientY, left: body.scrollLeft, top: ui.graph.scrollTop,
+                moved: false, composite: event.target.closest("g.node.composite")};
         body.setPointerCapture(event.pointerId);
         body.classList.add("dragging");
         event.preventDefault();
     });
     body.addEventListener("pointermove", event => {
         if (!drag) return;
-        body.scrollLeft = drag.left - (event.clientX - drag.x);
-        body.scrollTop = drag.top - (event.clientY - drag.y);
+        const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        body.scrollLeft = drag.left - dx;
+        ui.graph.scrollTop = drag.top - dy;
     });
-    for (const end of ["pointerup", "pointercancel"]) {
-        body.addEventListener(end, () => { drag = null; body.classList.remove("dragging"); });
-    }
+    body.addEventListener("pointerup", () => {
+        if (drag && !drag.moved && drag.composite) {
+            const child = data.children[drag.composite.querySelector("title").textContent];
+            if (graphs.has(child)) reveal(child);
+        }
+        drag = null;
+        body.classList.remove("dragging");
+    });
+    body.addEventListener("pointercancel", () => { drag = null; body.classList.remove("dragging"); });
+    body.addEventListener("contextmenu", event => event.preventDefault()); // the right button sets breakpoints
     panel.append(heading, body);
     ui.graph.appendChild(panel);
 
     const button = document.createElement("button");
-    button.textContent = title;
+    button.textContent = `${"›".repeat(place.depth)} ${titleOf(data)}`.trim();
     button.addEventListener("click", () => setShown(data.stem, panel.hidden));
     ui.machines.appendChild(button);
 
     graphs.set(data.stem, {data, svg, nodes, panel, button, state, body, level, natural, zoom: "fit"});
     setZoom(data.stem, savedZoom(data.stem));
+    resized.observe(svg);
 }
 
 // --- zoom: "fit" scales the graph to the panel width, a number is the
@@ -316,9 +387,14 @@ function setShown(stem, on) {
     if (!graph) return;
     graph.panel.hidden = !on;
     graph.button.classList.toggle("shown", on);
+    ui.every.textContent = someHidden() ? "all" : "none";
     try {
         localStorage.setItem(shownKey, JSON.stringify([...graphs.keys()].filter(s => !graphs.get(s).panel.hidden)));
     } catch (error) { /* no storage: the selection lives for this page only */ }
+}
+
+function someHidden() {
+    return [...graphs.values()].some(graph => graph.panel.hidden);
 }
 
 // Every machine shown, unless a saved selection names some of them
@@ -327,6 +403,87 @@ function restoreShown() {
     try { saved = JSON.parse(localStorage.getItem(shownKey)); } catch (error) { saved = null; }
     const known = Array.isArray(saved) ? saved.filter(stem => graphs.has(stem)) : [];
     for (const stem of graphs.keys()) setShown(stem, known.length === 0 || known.includes(stem));
+}
+
+function titleOf(data) {
+    return data.table && data.table !== data.name ? `${data.name} (${data.table})` : data.name;
+}
+
+// A submachine's panel shown, scrolled to and lit up for a moment
+function reveal(stem) {
+    const panel = graphs.get(stem).panel;
+    setShown(stem, true);
+    panel.scrollIntoView({block: "start", behavior: "smooth"});
+    panel.classList.remove("pulse");
+    void panel.offsetWidth; // restarts the animation on a second click
+    panel.classList.add("pulse");
+}
+
+// --- breakpoints -----------------------------------------------------------
+
+// A state marked by a right-click: live mode and play pause at the step
+// that makes it active. The marks are remembered by the browser
+const breakpointsKey = "fsmview.breakpoints";
+const breakpoints = new Set(); // "<stem>\n<state>"
+
+function breakpointKey(stem, state) {
+    return `${stem}\n${state}`;
+}
+
+function toggleBreakpoint(stem, state) {
+    const key = breakpointKey(stem, state);
+    if (breakpoints.has(key)) breakpoints.delete(key); else breakpoints.add(key);
+    const node = graphs.get(stem).nodes.get(state);
+    if (node) node.classList.toggle("breakpoint", breakpoints.has(key));
+    try {
+        const saved = {};
+        for (const entry of breakpoints) {
+            const [graph, name] = entry.split("\n");
+            (saved[graph] = saved[graph] || []).push(name);
+        }
+        localStorage.setItem(breakpointsKey, JSON.stringify(saved));
+    } catch (error) { /* no storage: the marks live for this page only */ }
+}
+
+function restoreBreakpoints() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(breakpointsKey)) || {}; } catch (error) { saved = {}; }
+    for (const [stem, graph] of graphs) {
+        for (const state of saved[stem] || []) {
+            if (graph.nodes.has(state) && !breakpoints.has(breakpointKey(stem, state))) toggleBreakpoint(stem, state);
+        }
+    }
+}
+
+function hitsBreakpoint(step) {
+    return !!step && breakpoints.has(breakpointKey(step.graph, step.state));
+}
+
+// The graphs in tree order: a root, then each submachine's graph right
+// below its parent, one level deeper; a sub-table two composites share
+// sits below the first of them and names both. Answers {data, depth,
+// parents: [{data, state}]} per graph
+function hierarchy(datas) {
+    const byStem = new Map(datas.map(data => [data.stem, data]));
+    const parents = new Map(datas.map(data => [data.stem, []]));
+    for (const data of datas) {
+        for (const [state, child] of Object.entries(data.children)) {
+            if (parents.has(child)) parents.get(child).push({data, state});
+        }
+    }
+    const order = [];
+    const placed = new Set();
+    const place = (data, depth) => {
+        if (placed.has(data.stem)) return;
+        placed.add(data.stem);
+        order.push({data, depth, parents: parents.get(data.stem)});
+        for (const child of Object.values(data.children)) {
+            if (byStem.has(child)) place(byStem.get(child), depth + 1);
+        }
+    };
+    for (const data of datas) if (parents.get(data.stem).length === 0) place(data, 0);
+    for (const data of datas) place(data, 0); // graphs nesting each other in a cycle
+    return order;
 }
 
 // --- highlighting -----------------------------------------------------------
@@ -409,11 +566,11 @@ function render() {
         currentLine.classList.add("current");
         currentLine.scrollIntoView({block: "nearest"});
     }
-    renderStatus();
+    renderPath(renderStatus());
 }
 
 // The tracked state of every machine at the cursor, on its panel; the
-// current step's machine in the header
+// current step's machine in the header. Answers the states by stem
 function renderStatus() {
     const pending = new Map([...graphs.keys()].map(stem => [stem, null]));
     let open = pending.size;
@@ -431,15 +588,87 @@ function renderStatus() {
             open--;
         }
     }
+    const states = new Map();
     for (const [stem, graph] of graphs) {
-        graph.state.textContent = pending.get(stem) ?? graph.data.initial ?? "?";
+        states.set(stem, pending.get(stem) ?? graph.data.initial ?? "?");
+        graph.state.textContent = states.get(stem);
     }
     const step = steps[cursor];
     const graph = step && graphs.get(step.graph);
     ui.current.textContent = graph ? `${graph.data.table || graph.data.name}: ${step.state}` : "";
     ui.live.classList.toggle("on", live);
     ui.live.disabled = ended;
+    return states;
 }
+
+// --- the path of the events ---------------------------------------------------
+
+// A composite state whose submachine runs now takes the run color, as
+// does the submachine's panel, and a line leads from the state to the
+// submachine's state: where the events go now, root downwards. The
+// lines are redrawn whenever something moves
+let links = [];  // [{from: <g>, to: <g>}]
+
+function renderPath(states) {
+    for (const graph of graphs.values()) {
+        for (const node of graph.svg.querySelectorAll("g.node.running")) node.classList.remove("running");
+        graph.panel.classList.remove("running");
+    }
+    links = [];
+    for (const [stem, graph] of graphs) {
+        const child = graph.data.children[states.get(stem)];
+        if (!graphs.has(child) || states.get(child) === inactiveState) continue;
+        const from = graph.nodes.get(states.get(stem));
+        const to = graphs.get(child).nodes.get(states.get(child));
+        if (!from || !to) continue;
+        from.classList.add("running");
+        graphs.get(child).panel.classList.add("running");
+        links.push({from, to});
+    }
+    drawLinks();
+}
+
+// A node's anchor in the overlay's coordinates: the overlay scrolls with
+// the stack, so a client point maps through the stack's scroll offset.
+// The node stays within its panel body horizontally, which is where a
+// scrolled-away node would be seen; null for a node in a hidden panel
+function anchor(node, side) {
+    const rect = node.getBoundingClientRect();
+    if (rect.width === 0) return null;
+    const visible = node.closest(".body").getBoundingClientRect();
+    const stack = ui.graph.getBoundingClientRect();
+    const x = Math.min(Math.max(rect.left + rect.width / 2, visible.left), visible.right);
+    const y = side === "bottom" ? rect.bottom : rect.top;
+    return {x: x - stack.left + ui.graph.scrollLeft, y: y - stack.top + ui.graph.scrollTop};
+}
+
+function drawLinks() {
+    for (const path of ui.links.querySelectorAll("path")) path.remove();
+    for (const {from, to} of links) {
+        const a = anchor(from, "bottom");
+        const b = anchor(to, "top");
+        if (!a || !b) continue;
+        const middle = (a.y + b.y) / 2;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", `M${a.x},${a.y} C${a.x},${middle} ${b.x},${middle} ${b.x},${b.y}`);
+        path.setAttribute("marker-end", "url(#arrow)");
+        ui.links.appendChild(path);
+    }
+}
+
+let linksScheduled = false;
+function scheduleLinks() {
+    if (linksScheduled) return;
+    linksScheduled = true;
+    requestAnimationFrame(() => { linksScheduled = false; drawLinks(); });
+}
+
+// what moves a node: a panel body panning (scroll events do not bubble -
+// taken in the capture phase), a zoom, a panel shown or hidden or the
+// stack resized (the sizes change)
+ui.graph.addEventListener("scroll", scheduleLinks, true);
+const resized = new ResizeObserver(scheduleLinks);
+resized.observe(ui.graph);
 
 // --- steps and the log list -------------------------------------------------
 
@@ -453,6 +682,7 @@ function addLine(entry) {
     if (step) {
         steps[step.i] = step;
         step.div = div;
+        div.classList.add("step");
         if (step.warnings.length) {
             div.classList.add("warn");
             div.title = step.warnings.join("\n");
@@ -473,13 +703,27 @@ function stepBefore(lineIndex) {
     return -1;
 }
 
-const allLinesKey = "fsmview.allLines";
+// the log's two filters: "show logs" shows the received lines, "hide
+// sm-traces" leaves the state machine's trace lines out of them (the
+// graphs show those); both are on by default and survive a reload. With
+// nothing left to show the log panel folds away and the graphs take its room
+const logFilters = {showlogs: {key: "fsmview.showLogs", hiding: "no-logs", hidesWhenChecked: false},
+                    hidetraces: {key: "fsmview.hideTraces", hiding: "no-traces", hidesWhenChecked: true}};
 
-function setAllLines(on) {
-    ui.alllines.checked = on;
-    ui.log.classList.toggle("steps-only", !on);
-    try { localStorage.setItem(allLinesKey, on ? "1" : "0"); } catch (error) { /* page-local */ }
+function setFilter(filter, checked) {
+    const {key, hiding, hidesWhenChecked} = logFilters[filter];
+    ui[filter].checked = checked;
+    ui.log.classList.toggle(hiding, checked === hidesWhenChecked);
+    ui.main.classList.toggle("no-log", !ui.showlogs.checked && ui.hidetraces.checked);
+    try { localStorage.setItem(key, checked ? "1" : "0"); } catch (error) { /* page-local */ }
     if (currentLine) currentLine.scrollIntoView({block: "nearest"});
+}
+
+function savedFilter(filter) {
+    try {
+        const saved = localStorage.getItem(logFilters[filter].key);
+        return saved === null || saved === "1";
+    } catch (error) { return true; }
 }
 
 function warn(message) {
@@ -527,6 +771,10 @@ function playStep() {
         return;
     }
     goTo(cursor + 1);
+    if (hitsBreakpoint(steps[cursor])) {
+        stopPlaying();
+        return;
+    }
     playTimer = setTimeout(playStep, playDelay());
 }
 
@@ -548,7 +796,14 @@ function openStream(from) {
         const entry = JSON.parse(event.data);
         addLine(entry);
         if (!entry.step) return;
-        if (live) goTo(entry.step.i); else render();
+        if (live && hitsBreakpoint(entry.step)) {
+            setLive(false);
+            goTo(entry.step.i);
+        } else if (live) {
+            goTo(entry.step.i);
+        } else {
+            render();
+        }
     };
     stream.addEventListener("end", () => {
         stream.close();
@@ -606,8 +861,14 @@ ui.play.addEventListener("click", togglePlay);
 ui.live.addEventListener("click", () => setLive(!live));
 ui.slider.addEventListener("input", () => { setLive(false); stopPlaying(); goTo(Number(ui.slider.value)); });
 ui.follow.addEventListener("change", render);
-ui.alllines.addEventListener("change", () => setAllLines(ui.alllines.checked));
-try { setAllLines(localStorage.getItem(allLinesKey) === "1"); } catch (error) { setAllLines(false); }
+for (const filter of Object.keys(logFilters)) {
+    ui[filter].addEventListener("change", () => setFilter(filter, ui[filter].checked));
+    setFilter(filter, savedFilter(filter));
+}
+ui.every.addEventListener("click", () => {
+    const on = someHidden();
+    for (const stem of graphs.keys()) setShown(stem, on);
+});
 document.addEventListener("keydown", event => {
     if (event.target.tagName === "SELECT" || event.target.tagName === "INPUT") return;
     const actions = {ArrowLeft: ui.prev, ArrowRight: ui.next, Home: ui.first, End: ui.last, " ": ui.play};
@@ -621,10 +882,11 @@ async function init() {
     config = await (await fetch("/state")).json();
     ui.source.textContent = config.mode === "replay" ? `replay ${config.source}` : config.source;
     for (const message of config.warnings) warn(message);
-    for (const data of config.graphs) {
-        await buildGraph(data);
+    for (const place of hierarchy(config.graphs)) {
+        await buildGraph(place.data, place);
     }
     restoreShown();
+    restoreBreakpoints();
 
     const events = await (await fetch("/events?from=0")).json();
     for (const entry of events.lines) addLine(entry);

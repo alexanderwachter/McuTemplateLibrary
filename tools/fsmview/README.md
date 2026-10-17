@@ -16,7 +16,10 @@ in the browser with viz.js from jsDelivr (needs internet access).
 
 In a west workspace the viewer is the extension command `west
 fsm_liveview` (and the graph generator `west fsm_dotgen`), with the same
-arguments as the scripts. West loads extension commands only from
+arguments as the scripts plus `-d BUILD_DIR`: without a GRAPH the
+viewer takes the build's `dot/`, where `west fsm_dotgen` and the
+samples' `west build -t dot` write (the configured build directory, as
+for `west build`, when `-d` names none). West loads extension commands only from
 projects whose manifest entry names them, so the entry for this
 repository needs the `west-commands` key:
 
@@ -72,10 +75,11 @@ One `.dot` per machine; the viewer takes several files or a directory.
 
 A board on its console - the default source is `/dev/ttyACM0` at
 115200 baud (pyserial), and the default graphs are the `.dot` files in
-`build/`:
+`dot/`, where `tools/dotgen` writes by default (`west fsm_liveview`
+takes the build's `dot/` instead):
 
 ```sh
-tools/fsmview/fsmview.py                                        # build/*.dot, /dev/ttyACM0
+tools/fsmview/fsmview.py                                        # dot/*.dot, /dev/ttyACM0
 tools/fsmview/fsmview.py traffic_light.dot --serial /dev/ttyUSB0@921600
 ```
 
@@ -115,17 +119,30 @@ Open the printed link. `LIVE` follows the newest step; stepping back
 `>|` re-enters it. Play replays at a fixed pace or in real time when
 the lines carry timestamps (Zephyr's `[HH:MM:SS.mmm,uuu]` or the
 example's `[ 1234ms]`). Every machine has a panel, stacked below each
-other; the buttons in the header show or hide one (the selection is
-remembered by the browser), each panel's heading names the machine's
-tracked state, and "follow machine" reveals and scrolls to the machine
-of the current step. A large machine is read by zooming, not by
+other in tree order: a submachine's panel sits right below its parent's,
+tinted like a composite state, and its heading names the composite
+state(s) it runs under. The buttons in the header show or hide one
+panel, `all`/`none` every one at once (the selection is remembered by
+the browser), each panel's heading names the machine's tracked state,
+and "follow machine" reveals and scrolls to the machine of the current
+step. A composite state is drawn filled with a bold border; a click on
+it reveals its submachine's panel, which lights up for a moment. A
+right-click on any state sets or clears a breakpoint (red dashed
+border, remembered by the browser): live mode and play pause at the
+step that makes the state active. While its submachine runs, the state
+and the submachine's panel take the blue run color, and a dashed blue
+arrow leads from the state to the submachine's state: the path the
+events take now, root downwards, over as many levels as are active. A large machine is read by zooming, not by
 shrinking: the wheel over a graph zooms around the pointer, click and
 drag pans, and each panel has `−`/`+`/`fit`/`1:1` buttons; the zoom is
 remembered per machine. The log on the right is resized by dragging
 the bar between graphs and log (double-click resets it); the wheel over
 that bar, or over the gaps between panels, scrolls the stack of graphs.
-The log shows the trace lines; "all log lines" shows every received
-line in between (a click on one jumps to the last step before it).
+"show logs" shows the received lines in the log, "hide sm-traces"
+leaves the state machine's trace lines out of them (the graphs show
+those in color); both are on by default, and with nothing to show the
+log panel folds away for the graphs. A click on a line jumps to its
+step, or to the last step before it.
 Stop the viewer with Ctrl+C.
 
 ### 4. Replay a saved log
@@ -199,8 +216,8 @@ the sample's `dot` target, and read the board's console:
 
 ```sh
 west build -b nucleo_g474re modules/mtl/zephyr/samples/traffic_light && west flash
-west build -t dot                       # writes build/traffic_light_table.dot
-west fsm_liveview                       # reads /dev/ttyACM0 at 115200, graphs from build/
+west build -t dot                       # writes build/dot/traffic_light_table.dot
+west fsm_liveview                       # reads /dev/ttyACM0 at 115200, graphs from build/dot/
 ```
 
 Or without the build target: `west fsm_dotgen

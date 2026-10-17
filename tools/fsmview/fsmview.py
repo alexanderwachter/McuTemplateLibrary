@@ -22,8 +22,8 @@ internal transition (the machine stays in <from>), <from> is "any_state"
 for a wildcard transition fired through the machine's shared body.
 
 Typical runs (details in README.md):
-  a board on its console, graphs from the build directory - the defaults:
-    fsmview.py                       (= fsmview.py build --serial /dev/ttyACM0@115200)
+  a board on its console, graphs where tools/dotgen writes them - the defaults:
+    fsmview.py                       (= fsmview.py dot --serial /dev/ttyACM0@115200)
   another port, explicit graphs:
     fsmview.py graphs/ --serial /dev/ttyUSB0@921600
   a host program:
@@ -55,11 +55,11 @@ from urllib.parse import parse_qs, urlparse
 ANY_STATE = "any_state"
 INTERNAL_TARGET = "internal_target"
 
-# Defaults of a board on the bench: its console, and the graphs the
-# sample's "dot" build target writes
+# Defaults of a board on the bench: its console, and the graphs where
+# tools/dotgen writes them (west fsm_liveview takes the build's dot/)
 DEFAULT_DEVICE = "/dev/ttyACM0"
 DEFAULT_BAUD = 115200
-DEFAULT_GRAPHS = "build"
+DEFAULT_GRAPHS = "dot"
 
 LINE_RE = re.compile(
     r"fsm\[(?P<machine>[^\]]+)\]\s+"
@@ -239,6 +239,19 @@ class Trace:
                 break
         self._graph_of[machine] = found
         return found
+
+    def children(self, graph):
+        """The graphs of a graph's submachines: composite state -> stem,
+        for the composites whose table has a graph."""
+        found = {}
+        for state, table in graph.submachines.items():
+            child = self.graph_for(table)
+            if child is not None:
+                found[state] = child.stem
+        return found
+
+    def graphs_json(self):
+        return [dict(graph.as_json(), children=self.children(graph)) for graph in self.graphs]
 
     def deactivate(self, graph, state):
         """Leaving a composite state ends its submachine: the child's
@@ -451,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.trace.lock:
                 state = dict(self.config, ended=self.trace.ended, count=len(self.trace.lines),
                              warnings=self.trace.warnings,
-                             graphs=[graph.as_json() for graph in self.trace.graphs])
+                             graphs=self.trace.graphs_json())
             self.reply_json(state)
         elif url.path == "/events":
             start = int(query.get("from", ["0"])[0])
@@ -622,32 +635,6 @@ def run(args):
 
 def main(argv=None):
     run(build_parser().parse_args(argv))
-
-
-try:
-    from west.commands import WestCommand
-except ImportError:  # standalone use without west
-    WestCommand = None
-
-if WestCommand is not None:
-
-    class LiveView(WestCommand):
-        def __init__(self):
-            super().__init__(
-                "fsm_liveview",
-                "watch or replay fsm state machines in the browser",
-                __doc__.split("Usage:")[0],
-                requires_workspace=False,
-            )
-
-        def do_add_parser(self, parser_adder):
-            parser = parser_adder.add_parser(
-                self.name, help=self.help, description=self.description,
-                formatter_class=argparse.RawDescriptionHelpFormatter)
-            return build_parser(parser)
-
-        def do_run(self, args, unknown_args):
-            run(args)
 
 
 if __name__ == "__main__":

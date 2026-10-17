@@ -221,6 +221,14 @@ class Hierarchy(unittest.TestCase):
         self.assertEqual(fsmview.Graph("outer", OUTER_DOT).as_json()["submachines"],
                          {"active": "inner_table"})
 
+    def test_state_names_the_children_graphs(self):
+        # the page gets the composite's child as the stem of its graph
+        outer, inner = self.trace.graphs_json()
+        self.assertEqual(outer["children"], {"active": "inner"})
+        self.assertEqual(inner["children"], {})
+        unresolved = fsmview.Trace([fsmview.Graph("outer", OUTER_DOT)], mapping={})
+        self.assertEqual(unresolved.graphs_json()[0]["children"], {})
+
     def test_child_lines_resolve_on_their_own_graph(self):
         self.step("fsm[outer_table] -> idle")
         entering = self.step("fsm[outer_table] idle -(go)-> active")
