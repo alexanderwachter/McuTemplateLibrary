@@ -7,7 +7,7 @@ timer policies, and two host tools: a graph generator and a live viewer.
 
 ```
 cmake -B build -G Ninja && cmake --build build && ./build/tests/TemplateMetaProgrammingTests
-python3 -m unittest tools/fsmview/test_fsmview.py tools/dotgen/test_dotgen.py
+python3 -m unittest tools/fsmview/test_fsmview.py tools/dotgen/test_dotgen.py zephyr/scripts/test_fsm_dotgen.py
 ```
 
 ## Typelists and compile-time utilities

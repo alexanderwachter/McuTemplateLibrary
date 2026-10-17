@@ -1,6 +1,6 @@
 # Keep the help strings in sync with the .py files
 west-commands:
-  - file: tools/dotgen/dotgen.py
+  - file: zephyr/scripts/fsm_dotgen.py
     commands:
       - name: fsm_dotgen
         class: DotGen

@@ -842,14 +842,16 @@ without namespaces (`table_name`: `vcs_table_power_role_0`), an
 anonymous-namespace table is reported and skipped. The symbols name
 the user's table, not the enabled one: feature filtering is the
 observers', application types the host cannot compile - the graph
-shows every feature. Zephyr stays out of the generic part (the
-author's rule): the west command section holds `ZephyrBuild`, which
-answers every argument not given from a build directory
-(`CMakeCache.txt`: `BYPRODUCT_KERNEL_ELF_NAME`, `CMAKE_NM`,
-`APPLICATION_SOURCE_DIR`; `zephyr_modules.txt` for the module trees;
-`<build>/dot` as output), `-d/--build-dir` names it and a bare `west
-fsm_dotgen` takes the configured one (`build.dir-fmt`, as `west build`)
-when neither PATH nor `--elf` is given. Scanning a vendor module tree
+shows every feature. Zephyr stays out of the generic tool (the
+author's rule): the west command is `zephyr/scripts/fsm_dotgen.py`
+(imports dotgen.py by path; `west-commands.yml` points there; tests
+in `zephyr/scripts/test_fsm_dotgen.py`), whose `ZephyrBuild` answers
+every argument not given from a build directory (`CMakeCache.txt`:
+`BYPRODUCT_KERNEL_ELF_NAME`, `CMAKE_NM`, `APPLICATION_SOURCE_DIR`;
+`zephyr_modules.txt` for the module trees; `<build>/dot` as output);
+`-d/--build-dir` names it and a bare `west fsm_dotgen` takes the
+configured one (`build.dir-fmt`, as `west build`) when neither PATH
+nor `--elf` is given. Scanning a vendor module tree
 (hal_stm32, 3358 headers) took 2 min in `strip_code`'s per-comment
 callback; `table_text` skips a header mentioning neither
 `transition_table` nor a known alias before blanking (9 s for the
@@ -863,8 +865,9 @@ in `traffic_light.hpp` behind a declared `uptimeMs()`). The sample's
 
 ## tools/fsmview
 Python 3 stdlib + one HTML page (`tools/fsmview/README.md`); also the
-west extension command `fsm_liveview` (same arguments; both tools keep
-their `WestCommand` class behind a guarded `from west.commands import`,
+west extension command `fsm_liveview` (same arguments; its
+`WestCommand` class sits behind a guarded `from west.commands import`
+in the tool itself, dotgen's in `zephyr/scripts/fsm_dotgen.py`; both
 listed in `zephyr/scripts/west-commands.yml`, which the consuming
 manifest names in the project's `west-commands:` key - west ignores
 `module.yml` and `ZEPHYR_EXTRA_MODULES` for commands; the root `west.yml`

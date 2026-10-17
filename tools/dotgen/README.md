@@ -12,12 +12,13 @@ files written.
 
 ```sh
 python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-D MACRO]... [-o DIR] [--table NS::TABLE[=NAME]]... [--elf IMAGE]
-west fsm_dotgen [-d BUILD_DIR] ...  # the same as an extension command of the mtl Zephyr module
+west fsm_dotgen [-d BUILD_DIR] ...  # the Zephyr command over it, zephyr/scripts/fsm_dotgen.py
 ```
 
-In a west workspace the usual call is the bare one, right after
-`west build`: the configured build directory (`build`, or west's
-`build.dir-fmt`) answers everything - its image is the `--elf`, its
+The generator knows nothing of Zephyr. In a west workspace the usual
+call is the bare `west fsm_dotgen` right after `west build`: the
+command lets the configured build directory (`build`, or west's
+`build.dir-fmt`) answer everything - its image is the `--elf`, its
 toolchain's `nm` the `--nm`, its application and modules the `PATH`s,
 `<build>/dot` the output. `-d` names another build directory; any
 argument given wins over the build's answer, and a `PATH` or `--elf`
@@ -109,5 +110,5 @@ depends on `zephyr_final`.
 ## Checks
 
 ```sh
-python3 -m unittest tools/dotgen/test_dotgen.py
+python3 -m unittest tools/dotgen/test_dotgen.py zephyr/scripts/test_fsm_dotgen.py
 ```
