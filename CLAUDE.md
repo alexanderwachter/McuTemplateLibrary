@@ -842,8 +842,20 @@ without namespaces (`table_name`: `vcs_table_power_role_0`), an
 anonymous-namespace table is reported and skipped. The symbols name
 the user's table, not the enabled one: feature filtering is the
 observers', application types the host cannot compile - the graph
-shows every feature. The USB stack's Zephyr module wraps it as `west
-build -t dot` on its own ELF.
+shows every feature. Zephyr stays out of the generic part (the
+author's rule): the west command section holds `ZephyrBuild`, which
+answers every argument not given from a build directory
+(`CMakeCache.txt`: `BYPRODUCT_KERNEL_ELF_NAME`, `CMAKE_NM`,
+`APPLICATION_SOURCE_DIR`; `zephyr_modules.txt` for the module trees;
+`<build>/dot` as output), `-d/--build-dir` names it and a bare `west
+fsm_dotgen` takes the configured one (`build.dir-fmt`, as `west build`)
+when neither PATH nor `--elf` is given. Scanning a vendor module tree
+(hal_stm32, 3358 headers) took 2 min in `strip_code`'s per-comment
+callback; `table_text` skips a header mentioning neither
+`transition_table` nor a known alias before blanking (9 s for the
+whole workspace, most of it the host compile), and `headers_under`
+prunes build output. The USB stack's Zephyr module wraps the generic
+form as `west build -t dot` on its own ELF.
 Table headers must be host-compilable (the Zephyr sample keeps its table
 in `traffic_light.hpp` behind a declared `uptimeMs()`). The sample's
 `west build -t dot` target calls the script. Tests:

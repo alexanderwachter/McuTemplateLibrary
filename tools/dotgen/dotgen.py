@@ -26,8 +26,14 @@ fsm::StateMachine in the image's symbols, instantiations spelled out,
 and renders exactly those - the scan then only says where the
 declarations live.
 
-Runs as "west fsm_dotgen" (extension command of the mtl Zephyr module) or directly:
+Runs directly:
   python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-o DIR] [--table NS::TABLE[=NAME]]... [--elf IMAGE]
+or as "west fsm_dotgen" (extension command of the mtl Zephyr module), where
+the Zephyr build directory answers what is not given - its image, its
+toolchain's nm, its application and modules as the PATHs, <build>/dot
+as the output - so that a bare "west fsm_dotgen" after "west build"
+draws the machines of the image just built:
+  west fsm_dotgen [-d BUILD_DIR] [PATH...] [--elf IMAGE] [-o DIR] ...
 """
 
 import argparse
@@ -135,11 +141,22 @@ def strip_code(text):
     return STRING_RE.sub(blank, COMMENT_RE.sub(blank, text))
 
 
+def table_text(header, names=("transition_table",)):
+    """A header's code with comments and strings blanked, or None when
+    it mentions none of the names a table is declared from - the
+    blanking is what a scan over a vendor tree of comment-heavy headers
+    would otherwise spend its time on."""
+    text = header.read_text(encoding="utf-8", errors="replace")
+    if not any(name in text for name in names):
+        return None
+    return strip_code(text)
+
+
 def table_aliases(header):
     """The names a header gives to unnamed tables: using X =
     fsm::transition_table<...>."""
-    text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
-    return set(TABLE_ALIAS_RE.findall(text))
+    text = table_text(header)
+    return set(TABLE_ALIAS_RE.findall(text)) if text else set()
 
 
 def base_names(bases):
@@ -169,9 +186,11 @@ def find_tables(header, aliases=None):
     derive from; those of the header itself when none are given."""
     if aliases is None:
         aliases = table_aliases(header)
-    text = strip_code(header.read_text(encoding="utf-8", errors="replace"))
+    text = table_text(header, ["transition_table", *aliases])
     tables = []
     templates = []
+    if text is None:
+        return tables, templates
     # namespace tracking: a stack of (name, brace depth at its opening)
     stack = []
     depth = 0
@@ -205,6 +224,16 @@ def find_tables(header, aliases=None):
     return tables, templates
 
 
+def headers_under(directory):
+    """The headers of a tree, build output and version control left out."""
+    for current, subdirs, files in os.walk(directory):
+        subdirs[:] = sorted(name for name in subdirs
+                            if name not in PRUNED_DIRS and not name.startswith("build"))
+        for name in files:
+            if Path(name).suffix in HEADER_SUFFIXES:
+                yield Path(current) / name
+
+
 def scan(paths, say=lambda message: None, instantiated_by_image=False):
     """Tables found under the paths, the headers named directly, and
     the headers declaring template tables (the generator includes the
@@ -216,7 +245,7 @@ def scan(paths, say=lambda message: None, instantiated_by_image=False):
     for path in paths:
         path = Path(path)
         if path.is_dir():
-            found = sorted(p for p in path.rglob("*") if p.suffix in HEADER_SUFFIXES)
+            found = sorted(headers_under(path))
             say(f"dotgen: scanning {len(found)} header(s) under {path}")
             headers.extend(found)
         elif path.suffix in HEADER_SUFFIXES:
@@ -392,7 +421,7 @@ def build_parser(parser=None):
         parser = argparse.ArgumentParser(
             description="Write Graphviz DOT graphs of the fsm transition tables in a source tree",
             formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    parser.add_argument("paths", nargs="*", metavar="PATH", default=["."],
+    parser.add_argument("paths", nargs="*", metavar="PATH", default=[],
                         help="headers or directories to scan for tables (default: .)")
     parser.add_argument("-I", dest="include_dirs", action="append", default=[], metavar="DIR",
                         help="extra include directory for the table headers")
@@ -406,9 +435,8 @@ def build_parser(parser=None):
                         help="render the tables of the machines built into this image, "
                              "read from its symbols, and nothing else; the scanned "
                              "headers only locate their declarations")
-    parser.add_argument("--nm", default=os.environ.get("NM") or "nm",
-                        help="the nm reading the --elf image (default: $NM, or nm)")
-    parser.add_argument("-o", "--out", default="dot", metavar="DIR",
+    parser.add_argument("--nm", help="the nm reading the --elf image (default: $NM, or nm)")
+    parser.add_argument("-o", "--out", metavar="DIR",
                         help="output directory, one <table>.dot per table (default: dot)")
     parser.add_argument("--cxx", default=os.environ.get("CXX") or shutil.which("c++") or "c++",
                         help="host C++ compiler (default: $CXX, or c++)")
@@ -443,6 +471,9 @@ def built_tables(images, nm, scanned, say, fail):
 
 
 def run(args, say=print, fail=sys.exit):
+    args.paths = args.paths or ["."]
+    args.nm = args.nm or os.environ.get("NM") or "nm"
+    args.out = args.out or "dot"
     tables, given_headers, template_headers = scan(args.paths, say, bool(args.elf))
     if args.elf:
         tables = built_tables(args.elf, args.nm, tables, say, fail)
@@ -518,6 +549,45 @@ def main(argv=None):
     run(build_parser().parse_args(argv), say=lambda message: print(message, file=sys.stderr))
 
 
+# --- west fsm_dotgen: the Zephyr build directory answers the arguments --
+
+CACHE_ENTRY_RE = re.compile(r"^(\w+):\w+=(.*)$", re.MULTILINE)
+MODULE_LINE_RE = re.compile(r'^"([^"]*)":"([^"]*)":"([^"]*)"$', re.MULTILINE)
+
+
+class ZephyrBuild:
+    """What a Zephyr build directory knows: the image it built, the nm
+    of its toolchain, and the application and modules the image was
+    built from - the trees declaring its tables."""
+
+    def __init__(self, directory, fail=sys.exit):
+        self.directory = Path(directory)
+        cache = self.directory / "CMakeCache.txt"
+        if not cache.is_file():
+            fail(f"dotgen: {self.directory} is no build directory: no CMakeCache.txt in it")
+        entries = dict(CACHE_ENTRY_RE.findall(cache.read_text(encoding="utf-8", errors="replace")))
+        self.elf = entries.get("BYPRODUCT_KERNEL_ELF_NAME")
+        if not self.elf:
+            fail(f"dotgen: {self.directory} names no image (BYPRODUCT_KERNEL_ELF_NAME): "
+                 f"not a Zephyr build?")
+        self.nm = entries.get("CMAKE_NM")
+        modules = self.directory / "zephyr_modules.txt"
+        module_dirs = []
+        if modules.is_file():
+            module_dirs = [path for _, path, _ in
+                           MODULE_LINE_RE.findall(modules.read_text(encoding="utf-8"))]
+        application = entries.get("APPLICATION_SOURCE_DIR")
+        self.sources = [path for path in [application] + module_dirs if path]
+        self.out = self.directory / "dot"
+
+    def supply(self, args):
+        """The build's answers for every argument not given."""
+        args.elf = args.elf or [self.elf]
+        args.nm = args.nm or self.nm
+        args.paths = args.paths or self.sources
+        args.out = args.out or str(self.out)
+
+
 try:
     from west.commands import WestCommand
 except ImportError:  # standalone use without west
@@ -538,10 +608,31 @@ if WestCommand is not None:
             parser = parser_adder.add_parser(
                 self.name, help=self.help, description=self.description,
                 formatter_class=argparse.RawDescriptionHelpFormatter)
+            parser.add_argument("-d", "--build-dir", metavar="DIR",
+                                help="the Zephyr build directory answering what is not "
+                                     "given: its image is the --elf, its toolchain's nm the "
+                                     "--nm, its application and modules the PATHs, DIR/dot "
+                                     "the output (default: the configured build directory, "
+                                     "as for west build, when it holds a build and neither "
+                                     "PATH nor --elf is given)")
             return build_parser(parser)
 
         def do_run(self, args, unknown_args):
+            if args.build_dir is None and not args.elf and not args.paths:
+                args.build_dir = self.configured_build_dir()
+            if args.build_dir:
+                build = ZephyrBuild(args.build_dir, self.die)
+                self.inf(f"dotgen: build directory {build.directory}: image {build.elf}, "
+                         f"declarations under {', '.join(build.sources)}")
+                build.supply(args)
             run(args, say=self.inf, fail=self.die)
+
+        def configured_build_dir(self):
+            """The build directory west build would use when its
+            configured format needs no arguments, if it holds a build."""
+            fmt = self.config.get("build.dir-fmt", "build")
+            directory = Path("build" if "{" in fmt else fmt)
+            return str(directory) if (directory / "CMakeCache.txt").is_file() else None
 
 
 if __name__ == "__main__":

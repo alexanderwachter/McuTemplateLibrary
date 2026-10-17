@@ -217,6 +217,48 @@ class ImageTables(unittest.TestCase):
         self.assertIn("local_table skipped", stderr.getvalue())
 
 
+class BuildDirectory(unittest.TestCase):
+    """A Zephyr build directory answers the arguments: the image and
+    the nm from CMakeCache.txt, the trees from the application and the
+    module list."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        (self.root / "CMakeCache.txt").write_text(
+            "APPLICATION_SOURCE_DIR:PATH=/work/app\n"
+            "BYPRODUCT_KERNEL_ELF_NAME:FILEPATH=/work/build/zephyr/zephyr.elf\n"
+            "CMAKE_NM:FILEPATH=/sdk/bin/arm-zephyr-eabi-nm\n"
+            "CMAKE_NM-ADVANCED:INTERNAL=1\n", encoding="utf-8")
+        (self.root / "zephyr_modules.txt").write_text(
+            '"usb-typec":"/work/usbc":"/work/usbc/zephyr"\n'
+            '"cmsis":"/work/modules/hal/cmsis":"${ZEPHYR_CMSIS_CMAKE_DIR}"\n', encoding="utf-8")
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_the_build_answers_what_is_not_given(self):
+        build = dotgen.ZephyrBuild(self.root, self.fail)
+        args = dotgen.build_parser().parse_args([])
+        build.supply(args)
+        self.assertEqual(args.elf, ["/work/build/zephyr/zephyr.elf"])
+        self.assertEqual(args.nm, "/sdk/bin/arm-zephyr-eabi-nm")
+        self.assertEqual(args.paths, ["/work/app", "/work/usbc", "/work/modules/hal/cmsis"])
+        self.assertEqual(args.out, str(self.root / "dot"))
+
+    def test_given_arguments_win(self):
+        build = dotgen.ZephyrBuild(self.root, self.fail)
+        args = dotgen.build_parser().parse_args(["/work/usbc/include", "-o", "graphs"])
+        build.supply(args)
+        self.assertEqual(args.paths, ["/work/usbc/include"])
+        self.assertEqual(args.out, "graphs")
+        self.assertEqual(args.elf, ["/work/build/zephyr/zephyr.elf"])
+
+    def test_no_build_is_refused(self):
+        with self.assertRaises(SystemExit):
+            dotgen.ZephyrBuild(self.root / "missing")
+
+
 class IncludeSearch(unittest.TestCase):
     """The headers a table header includes are found in the tree and
     where they live becomes an -I, so they need not be named by hand."""

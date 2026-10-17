@@ -12,7 +12,20 @@ files written.
 
 ```sh
 python3 tools/dotgen/dotgen.py [PATH...] [-I DIR]... [-D MACRO]... [-o DIR] [--table NS::TABLE[=NAME]]... [--elf IMAGE]
-west fsm_dotgen ...                # the same as an extension command of the mtl Zephyr module
+west fsm_dotgen [-d BUILD_DIR] ...  # the same as an extension command of the mtl Zephyr module
+```
+
+In a west workspace the usual call is the bare one, right after
+`west build`: the configured build directory (`build`, or west's
+`build.dir-fmt`) answers everything - its image is the `--elf`, its
+toolchain's `nm` the `--nm`, its application and modules the `PATH`s,
+`<build>/dot` the output. `-d` names another build directory; any
+argument given wins over the build's answer, and a `PATH` or `--elf`
+on the command line turns the build directory default off.
+
+```sh
+west build -b stm32g081b_eval UsbTypeC/samples/pd_drp
+west fsm_dotgen                    # build/dot/<table>.dot for every machine in the image
 ```
 
 From a west workspace with the module at `modules/mtl`, the traffic
