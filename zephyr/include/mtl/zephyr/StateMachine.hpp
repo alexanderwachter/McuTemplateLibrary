@@ -29,6 +29,13 @@
  *   mtl::zephyr::StateMachineOnSharedWorkqueue a{mtl::zephyr::table<table_a>, queue, observer};
  *   mtl::zephyr::StateMachineOnSharedWorkqueue b{mtl::zephyr::table<table_b>, queue};
  *
+ * StateMachineOnSystemWorkqueue drains on Zephyr's system workqueue:
+ *
+ *   mtl::zephyr::StateMachineOnSystemWorkqueue c{mtl::zephyr::table<table_c>, observer};
+ *
+ * ConfiguredStateMachine with system_workqueue does the same with a
+ * machine_config of its own; its workqueue fields are then unused.
+ *
  * The event buffer's capacity, and an owned workqueue's stack size and
  * priority, default to Kconfig (MTL_FSM_EVENT_BUFFER_CAPACITY,
  * MTL_FSM_WORKQUEUE_*). ConfiguredStateMachine overrides them by name,
@@ -41,7 +48,8 @@
  *
  * Deduction is not available for a class member; name the types there:
  * StateMachine<TABLE, OBSERVERs...>,
- * StateMachineOnSharedWorkqueue<TABLE, OBSERVERs...>.
+ * StateMachineOnSharedWorkqueue<TABLE, OBSERVERs...>,
+ * StateMachineOnSystemWorkqueue<TABLE, OBSERVERs...>.
  *
  * The timers come first in the machine's observer order, so they are
  * armed before anything is notified. Instances are pinned; construct
@@ -108,9 +116,11 @@ inline constexpr table_tag<fixed_table<TABLE>> table{};
 template<template<typename...> typename TABLE>
 inline constexpr table_tag<table_template<TABLE>> table_for{};
 
-// Whose thread the machine drains on: its own, or a caller's WorkQueue
+// Whose thread the machine drains on: its own, a caller's WorkQueue, or
+// Zephyr's system workqueue
 struct own_workqueue {};
 struct shared_workqueue {};
+struct system_workqueue {};
 
 namespace internal {
 
@@ -131,6 +141,11 @@ struct queue_holder<shared_workqueue, CONFIG> {
     k_work_q* handle() { return queue; }
 
     k_work_q* queue;
+};
+
+template<machine_config CONFIG>
+struct queue_holder<system_workqueue, CONFIG> {
+    k_work_q* handle() { return &k_sys_work_q; }
 };
 
 template<bool WANTED, typename OBSERVER>
@@ -201,6 +216,20 @@ public:
     {
     }
 
+    template<typename TAG>
+    explicit ConfiguredStateMachine(TAG, OBSERVERs&... observers)
+        requires std::same_as<QUEUE, system_workqueue>
+        : work_(queue_.handle()), machine_(construct(observers...))
+    {
+    }
+
+    template<typename TAG>
+    ConfiguredStateMachine(TAG, config_tag<CONFIG>, OBSERVERs&... observers)
+        requires std::same_as<QUEUE, system_workqueue>
+        : ConfiguredStateMachine(TAG{}, observers...)
+    {
+    }
+
     // From any context: the event is queued and delivered on the
     // machine's workqueue. False when the FIFO is full (the event is
     // lost) or the table does not know the event
@@ -264,7 +293,7 @@ private:
 
     // In dependency order: the queue, the work item on it, the timers,
     // then the machine - whose construction already arms and notifies
-    internal::queue_holder<QUEUE, CONFIG> queue_;
+    [[no_unique_address]] internal::queue_holder<QUEUE, CONFIG> queue_;
     Work work_;
     [[no_unique_address]] std::conditional_t<ConfiguredStateMachine::has_timeouts, timed_type,
                                              mtl::nil_type>
@@ -314,5 +343,19 @@ public:
 template<typename MAKER, std::size_t STACK_SIZE, int PRIORITY, typename... OBSERVERs>
 StateMachineOnSharedWorkqueue(table_tag<MAKER>, WorkQueue<STACK_SIZE, PRIORITY>&, OBSERVERs&...)
     -> StateMachineOnSharedWorkqueue<typename MAKER::template type<OBSERVERs...>, OBSERVERs...>;
+
+// On Zephyr's system workqueue: no thread of its own
+template<typename TABLE, typename... OBSERVERs>
+class StateMachineOnSystemWorkqueue
+    : public ConfiguredStateMachine<TABLE, system_workqueue, machine_config{}, OBSERVERs...> {
+    using base = ConfiguredStateMachine<TABLE, system_workqueue, machine_config{}, OBSERVERs...>;
+
+public:
+    using base::base;
+};
+
+template<typename MAKER, typename... OBSERVERs>
+StateMachineOnSystemWorkqueue(table_tag<MAKER>, OBSERVERs&...)
+    -> StateMachineOnSystemWorkqueue<typename MAKER::template type<OBSERVERs...>, OBSERVERs...>;
 
 } // namespace mtl::zephyr

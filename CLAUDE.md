@@ -783,8 +783,11 @@ by reference; `SpinLock` the LOCK policy, a k_spinlock because the lock
 only covers the ring bookkeeping and one event copy),
 `StateMachine.hpp` (the facade: `StateMachine{table<T>, observers...}`
 the default with its own workqueue, `StateMachineOnSharedWorkqueue{table<T>,
-queue, observers...}`, and their base `ConfiguredStateMachine{table<T>,
-config<machine_config{...}>, [queue,] observers...}`; derived classes,
+queue, observers...}`, `StateMachineOnSystemWorkqueue{table<T>,
+observers...}` (drains on `k_sys_work_q`, no thread of its own), and
+their base `ConfiguredStateMachine{table<T>,
+config<machine_config{...}>, [queue,] observers...}` with the queue kind
+`own_workqueue` / `shared_workqueue` / `system_workqueue`; derived classes,
 not alias templates - clang < 19 cannot deduce through aliases. CTAD via a
 table tag - `table<T>` or `table_for<TT>` for a table template over the
 deduced observers; holds `fsm::timed`/`fsm::deadlined` on `QueuedTimer`
@@ -794,7 +797,7 @@ one; `machine_config` fields default to Kconfig
 `MTL_FSM_EVENT_BUFFER_CAPACITY`, `MTL_FSM_WORKQUEUE_STACK_SIZE`,
 `MTL_FSM_WORKQUEUE_PRIORITY`; a class member cannot use CTAD and
 names `StateMachine<T, O...>` / `StateMachineOnSharedWorkqueue<T,
-O...>`; both samples use it) and
+O...>` / `StateMachineOnSystemWorkqueue<T, O...>`; both samples use it) and
 `TraceLogger.hpp` (`mtl::zephyr::TraceLogger : fsm::tracing`, lines at
 info level of `mtl_fsm`; sinks exist only when
 `CONFIG_MTL_FSM_LOG_LEVEL >= LOG_LEVEL_INF`, so the observer compiles to
